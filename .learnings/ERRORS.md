@@ -1,3 +1,97 @@
+## [ERR-20260312-007] test_ma_backtest.sh
+
+**Logged**: 2026-03-12T00:00:00Z
+**Priority**: medium
+**Status**: pending
+**Area**: tests
+
+### Summary
+Empty array expansion still triggered nounset in current bash runtime
+
+### Error
+```
+bash test_ma_backtest.sh
+test_ma_backtest.sh: line 15: EXTRA[@]: unbound variable
+```
+
+### Context
+- Command/operation attempted: bash test_ma_backtest.sh
+- Input or parameters used: EXTRA initialized as empty array and expanded via "${EXTRA[@]}"
+- Environment details: macOS, bash with set -u
+
+### Suggested Fix
+Avoid expanding optional arrays under nounset by branching command execution on $#.
+
+### Metadata
+- Reproducible: yes
+- Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/test_ma_backtest.sh
+- See Also: ERR-20260312-005, ERR-20260312-006
+
+---
+
+## [ERR-20260312-006] test_ma_backtest.sh
+
+**Logged**: 2026-03-12T00:00:00Z
+**Priority**: medium
+**Status**: pending
+**Area**: tests
+
+### Summary
+Default-safe array expansion passed an empty string argument and broke argparse parsing
+
+### Error
+```
+bash test_ma_backtest.sh
+usage: ma_backtest.py [-h] [--db DB] [--top TOP] [--days DAYS] [--tune]
+                      [--walk-forward]
+ma_backtest.py: error: unrecognized arguments:
+```
+
+### Context
+- Command/operation attempted: bash test_ma_backtest.sh
+- Input or parameters used: "${EXTRA[@]:-}" with empty array
+- Environment details: macOS, bash with set -euo pipefail
+
+### Suggested Fix
+Keep EXTRA initialized to an empty array and use plain "${EXTRA[@]}" so empty args are omitted.
+
+### Metadata
+- Reproducible: yes
+- Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/test_ma_backtest.sh
+- See Also: ERR-20260312-005
+
+---
+
+## [ERR-20260312-005] test_ma_backtest.sh
+
+**Logged**: 2026-03-12T00:00:00Z
+**Priority**: medium
+**Status**: pending
+**Area**: tests
+
+### Summary
+test_ma_backtest.sh fails with nounset when no extra CLI arguments are passed
+
+### Error
+```
+bash test_ma_backtest.sh
+test_ma_backtest.sh: line 11: EXTRA[@]: unbound variable
+```
+
+### Context
+- Command/operation attempted: bash test_ma_backtest.sh
+- Input or parameters used: default args only, no extra flags
+- Environment details: macOS, bash with set -euo pipefail
+
+### Suggested Fix
+Initialize EXTRA defensively and expand with default-safe array syntax under nounset.
+
+### Metadata
+- Reproducible: yes
+- Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/test_ma_backtest.sh
+
+---
+
 ## [ERR-20260312-001] apply_patch
 
 **Logged**: 2026-03-12T00:00:00Z

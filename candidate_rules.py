@@ -23,18 +23,25 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
         ma50_prev = moving_average_slice(prices, 50, len(prices) - 5)
         ma100_prev = moving_average_slice(prices, 100, len(prices) - 5)
         price = prices[-1]
+        recent_momentum_10 = price / prices[-10] - 1
+        recent_momentum_20 = price / prices[-20] - 1
+        volatility_20 = max(prices[-20:]) / min(prices[-20:]) - 1
         trend_ok = (
             price > ma20 > ma30 > ma50 > ma100 > ma200
+            and ma20 > ma20_prev
+            and ma30 > ma30_prev
             and ma50 > ma50_prev
             and ma100 > ma100_prev
             and ma200 >= ma200_prev * 0.999
         )
         if not trend_ok:
             continue
+        if recent_momentum_20 < 0.015 or volatility_20 > 0.35:
+            continue
         volume_ratio = volumes[-1] / (sum(volumes[-20:]) / 20)
-        breakout = price >= max(prices[-30:]) and volume_ratio >= 1.15
-        pullback = min(prices[-5:]) <= ma20 * 1.01 and price >= ma20 and price >= prices[-2]
-        trend_follow = ma20 > ma20_prev and ma30 > ma30_prev and 0.9 <= volume_ratio <= 2.8
+        breakout = price >= max(prices[-40:-1]) and volume_ratio >= 1.1 and recent_momentum_10 >= 0.01
+        pullback = min(prices[-5:]) <= ma20 * 1.01 and price >= ma20 and price >= prices[-2] and 0.85 <= volume_ratio <= 1.8
+        trend_follow = ma20 > ma20_prev and ma30 > ma30_prev and 0.9 <= volume_ratio <= 2.2 and recent_momentum_20 >= 0.03
         if not (breakout or pullback or trend_follow):
             continue
         if breakout:
@@ -44,15 +51,24 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
         else:
             strategy = "多均线趋势"
         ma20_distance = price / ma20 - 1
-        if ma20_distance > 0.12:
+        if ma20_distance > 0.09:
             continue
         recent_low = min(prices[-20:])
-        stop_price = min(recent_low, ma30 * 0.98)
+        stop_price = min(recent_low, ma30 * 0.985)
         distance200 = (price / ma200 - 1) * 100
         distance50 = (price / ma50 - 1) * 100
         slope200 = (ma200 / ma200_prev - 1) * 100
         slope100 = (ma100 / ma100_prev - 1) * 100
-        score = distance200 * 0.8 + distance50 * 0.6 + slope200 * 2.5 + slope100 * 2.0 + max(0.0, volume_ratio - 1) * 10
+        score = (
+            distance200 * 0.8
+            + distance50 * 0.6
+            + slope200 * 2.5
+            + slope100 * 2.0
+            + max(0.0, volume_ratio - 1) * 10
+            + recent_momentum_20 * 150
+            + recent_momentum_10 * 80
+            - max(0.0, volatility_20 * 100 - 18) * 0.6
+        )
         if breakout:
             score += 10
         elif pullback:
