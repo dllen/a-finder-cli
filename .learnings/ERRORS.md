@@ -36,6 +36,36 @@ Re-read the target file before applying changes; avoid patching removed sections
 - Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/stock_strategies.py
 
 ---
+## [ERR-20260312-004] ruff
+
+**Logged**: 2026-03-12T00:00:00Z
+**Priority**: medium
+**Status**: pending
+**Area**: config
+
+### Summary
+Attempted lint command failed because ruff is not installed in runtime
+
+### Error
+```
+uv run ruff check .
+error: Failed to spawn: `ruff`
+Caused by: No such file or directory (os error 2)
+```
+
+### Context
+- Command/operation attempted: uv run ruff check .
+- Input or parameters used: repository root
+- Environment details: macOS, uv
+
+### Suggested Fix
+Install ruff in project dependencies or document an available lint command.
+
+### Metadata
+- Reproducible: yes
+- Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/pyproject.toml
+
+---
 ## [ERR-20260312-003] sync-hs300-meta
 
 **Logged**: 2026-03-12T00:00:00Z
