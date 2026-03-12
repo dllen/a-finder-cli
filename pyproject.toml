@@ -1,0 +1,41 @@
+[project]
+name = "a-finder-cli"
+version = "0.1.0"
+description = "A股选股与买卖点提示命令行工具"
+requires-python = ">=3.10"
+dependencies = ["textual"]
+
+[project.scripts]
+a-finder = "stock_cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+  "analysis_service",
+  "candidate_rules",
+  "candidate_schema",
+  "cli_layer",
+  "config",
+  "data_fetch",
+  "data_providers",
+  "db_repository",
+  "db_schema",
+  "decision_rules",
+  "domain_models",
+  "errors",
+  "formatter",
+  "indicators",
+  "logger",
+  "market_data",
+  "scoring",
+  "signal_rules",
+  "signal_schema",
+  "stock_cli",
+  "stock_strategies",
+  "sync_service",
+  "utils",
+  "view_models",
+]
