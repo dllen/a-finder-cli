@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 
 from domain_models import Stock
-from stock_strategies import detect_signals, ma_strategy_candidates, primary_signal
+from stock_strategies import detect_signals, ma_strategy_candidates, primary_signal, select_candidates_with_quota
 
 
 def build_picks_rows(stocks: List[Stock], scores: Dict[str, float], top: int) -> List[List[str]]:
@@ -26,7 +26,7 @@ def build_picks_rows(stocks: List[Stock], scores: Dict[str, float], top: int) ->
 
 
 def build_ma_picks_rows(stocks: List[Stock], top: int) -> List[List[str]]:
-    candidates = ma_strategy_candidates(stocks)[:top]
+    candidates = select_candidates_with_quota(ma_strategy_candidates(stocks), top)
     signal_priority = {"买入": 0, "卖出": 1, "无信号": 2}
     enriched = []
     rows = []

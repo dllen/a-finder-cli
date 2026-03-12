@@ -3,7 +3,7 @@ import os
 from dataclasses import replace
 from typing import Dict, List
 
-from candidate_rules import ma_strategy_candidates
+from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
 from db_repository import open_db
 from domain_models import Stock
 from formatter import format_table
@@ -161,7 +161,7 @@ def run_backtest(
         regime_factor, weak_market = market_regime_factor(snapshot, config)
         if weak_market:
             weak_market_days += 1
-        candidates = ma_strategy_candidates(snapshot)[:top_size]
+        candidates = select_candidates_with_quota(ma_strategy_candidates(snapshot), top_size)
         daily_picks = len(candidates)
         total_daily_picks += daily_picks
         daily_return = 0.0

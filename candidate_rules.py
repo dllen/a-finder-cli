@@ -1,4 +1,4 @@
-from typing import List
+from typing import Dict, List
 
 from candidate_schema import Candidate
 from domain_models import Stock
@@ -90,3 +90,56 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
             }
         )
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+
+def select_candidates_with_quota(candidates: List[Candidate], top: int) -> List[Candidate]:
+    if top <= 0:
+        return []
+    ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    if len(ranked) <= top:
+        return ranked
+    groups: Dict[str, List[Candidate]] = {"多均线突破": [], "多均线回踩": [], "多均线趋势": []}
+    for item in ranked:
+        strategy = item["strategy"]
+        if strategy in groups:
+            groups[strategy].append(item)
+    ratios = {"多均线突破": 0.4, "多均线回踩": 0.3, "多均线趋势": 0.3}
+    targets: Dict[str, int] = {}
+    fractions = []
+    allocated = 0
+    for strategy, ratio in ratios.items():
+        raw_target = top * ratio
+        base = int(raw_target)
+        targets[strategy] = base
+        allocated += base
+        fractions.append((raw_target - base, strategy))
+    for _, strategy in sorted(fractions, reverse=True):
+        if allocated >= top:
+            break
+        targets[strategy] += 1
+        allocated += 1
+    selected: List[Candidate] = []
+    used_codes = set()
+    for strategy in ["多均线突破", "多均线回踩", "多均线趋势"]:
+        quota = targets[strategy]
+        if quota <= 0:
+            continue
+        for item in groups[strategy]:
+            if len(selected) >= top or quota <= 0:
+                break
+            code = item["stock"].code
+            if code in used_codes:
+                continue
+            selected.append(item)
+            used_codes.add(code)
+            quota -= 1
+    if len(selected) < top:
+        for item in ranked:
+            if len(selected) >= top:
+                break
+            code = item["stock"].code
+            if code in used_codes:
+                continue
+            selected.append(item)
+            used_codes.add(code)
+    return selected
