@@ -4,6 +4,12 @@ from candidate_schema import Candidate
 from domain_models import Stock
 from indicators import moving_average_slice
 
+DEFAULT_STRATEGY_RATIOS: Dict[str, float] = {
+    "多均线突破": 0.4,
+    "多均线回踩": 0.3,
+    "多均线趋势": 0.3,
+}
+
 
 def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
     candidates = []
@@ -92,7 +98,23 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
 
 
-def select_candidates_with_quota(candidates: List[Candidate], top: int) -> List[Candidate]:
+def normalize_strategy_ratios(ratios: Dict[str, float] | None) -> Dict[str, float]:
+    base = dict(DEFAULT_STRATEGY_RATIOS)
+    if ratios:
+        for key in base:
+            if key in ratios and ratios[key] > 0:
+                base[key] = float(ratios[key])
+    total = sum(base.values())
+    if total <= 0:
+        return dict(DEFAULT_STRATEGY_RATIOS)
+    return {key: value / total for key, value in base.items()}
+
+
+def select_candidates_with_quota(
+    candidates: List[Candidate],
+    top: int,
+    ratios: Dict[str, float] | None = None,
+) -> List[Candidate]:
     if top <= 0:
         return []
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
@@ -103,11 +125,11 @@ def select_candidates_with_quota(candidates: List[Candidate], top: int) -> List[
         strategy = item["strategy"]
         if strategy in groups:
             groups[strategy].append(item)
-    ratios = {"多均线突破": 0.4, "多均线回踩": 0.3, "多均线趋势": 0.3}
+    normalized = normalize_strategy_ratios(ratios)
     targets: Dict[str, int] = {}
     fractions = []
     allocated = 0
-    for strategy, ratio in ratios.items():
+    for strategy, ratio in normalized.items():
         raw_target = top * ratio
         base = int(raw_target)
         targets[strategy] = base

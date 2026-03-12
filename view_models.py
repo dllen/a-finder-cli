@@ -25,8 +25,8 @@ def build_picks_rows(stocks: List[Stock], scores: Dict[str, float], top: int) ->
     return rows
 
 
-def build_ma_picks_rows(stocks: List[Stock], top: int) -> List[List[str]]:
-    candidates = select_candidates_with_quota(ma_strategy_candidates(stocks), top)
+def build_ma_picks_rows(stocks: List[Stock], top: int, strategy_ratios: Dict[str, float] | None = None) -> List[List[str]]:
+    candidates = select_candidates_with_quota(ma_strategy_candidates(stocks), top, strategy_ratios)
     signal_priority = {"买入": 0, "卖出": 1, "无信号": 2}
     enriched = []
     rows = []

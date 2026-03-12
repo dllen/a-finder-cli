@@ -3,7 +3,7 @@ import os
 from dataclasses import replace
 from typing import Dict, List
 
-from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
+from candidate_rules import DEFAULT_STRATEGY_RATIOS, ma_strategy_candidates, select_candidates_with_quota
 from db_repository import open_db
 from domain_models import Stock
 from formatter import format_table
@@ -59,6 +59,26 @@ def default_backtest_config() -> Dict[str, float]:
         "price_floor_multiplier": 0.97,
         "stop_cap_multiplier": 0.995,
         "close_confirm_buffer": 1.005,
+    }
+
+
+def parse_quota_ratios(raw: str) -> Dict[str, float]:
+    parts = [part.strip() for part in raw.split(",")]
+    if len(parts) != 3:
+        raise ValueError("quota 需要三个逗号分隔值，例如 4,3,3")
+    values = []
+    for part in parts:
+        if not part:
+            raise ValueError("quota 存在空值")
+        value = float(part)
+        if value <= 0:
+            raise ValueError("quota 的每一项必须大于 0")
+        values.append(value)
+    total = sum(values)
+    return {
+        "多均线突破": values[0] / total,
+        "多均线回踩": values[1] / total,
+        "多均线趋势": values[2] / total,
     }
 
 
@@ -130,6 +150,7 @@ def run_backtest(
     backtest_days: int,
     config: Dict[str, float] | None = None,
     end_shift_days: int = 0,
+    strategy_ratios: Dict[str, float] | None = None,
 ) -> Dict[str, float]:
     config = config or default_backtest_config()
     valid_stocks = [stock for stock in stocks if len(stock.prices) >= 221 and len(stock.prices) == len(stock.volumes)]
@@ -161,7 +182,7 @@ def run_backtest(
         regime_factor, weak_market = market_regime_factor(snapshot, config)
         if weak_market:
             weak_market_days += 1
-        candidates = select_candidates_with_quota(ma_strategy_candidates(snapshot), top_size)
+        candidates = select_candidates_with_quota(ma_strategy_candidates(snapshot), top_size, strategy_ratios)
         daily_picks = len(candidates)
         total_daily_picks += daily_picks
         daily_return = 0.0
@@ -246,9 +267,10 @@ def optimize_backtest_params(
     top: int,
     backtest_days: int,
     end_shift_days: int = 0,
+    strategy_ratios: Dict[str, float] | None = None,
 ) -> tuple[Dict[str, float], Dict[str, float]]:
     best_config = default_backtest_config()
-    best_result = run_backtest(stocks, lows_map, top, backtest_days, best_config, end_shift_days)
+    best_result = run_backtest(stocks, lows_map, top, backtest_days, best_config, end_shift_days, strategy_ratios)
     regime_base_list = [0.72, 0.75, 0.78]
     weak_cap_list = [0.9, 0.92, 0.95]
     regime_floor_list = [0.65, 0.7]
@@ -268,7 +290,7 @@ def optimize_backtest_params(
                             config["ma30_stop_multiplier"] = ma30_stop
                             config["price_floor_multiplier"] = price_floor
                             config["close_confirm_buffer"] = close_confirm
-                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days)
+                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios)
                             if result_rank(result) > result_rank(best_result):
                                 best_result = result
                                 best_config = config
@@ -291,7 +313,7 @@ def optimize_backtest_params(
                             config["ma30_stop_multiplier"] = ma30_stop
                             config["price_floor_multiplier"] = price_floor
                             config["close_confirm_buffer"] = close_confirm
-                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days)
+                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios)
                             if result_rank(result) > result_rank(best_result):
                                 best_result = result
                                 best_config = config
@@ -311,11 +333,12 @@ def walk_forward_tune(
     top: int,
     backtest_days: int,
     train_ratio: float = 0.6,
+    strategy_ratios: Dict[str, float] | None = None,
 ) -> Dict[str, object]:
     total_days = min(backtest_days, available_backtest_days(stocks))
     if total_days <= 40:
         config = default_backtest_config()
-        baseline = run_backtest(stocks, lows_map, top, backtest_days, config)
+        baseline = run_backtest(stocks, lows_map, top, backtest_days, config, 0, strategy_ratios)
         return {
             "config": config,
             "train_days": float(total_days),
@@ -327,9 +350,9 @@ def walk_forward_tune(
     train_days = int(total_days * train_ratio)
     train_days = max(30, min(train_days, total_days - 20))
     validation_days = total_days - train_days
-    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days)
-    validation_result = run_backtest(stocks, lows_map, top, validation_days, best_config, 0)
-    combined_result = run_backtest(stocks, lows_map, top, total_days, best_config, 0)
+    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days, strategy_ratios)
+    validation_result = run_backtest(stocks, lows_map, top, validation_days, best_config, 0, strategy_ratios)
+    combined_result = run_backtest(stocks, lows_map, top, total_days, best_config, 0, strategy_ratios)
     return {
         "config": best_config,
         "train_days": float(train_days),
@@ -345,12 +368,14 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
     parser.add_argument("--top", type=int, default=10, help="每日最多持仓股票数")
     parser.add_argument("--days", type=int, default=240, help="回测交易日数量")
+    parser.add_argument("--quota", type=str, default="4,3,3", help="形态配额，格式例如 4,3,3")
     parser.add_argument("--tune", action="store_true", help="自动搜索更优回测参数")
     parser.add_argument("--walk-forward", action="store_true", help="滚动窗口训练/验证寻优")
     args = parser.parse_args()
+    strategy_ratios = parse_quota_ratios(args.quota)
     stocks = load_stocks(args.db)
     lows_map = load_daily_lows(stocks, args.db)
-    picks_rows = build_ma_picks_rows(stocks, args.top)
+    picks_rows = build_ma_picks_rows(stocks, args.top, strategy_ratios)
     print(f"均线选股结果 Top {args.top}")
     if picks_rows:
         headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA20", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
@@ -358,9 +383,9 @@ def main() -> None:
     else:
         print("无符合条件的标的")
     config = default_backtest_config()
-    result = run_backtest(stocks, lows_map, args.top, args.days, config)
+    result = run_backtest(stocks, lows_map, args.top, args.days, config, 0, strategy_ratios)
     if args.tune:
-        config, result = optimize_backtest_params(stocks, lows_map, args.top, args.days)
+        config, result = optimize_backtest_params(stocks, lows_map, args.top, args.days, 0, strategy_ratios)
         config_rows = [
             ["regime_base", f"{config['regime_base']:.3f}"],
             ["weak_cap", f"{config['weak_cap']:.3f}"],
@@ -373,7 +398,7 @@ def main() -> None:
         print("最优参数")
         print(format_table(["参数", "值"], config_rows))
     if args.walk_forward:
-        wf_result = walk_forward_tune(stocks, lows_map, args.top, args.days)
+        wf_result = walk_forward_tune(stocks, lows_map, args.top, args.days, 0.6, strategy_ratios)
         config = wf_result["config"]
         result = wf_result["combined_result"]
         config_rows = [
@@ -400,6 +425,14 @@ def main() -> None:
         print("")
         print("训练/验证表现")
         print(format_table(["指标", "结果"], split_rows))
+    quota_rows = [
+        ["突破配额", f"{strategy_ratios['多均线突破']:.2%}"],
+        ["回踩配额", f"{strategy_ratios['多均线回踩']:.2%}"],
+        ["趋势配额", f"{strategy_ratios['多均线趋势']:.2%}"],
+    ]
+    print("")
+    print("形态配额")
+    print(format_table(["指标", "结果"], quota_rows))
     summary_rows = [
         ["回测交易日", f"{int(result['backtest_days'])}"],
         ["有持仓天数", f"{int(result['position_days'])}"],
