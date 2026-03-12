@@ -17,7 +17,7 @@ def format_picks(stocks: List[Stock], scores: Dict[str, float], top: int) -> str
 
 def format_ma_picks(stocks: List[Stock], top: int) -> str:
     rows = build_ma_picks_rows(stocks, top)
-    headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA20", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
+    headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA10", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
     return format_table(headers, rows)
 
 
@@ -49,7 +49,7 @@ def run_textual_ui(stocks: List[Stock], scores: Dict[str, float], top: int, code
     signals_rows = build_signals_rows(stocks, code)
     signals_headers = ["代码", "名称", "信号", "策略", "最新价"]
     ma_rows = build_ma_picks_rows(stocks, top)
-    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA20", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
+    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA10", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
 
     class FinderApp(App):
         CSS = """
@@ -110,7 +110,7 @@ def run_ma_picks_textual_ui(stocks: List[Stock], top: int) -> None:
     from textual.widgets import DataTable, Footer, Header, Static
 
     ma_rows = build_ma_picks_rows(stocks, top)
-    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA20", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
+    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA10", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
 
     class MAPicksApp(App):
         CSS = """

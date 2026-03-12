@@ -378,7 +378,7 @@ def main() -> None:
     picks_rows = build_ma_picks_rows(stocks, args.top, strategy_ratios)
     print(f"均线选股结果 Top {args.top}")
     if picks_rows:
-        headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA20", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
+        headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA10", "MA30", "MA50", "MA100", "MA200", "量比", "止损价"]
         print(format_table(headers, picks_rows))
     else:
         print("无符合条件的标的")

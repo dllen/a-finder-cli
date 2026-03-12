@@ -59,7 +59,7 @@ def build_ma_picks_rows(stocks: List[Stock], top: int, strategy_ratios: Dict[str
                 entry["action"],
                 entry["signal_strategy"] or "-",
                 f"{stock.prices[-1]:.2f}",
-                f"{item['ma20']:.2f}",
+                f"{item['ma10']:.2f}",
                 f"{item['ma30']:.2f}",
                 f"{item['ma50']:.2f}",
                 f"{item['ma100']:.2f}",

@@ -6,7 +6,7 @@ from domain_models import Stock
 class Candidate(TypedDict):
     stock: Stock
     strategy: str
-    ma20: float
+    ma10: float
     ma30: float
     ma50: float
     ma100: float
