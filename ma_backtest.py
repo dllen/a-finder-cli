@@ -3,7 +3,7 @@ import os
 from dataclasses import replace
 from typing import Dict, List
 
-from candidate_rules import DEFAULT_STRATEGY_RATIOS, ma_strategy_candidates, select_candidates_with_quota
+from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
 from db_repository import open_db
 from domain_models import Stock
 from formatter import format_table
