@@ -17,7 +17,7 @@ def format_picks(stocks: List[Stock], scores: Dict[str, float], top: int) -> str
 
 def format_ma_picks(stocks: List[Stock], top: int) -> str:
     rows = build_ma_picks_rows(stocks, top)
-    headers = ["代码", "名称", "形态", "最新价", "MA50", "MA200", "量比", "止损价"]
+    headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA50", "MA200", "量比", "止损价"]
     return format_table(headers, rows)
 
 
@@ -49,7 +49,7 @@ def run_textual_ui(stocks: List[Stock], scores: Dict[str, float], top: int, code
     signals_rows = build_signals_rows(stocks, code)
     signals_headers = ["代码", "名称", "信号", "策略", "最新价"]
     ma_rows = build_ma_picks_rows(stocks, top)
-    ma_headers = ["代码", "名称", "形态", "最新价", "MA50", "MA200", "量比", "止损价"]
+    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA50", "MA200", "量比", "止损价"]
 
     class FinderApp(App):
         CSS = """
@@ -104,6 +104,50 @@ def run_textual_ui(stocks: List[Stock], scores: Dict[str, float], top: int, code
     FinderApp().run()
 
 
+def run_ma_picks_textual_ui(stocks: List[Stock], top: int) -> None:
+    from textual.app import App, ComposeResult
+    from textual.containers import Vertical
+    from textual.widgets import DataTable, Footer, Header, Static
+
+    ma_rows = build_ma_picks_rows(stocks, top)
+    ma_headers = ["代码", "名称", "形态", "信号", "策略", "最新价", "MA50", "MA200", "量比", "止损价"]
+
+    class MAPicksApp(App):
+        CSS = """
+        Screen {
+            background: #0b1020;
+            color: #e6e6e6;
+        }
+        #main {
+            padding: 1 2;
+        }
+        .section-title {
+            text-style: bold;
+            color: #7dd3fc;
+            margin-bottom: 1;
+        }
+        DataTable {
+            height: 1fr;
+        }
+        """
+        BINDINGS = [("q", "quit", "退出")]
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            with Vertical(id="main"):
+                yield Static(f"均线选股 Top {top}", classes="section-title")
+                yield DataTable(id="ma_table")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            ma_table = self.query_one("#ma_table", DataTable)
+            ma_table.add_columns(*ma_headers)
+            ma_table.add_rows(ma_rows)
+            ma_table.zebra_stripes = True
+
+    MAPicksApp().run()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="a-finder", description="选股与买卖点提示命令行")
     subparsers = parser.add_subparsers(dest="command")
@@ -119,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     ma_parser = subparsers.add_parser("ma-picks", help="输出均线选股结果")
     ma_parser.add_argument("--top", type=int, default=10, help="输出前 N 只股票")
     ma_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
+    ma_parser.add_argument("--ui", action="store_true", help="使用 Textual 界面展示结果")
 
     sync_parser = subparsers.add_parser("sync-hs300", help="同步沪深300近一年行情到SQLite")
     sync_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
@@ -181,7 +226,10 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
     elif args.command == "signals":
         print(format_signals(stocks, args.code))
     elif args.command == "ma-picks":
-        print(format_ma_picks(stocks, args.top))
+        if args.ui:
+            run_ma_picks_textual_ui(stocks, args.top)
+        else:
+            print(format_ma_picks(stocks, args.top))
     elif args.command == "sync-hs300":
         set_log_level(args.log_level)
         result = sync_hs300(args.db, args.mode, args.limit)

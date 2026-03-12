@@ -27,14 +27,37 @@ def build_picks_rows(stocks: List[Stock], scores: Dict[str, float], top: int) ->
 
 def build_ma_picks_rows(stocks: List[Stock], top: int) -> List[List[str]]:
     candidates = ma_strategy_candidates(stocks)[:top]
+    signal_priority = {"买入": 0, "卖出": 1, "无信号": 2}
+    enriched = []
     rows = []
     for item in candidates:
         stock = item["stock"]
+        signals = detect_signals(stock)
+        action, signal_strategy = primary_signal(signals)
+        enriched.append(
+            {
+                "item": item,
+                "stock": stock,
+                "action": action,
+                "signal_strategy": signal_strategy,
+            }
+        )
+    enriched.sort(
+        key=lambda entry: (
+            signal_priority.get(entry["action"], 2),
+            -entry["item"]["score"],
+        )
+    )
+    for entry in enriched:
+        item = entry["item"]
+        stock = entry["stock"]
         rows.append(
             [
                 stock.code,
                 stock.name,
                 item["strategy"],
+                entry["action"],
+                entry["signal_strategy"] or "-",
                 f"{stock.prices[-1]:.2f}",
                 f"{item['ma50']:.2f}",
                 f"{item['ma200']:.2f}",

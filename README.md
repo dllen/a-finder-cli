@@ -19,7 +19,7 @@ uv sync
 - overview：输出总体概览
 - picks：输出选股结果，可用 --top 控制数量
 - signals：查询单票信号，可用 --code 指定股票代码
-- ma-picks：基于均线条件输出选股结果
+- ma-picks：基于均线条件输出选股结果，可加 --ui 启动界面
 - sync-hs300-meta：同步沪深 300 元数据（代码、名称、行业、地区）
 - meta：按股票代码查询元数据
 - ui：启动 Textual 美化界面，可用 --top / --code / --db 控制展示
@@ -40,6 +40,7 @@ uv run a-finder overview
 uv run a-finder picks --top 5
 uv run a-finder signals --code 600519
 uv run a-finder ma-picks --top 5
+uv run a-finder ma-picks --top 20 --ui
 uv run a-finder ui --top 10
 uv run a-finder ui --code 600519
 uv run a-finder sync-hs300-meta --db hs300.db
