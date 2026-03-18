@@ -89,6 +89,21 @@ bash sync_all.sh 2025-01-01 2026-03-12 hs300.db
 bash sync_all.sh 2025-01-01 2026-03-12 hs300.db --concurrency 6 --rate 8 --retries 4 --backoff 0.6
 ```
 
+## 增量更新 + 选股一键运行
+
+```bash
+bash sync_incremental_pick.sh
+bash sync_incremental_pick.sh hs300.db 20 ma-picks
+bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
+```
+
+参数说明：
+
+- 第 1 个参数：数据库路径，默认 `hs300.db`
+- 第 2 个参数：选股数量 top，默认 `10`
+- 第 3 个参数：选股命令，支持 `ma-picks` 或 `picks`，默认 `ma-picks`
+- 第 4 个及之后参数：透传给 `sync-hs300 --mode incremental`，可直接传 `--limit`、`--log-level` 等同步参数
+
 ## 一键管理
 
 ```bash
