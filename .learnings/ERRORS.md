@@ -1,3 +1,35 @@
+## [ERR-20260318-001] sync-hs300-meta
+
+**Logged**: 2026-03-18T23:22:46Z
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+Metadata sync hit intermittent remote connection reset for single stock code
+
+### Error
+```
+2026-03-18 23:22:31,983 WARNING 沪深300成分股获取失败，改用本地数据库代码列表
+2026-03-18 23:22:31,984 INFO 元数据同步开始: symbols=300
+2026-03-18 23:22:46,665 WARNING 元数据同步失败: code=000001 error=Remote end closed connection without response
+```
+
+### Context
+- Command/operation attempted: sync-hs300-meta via incremental update workflow
+- Input or parameters used: default metadata concurrency/rate/retries
+- Environment details: macOS, Eastmoney remote API
+
+### Suggested Fix
+Lower metadata concurrency/rate and increase retries/backoff to reduce transient connection drops.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/sync_service.py, /Users/shichaopeng/Work/code/github/a-finder-cli/sync_incremental_pick.sh
+- See Also: ERR-20260312-003
+
+---
+
 ## [ERR-20260312-007] test_ma_backtest.sh
 
 **Logged**: 2026-03-12T00:00:00Z

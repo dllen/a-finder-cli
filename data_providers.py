@@ -8,25 +8,27 @@ from db_repository import PriceRow, StockMeta
 from utils import retry_call
 
 
-def fetch_url_text(url: str, params: Optional[Dict[str, str]] = None) -> str:
+def fetch_url_text(url: str, params: Optional[Dict[str, str]] = None, referer: Optional[str] = None) -> str:
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     def request_text() -> str:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "*/*",
-            },
-        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+        }
+        if referer:
+            headers["Referer"] = referer
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8", errors="ignore")
 
     return retry_call(request_text)
 
 
-def fetch_url_json(url: str, params: Optional[Dict[str, str]] = None) -> Dict[str, object]:
-    text = fetch_url_text(url, params)
+def fetch_url_json(url: str, params: Optional[Dict[str, str]] = None, referer: Optional[str] = None) -> Dict[str, object]:
+    text = fetch_url_text(url, params, referer)
     return json.loads(text)
 
 
@@ -109,7 +111,8 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRo
         "beg": start_date,
         "end": end_date,
     }
-    data = fetch_url_json(url, params)
+    referer = f"https://quote.eastmoney.com/sz{code}.html" if not code.startswith(("60", "688")) else f"https://quote.eastmoney.com/sh{code}.html"
+    data = fetch_url_json(url, params, referer)
     kline_data = data.get("data", {}).get("klines") if isinstance(data.get("data"), dict) else None
     if not kline_data:
         return []
@@ -138,16 +141,51 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRo
 
 
 def fetch_stock_meta(code: str) -> Optional[StockMeta]:
-    url = "https://push2.eastmoney.com/api/qt/stock/get"
-    params = {
-        "secid": code_to_secid(code),
-        "fields": "f57,f58,f127,f128",
+    name = _fetch_name_from_sina(code)
+    province = _fetch_province_from_eastmoney(code)
+    return StockMeta(code=code, name=name or code, industry="", region=province)
+
+
+def _fetch_name_from_sina(code: str) -> str:
+    try:
+        prefix = "sh" if code.startswith(("60", "688")) else "sz"
+        url = f"https://hq.sinajs.cn/list={prefix}{code}"
+        text = _fetch_sina_text(url)
+        match = re.search(r'"([^"]+)"', text)
+        if match:
+            parts = match.group(1).split(",")
+            if parts:
+                return parts[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _fetch_sina_text(url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Referer": "https://finance.sina.com.cn",
     }
-    data = fetch_url_json(url, params)
-    payload = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(payload, dict):
-        return None
-    name = str(payload.get("f58") or "").strip()
-    industry = str(payload.get("f127") or "").strip()
-    region = str(payload.get("f128") or "").strip()
-    return StockMeta(code=code, name=name or code, industry=industry, region=region)
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("gbk", errors="ignore")
+
+
+def _fetch_province_from_eastmoney(code: str) -> str:
+    try:
+        url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+        params = {
+            "reportName": "RPT_F10_BASIC_ORGINFO",
+            "columns": "SECURITY_CODE,PROVINCE",
+            "filter": f'(SECURITY_CODE="{code}")',
+        }
+        data = fetch_url_json(url, params)
+        result = data.get("result") if isinstance(data, dict) else None
+        rows = result.get("data") if isinstance(result, dict) else None
+        if rows and len(rows) > 0:
+            province = rows[0].get("PROVINCE", "")
+            return str(province).strip() if province else ""
+    except Exception:
+        pass
+    return ""
