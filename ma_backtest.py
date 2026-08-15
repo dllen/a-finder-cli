@@ -3,7 +3,11 @@ import os
 from dataclasses import replace
 from typing import Dict, List
 
-from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
+from candidate_rules import (
+    CandidateConfig,
+    ma_strategy_candidates,
+    select_candidates_with_quota,
+)
 from db_repository import open_db
 from domain_models import Stock
 from formatter import format_table
@@ -47,6 +51,33 @@ def load_daily_lows(stocks: List[Stock], db_path: str) -> Dict[str, List[float]]
                 series = fallback[stock.code][:gap] + series
             lows_map[stock.code] = series
     return lows_map
+
+
+def default_candidate_config() -> CandidateConfig:
+    return CandidateConfig()
+
+
+def candidate_config_variants() -> List[CandidateConfig]:
+    configs = []
+    for momentum_20_min in [0.0, 0.015, 0.03]:
+        for volatility_20_max in [0.25, 0.35, 0.45]:
+            for ma10_distance_max in [0.05, 0.09, 0.13]:
+                for breakout_volume_ratio_min in [1.0, 1.1, 1.2]:
+                    for trend_follow_momentum_min in [0.02, 0.03, 0.04]:
+                        for score_distance200_weight in [0.4, 0.8]:
+                            for score_distance50_weight in [0.3, 0.6]:
+                                configs.append(
+                                    CandidateConfig(
+                                        momentum_20_min=momentum_20_min,
+                                        volatility_20_max=volatility_20_max,
+                                        ma10_distance_max=ma10_distance_max,
+                                        breakout_volume_ratio_min=breakout_volume_ratio_min,
+                                        trend_follow_momentum_min=trend_follow_momentum_min,
+                                        score_distance200_weight=score_distance200_weight,
+                                        score_distance50_weight=score_distance50_weight,
+                                    )
+                                )
+    return configs
 
 
 def default_backtest_config() -> Dict[str, float]:
@@ -151,8 +182,10 @@ def run_backtest(
     config: Dict[str, float] | None = None,
     end_shift_days: int = 0,
     strategy_ratios: Dict[str, float] | None = None,
+    candidate_config: CandidateConfig | None = None,
 ) -> Dict[str, float]:
     config = config or default_backtest_config()
+    candidate_config = candidate_config or default_candidate_config()
     valid_stocks = [stock for stock in stocks if len(stock.prices) >= 221 and len(stock.prices) == len(stock.volumes)]
     if not valid_stocks:
         return empty_result()
@@ -182,7 +215,9 @@ def run_backtest(
         regime_factor, weak_market = market_regime_factor(snapshot, config)
         if weak_market:
             weak_market_days += 1
-        candidates = select_candidates_with_quota(ma_strategy_candidates(snapshot), top_size, strategy_ratios)
+        candidates = select_candidates_with_quota(
+            ma_strategy_candidates(snapshot, candidate_config), top_size, strategy_ratios
+        )
         daily_picks = len(candidates)
         total_daily_picks += daily_picks
         daily_return = 0.0
@@ -268,9 +303,10 @@ def optimize_backtest_params(
     backtest_days: int,
     end_shift_days: int = 0,
     strategy_ratios: Dict[str, float] | None = None,
+    candidate_config: CandidateConfig | None = None,
 ) -> tuple[Dict[str, float], Dict[str, float]]:
     best_config = default_backtest_config()
-    best_result = run_backtest(stocks, lows_map, top, backtest_days, best_config, end_shift_days, strategy_ratios)
+    best_result = run_backtest(stocks, lows_map, top, backtest_days, best_config, end_shift_days, strategy_ratios, candidate_config)
     regime_base_list = [0.72, 0.75, 0.78]
     weak_cap_list = [0.9, 0.92, 0.95]
     regime_floor_list = [0.65, 0.7]
@@ -290,7 +326,7 @@ def optimize_backtest_params(
                             config["ma30_stop_multiplier"] = ma30_stop
                             config["price_floor_multiplier"] = price_floor
                             config["close_confirm_buffer"] = close_confirm
-                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios)
+                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios, candidate_config)
                             if result_rank(result) > result_rank(best_result):
                                 best_result = result
                                 best_config = config
@@ -313,7 +349,7 @@ def optimize_backtest_params(
                             config["ma30_stop_multiplier"] = ma30_stop
                             config["price_floor_multiplier"] = price_floor
                             config["close_confirm_buffer"] = close_confirm
-                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios)
+                            result = run_backtest(stocks, lows_map, top, backtest_days, config, end_shift_days, strategy_ratios, candidate_config)
                             if result_rank(result) > result_rank(best_result):
                                 best_result = result
                                 best_config = config
@@ -350,11 +386,20 @@ def walk_forward_tune(
     train_days = int(total_days * train_ratio)
     train_days = max(30, min(train_days, total_days - 20))
     validation_days = total_days - train_days
-    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days, strategy_ratios)
-    validation_result = run_backtest(stocks, lows_map, top, validation_days, best_config, 0, strategy_ratios)
-    combined_result = run_backtest(stocks, lows_map, top, total_days, best_config, 0, strategy_ratios)
+    best_candidate = default_candidate_config()
+    base_config = default_backtest_config()
+    best_candidate_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, best_candidate)
+    for cand in candidate_config_variants():
+        cand_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, cand)
+        if result_rank(cand_result) > result_rank(best_candidate_result):
+            best_candidate = cand
+            best_candidate_result = cand_result
+    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days, strategy_ratios, best_candidate)
+    validation_result = run_backtest(stocks, lows_map, top, validation_days, best_config, 0, strategy_ratios, best_candidate)
+    combined_result = run_backtest(stocks, lows_map, top, total_days, best_config, 0, strategy_ratios, best_candidate)
     return {
         "config": best_config,
+        "candidate_config": best_candidate,
         "train_days": float(train_days),
         "validation_days": float(validation_days),
         "train_result": train_result,
@@ -401,6 +446,7 @@ def main() -> None:
         wf_result = walk_forward_tune(stocks, lows_map, args.top, args.days, 0.6, strategy_ratios)
         config = wf_result["config"]
         result = wf_result["combined_result"]
+        cand = wf_result["candidate_config"]
         config_rows = [
             ["regime_base", f"{config['regime_base']:.3f}"],
             ["weak_cap", f"{config['weak_cap']:.3f}"],
@@ -408,6 +454,13 @@ def main() -> None:
             ["ma30_stop", f"{config['ma30_stop_multiplier']:.3f}"],
             ["price_floor", f"{config['price_floor_multiplier']:.3f}"],
             ["close_confirm", f"{config['close_confirm_buffer']:.3f}"],
+            ["momentum_20_min", f"{cand.momentum_20_min:.3f}"],
+            ["volatility_20_max", f"{cand.volatility_20_max:.3f}"],
+            ["ma10_distance_max", f"{cand.ma10_distance_max:.3f}"],
+            ["breakout_vol_ratio", f"{cand.breakout_volume_ratio_min:.3f}"],
+            ["trend_momentum_min", f"{cand.trend_follow_momentum_min:.3f}"],
+            ["score_d200_weight", f"{cand.score_distance200_weight:.3f}"],
+            ["score_d50_weight", f"{cand.score_distance50_weight:.3f}"],
             ["训练天数", f"{int(wf_result['train_days'])}"],
             ["验证天数", f"{int(wf_result['validation_days'])}"],
         ]

@@ -1,4 +1,5 @@
-from typing import Dict, List
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 from candidate_schema import Candidate
 from domain_models import Stock
@@ -11,7 +12,25 @@ DEFAULT_STRATEGY_RATIOS: Dict[str, float] = {
 }
 
 
-def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
+@dataclass
+class CandidateConfig:
+    momentum_20_min: float = 0.015
+    volatility_20_max: float = 0.35
+    ma10_distance_max: float = 0.09
+    breakout_volume_ratio_min: float = 1.1
+    trend_follow_momentum_min: float = 0.03
+    score_distance200_weight: float = 0.8
+    score_distance50_weight: float = 0.6
+
+
+DEFAULT_CANDIDATE_CONFIG = CandidateConfig()
+
+
+def ma_strategy_candidates(
+    stocks: List[Stock],
+    config: Optional[CandidateConfig] = None,
+) -> List[Candidate]:
+    config = config or DEFAULT_CANDIDATE_CONFIG
     candidates = []
     for stock in stocks:
         prices = stock.prices
@@ -42,12 +61,21 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
         )
         if not trend_ok:
             continue
-        if recent_momentum_20 < 0.015 or volatility_20 > 0.35:
+        if recent_momentum_20 < config.momentum_20_min or volatility_20 > config.volatility_20_max:
             continue
         volume_ratio = volumes[-1] / (sum(volumes[-20:]) / 20)
-        breakout = price >= max(prices[-40:-1]) and volume_ratio >= 1.1 and recent_momentum_10 >= 0.01
+        breakout = (
+            price >= max(prices[-40:-1])
+            and volume_ratio >= config.breakout_volume_ratio_min
+            and recent_momentum_10 >= 0.01
+        )
         pullback = min(prices[-5:]) <= ma10 * 1.01 and price >= ma10 and price >= prices[-2] and 0.85 <= volume_ratio <= 1.8
-        trend_follow = ma10 > ma10_prev and ma30 > ma30_prev and 0.9 <= volume_ratio <= 2.2 and recent_momentum_20 >= 0.03
+        trend_follow = (
+            ma10 > ma10_prev
+            and ma30 > ma30_prev
+            and 0.9 <= volume_ratio <= 2.2
+            and recent_momentum_20 >= config.trend_follow_momentum_min
+        )
         if not (breakout or pullback or trend_follow):
             continue
         if breakout:
@@ -57,7 +85,7 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
         else:
             strategy = "多均线趋势"
         ma10_distance = price / ma10 - 1
-        if ma10_distance > 0.09:
+        if ma10_distance > config.ma10_distance_max:
             continue
         recent_low = min(prices[-20:])
         stop_price = min(recent_low, ma30 * 0.985)
@@ -66,8 +94,8 @@ def ma_strategy_candidates(stocks: List[Stock]) -> List[Candidate]:
         slope200 = (ma200 / ma200_prev - 1) * 100
         slope100 = (ma100 / ma100_prev - 1) * 100
         score = (
-            distance200 * 0.8
-            + distance50 * 0.6
+            distance200 * config.score_distance200_weight
+            + distance50 * config.score_distance50_weight
             + slope200 * 2.5
             + slope100 * 2.0
             + max(0.0, volume_ratio - 1) * 10
