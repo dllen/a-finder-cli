@@ -22,7 +22,7 @@ from db_repository import (
     upsert_fetch_offsets,
     upsert_metadata,
 )
-from data_providers import fetch_daily_kline, fetch_hs300_constituents, fetch_stock_meta
+from data_providers import fetch_daily_kline_with_name, fetch_hs300_constituents, fetch_stock_meta
 from errors import FetchError, InvalidConfigError
 from logger import get_logger
 from utils import date_to_str, parse_date
@@ -58,12 +58,12 @@ def _fetch_with_retry(
     retries: int,
     backoff: float,
     limiter: RateLimiter,
-) -> List:
+) -> Tuple[List, str]:
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
             limiter.wait()
-            return fetch_daily_kline(code, start_str, end_str)
+            return fetch_daily_kline_with_name(code, start_str, end_str)
         except Exception as exc:
             last_error = exc
             if attempt >= retries:
@@ -72,7 +72,7 @@ def _fetch_with_retry(
             time.sleep(sleep_for)
     if last_error:
         raise last_error
-    return []
+    return [], ""
 
 
 def _fetch_meta_with_retry(code: str, retries: int, backoff: float, limiter: RateLimiter) -> Optional[StockMeta]:
@@ -150,6 +150,7 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int]) -> Dict[str, int]:
             conn.execute("DELETE FROM daily_prices")
         upsert_constituents(conn, mapping)
         total_rows = 0
+        names: Dict[str, str] = {}
         code_offsets = {} if config.mode == "full" else get_fetch_offsets(conn, list(mapping.keys()))
         updated_offsets: Dict[str, str] = {}
         for code in sorted(mapping.keys()):
@@ -163,12 +164,16 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int]) -> Dict[str, int]:
                 beg = date_to_str(next_day)
             else:
                 beg = start_str
-            rows = fetch_daily_kline(code, beg, end_str)
+            rows, name = fetch_daily_kline_with_name(code, beg, end_str)
+            if name:
+                names[code] = name
             total_rows += insert_prices(conn, rows)
             if rows:
                 updated_offsets[code] = max(row.trade_date for row in rows)
             time.sleep(config.sleep_seconds)
         upsert_fetch_offsets(conn, updated_offsets)
+        if names:
+            upsert_metadata(conn, [StockMeta(code=c, name=n, industry="", region="") for c, n in names.items()])
     logger.info("同步完成: symbols=%s rows=%s", len(mapping), total_rows)
     return {"symbols": len(mapping), "rows": total_rows}
 
@@ -268,10 +273,13 @@ def sync_hs300_range(
                 per_code_rows: Dict[str, int] = {}
                 per_code_failed: Dict[str, str] = {}
                 per_code_last_date: Dict[str, str] = {}
+                per_code_name: Dict[str, str] = {}
                 for future in as_completed(futures):
                     code, segment = futures[future]
                     try:
-                        rows = future.result()
+                        rows, name = future.result()
+                        if name:
+                            per_code_name[code] = name
                         inserted = insert_prices(conn, rows)
                         total_rows += inserted
                         per_code_rows[code] = per_code_rows.get(code, 0) + inserted
@@ -297,6 +305,8 @@ def sync_hs300_range(
                 for code, err in per_code_failed.items():
                     upsert_checkpoint(conn, job_id, code, start_date, end_date, "failed", err)
                 upsert_fetch_offsets(conn, per_code_last_date)
+                if per_code_name:
+                    upsert_metadata(conn, [StockMeta(code=c, name=n, industry="", region="") for c, n in per_code_name.items()])
     logger.info("区间同步完成: symbols=%s rows=%s", len(mapping), total_rows)
     return {"symbols": len(mapping), "rows": total_rows}
 

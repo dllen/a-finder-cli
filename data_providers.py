@@ -32,22 +32,12 @@ def fetch_url_json(url: str, params: Optional[Dict[str, str]] = None, referer: O
     return json.loads(text)
 
 
-def parse_hs300_constituents(text: str) -> Dict[str, str]:
-    pattern = re.compile(r"(?:^|[^\d])((?:00|30|60|68)\d{4})([\u4e00-\u9fa5A-Z]{2,})")
-    mapping: Dict[str, str] = {}
-    for match in pattern.finditer(text):
-        code = match.group(1)
-        name = match.group(2)
-        if code not in mapping:
-            mapping[code] = name
-    return mapping
-
-
 def fetch_hs300_constituents_from_api() -> Dict[str, str]:
+    # columns=ALL：Eastmoney 已下线 SECURITY_NAME_ABBR 等具体字段，只有 ALL 能取到成分股 code
     url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
     params = {
         "reportName": "RPT_INDEX_COMPONENT",
-        "columns": "SECURITY_CODE,SECURITY_NAME_ABBR,INDEX_CODE",
+        "columns": "ALL",
         "filter": '(INDEX_CODE="000300")',
         "pageNumber": "1",
         "pageSize": "500",
@@ -58,40 +48,25 @@ def fetch_hs300_constituents_from_api() -> Dict[str, str]:
     rows = result.get("data") if isinstance(result, dict) else None
     if not rows:
         return {}
-    mapping = {}
-    for row in rows:
-        code = row.get("SECURITY_CODE")
-        name = row.get("SECURITY_NAME_ABBR")
-        if code:
-            mapping[str(code)] = str(name).strip() if name else ""
-    for page in range(2, pages + 1):
-        params["pageNumber"] = str(page)
-        data = fetch_url_json(url, params)
-        result = data.get("result") if isinstance(data, dict) else None
-        rows = result.get("data") if isinstance(result, dict) else None
-        if not rows:
-            continue
+    mapping: Dict[str, str] = {}
+    for page in range(1, pages + 1):
+        if page > 1:
+            params["pageNumber"] = str(page)
+            data = fetch_url_json(url, params)
+            result = data.get("result") if isinstance(data, dict) else None
+            rows = result.get("data") if isinstance(result, dict) else None
+            if not rows:
+                continue
         for row in rows:
             code = row.get("SECURITY_CODE")
-            name = row.get("SECURITY_NAME_ABBR")
             if code:
-                mapping[str(code)] = str(name).strip() if name else ""
+                mapping[str(code)] = ""
     return mapping
 
 
 def fetch_hs300_constituents() -> Dict[str, str]:
-    mapping = fetch_hs300_constituents_from_api()
-    if mapping:
-        url = "https://data.eastmoney.com/other/index/hs300.html"
-        text = fetch_url_text(url)
-        html_mapping = parse_hs300_constituents(text)
-        for code, name in html_mapping.items():
-            if code in mapping and not mapping[code]:
-                mapping[code] = name
-        return mapping
-    url = "https://data.eastmoney.com/other/index/hs300.html"
-    text = fetch_url_text(url)
-    return parse_hs300_constituents(text)
+    # 名称由后续元数据同步（fetch_stock_meta）或 K 线 data.name 回填，此处只取成分股 code
+    return fetch_hs300_constituents_from_api()
 
 
 def code_to_secid(code: str) -> str:
@@ -100,7 +75,54 @@ def code_to_secid(code: str) -> str:
     return f"0.{code}"
 
 
-def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRow]:
+def code_to_tencent_symbol(code: str) -> str:
+    prefix = "sh" if code.startswith(("60", "688")) else "sz"
+    return f"{prefix}{code}"
+
+
+def fetch_daily_kline_tencent(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    # 腾讯 qfq 前复权日 K：字段 [日期, 开, 收, 高, 低, 量]，作为 Eastmoney 限流/断连时的稳定备选源
+    symbol = code_to_tencent_symbol(code)
+    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+    def _dash(date_str: str) -> str:
+        # 腾讯要求 YYYY-MM-DD，内部调用传入的是 YYYYMMDD
+        if len(date_str) == 8 and date_str.isdigit():
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        return date_str
+
+    params = {"param": f"{symbol},day,{_dash(start_date)},{_dash(end_date)},640,qfq"}
+    data = fetch_url_json(url, params)
+    payload = (data.get("data") or {}).get(symbol) if isinstance(data.get("data"), dict) else None
+    if not isinstance(payload, dict):
+        return [], ""
+    qt = payload.get("qt", {}).get(symbol) or []
+    name = str(qt[1]).strip() if isinstance(qt, list) and len(qt) > 1 else ""
+    kline_data = payload.get("qfqday") or payload.get("day") or []
+    rows = []
+    for entry in kline_data:
+        if len(entry) < 6:
+            continue
+        rows.append(
+            PriceRow(
+                code=code,
+                trade_date=str(entry[0]),
+                open_price=float(entry[1]),
+                close_price=float(entry[2]),
+                high_price=float(entry[3]),
+                low_price=float(entry[4]),
+                volume=float(entry[5]),
+                amount=0.0,
+                amplitude=0.0,
+                pct_change=0.0,
+                change=0.0,
+                turnover=0.0,
+            )
+        )
+    return rows, name
+
+
+def fetch_daily_kline_with_name(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
     url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = {
         "fields1": "f1,f2,f3,f4,f5,f6",
@@ -112,10 +134,15 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRo
         "end": end_date,
     }
     referer = f"https://quote.eastmoney.com/sz{code}.html" if not code.startswith(("60", "688")) else f"https://quote.eastmoney.com/sh{code}.html"
-    data = fetch_url_json(url, params, referer)
-    kline_data = data.get("data", {}).get("klines") if isinstance(data.get("data"), dict) else None
+    try:
+        data = fetch_url_json(url, params, referer)
+    except Exception:
+        return fetch_daily_kline_tencent(code, start_date, end_date)
+    payload = data.get("data") if isinstance(data, dict) else None
+    kline_data = payload.get("klines") if isinstance(payload, dict) else None
+    name = str(payload.get("name") or "").strip() if payload else ""
     if not kline_data:
-        return []
+        return fetch_daily_kline_tencent(code, start_date, end_date)
     rows = []
     for entry in kline_data:
         parts = entry.split(",")
@@ -137,6 +164,11 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRo
                 turnover=float(parts[10]),
             )
         )
+    return rows, name
+
+
+def fetch_daily_kline(code: str, start_date: str, end_date: str) -> List[PriceRow]:
+    rows, _ = fetch_daily_kline_with_name(code, start_date, end_date)
     return rows
 
 
