@@ -38,6 +38,44 @@ def build_ma_picks(stocks, top: int) -> List[Dict]:
                 "score": round(item["score"], 4),
             }
         )
+    if picks:
+        return picks
+    return _build_ma_fallback(stocks, top)
+
+
+def _build_ma_fallback(stocks, top: int) -> List[Dict]:
+    # 严格多头无命中时兜底：按均线强度评分取前 N，标注为观察榜
+    scored = []
+    for stock in stocks:
+        prices = stock.prices
+        if len(prices) < 30:
+            continue
+        ma10 = sum(prices[-10:]) / 10
+        ma30 = sum(prices[-30:]) / 30
+        momentum20 = prices[-1] / prices[-20] - 1 if len(prices) >= 20 else 0.0
+        score = (prices[-1] / ma30 - 1) * 100 + (prices[-1] / ma10 - 1) * 50 + momentum20 * 200
+        buy = prices[-1]
+        ma20 = sum(prices[-20:]) / 20 if len(prices) >= 20 else buy
+        stop = min(min(prices[-20:]), ma20 * 0.97)
+        if stop >= buy:
+            stop = buy * 0.97
+        target = buy + 2 * (buy - stop)
+        scored.append((score, stock, buy, stop, target))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    picks = []
+    for rank, (score, stock, buy, stop, target) in enumerate(scored[:top], start=1):
+        picks.append(
+            {
+                "rank": rank,
+                "code": stock.code,
+                "name": stock.name,
+                "strategy": "均线观察",
+                "buy": round(buy, 2),
+                "stop": round(stop, 2),
+                "target": round(target, 2),
+                "score": round(score, 4),
+            }
+        )
     return picks
 
 
