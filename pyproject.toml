@@ -3,7 +3,11 @@ name = "a-finder-cli"
 version = "0.1.0"
 description = "A股选股与买卖点提示命令行工具"
 requires-python = ">=3.10"
-dependencies = ["textual", "akshare"]
+dependencies = [
+    "textual",
+    "akshare",
+    "flask>=3.1.3",
+]
 
 [project.scripts]
 a-finder = "stock_cli:main"
@@ -39,4 +43,9 @@ py-modules = [
   "sync_service",
   "utils",
   "view_models",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]
