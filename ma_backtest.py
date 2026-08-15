@@ -59,8 +59,8 @@ def default_candidate_config() -> CandidateConfig:
 
 def candidate_config_variants() -> List[CandidateConfig]:
     configs = []
-    for momentum_20_min in [0.0, 0.015, 0.03]:
-        for volatility_20_max in [0.25, 0.35, 0.45]:
+    for momentum_20_min in [0.0, 0.015, 0.03, 0.045, 0.06, 0.075, 0.09]:
+        for volatility_20_max in [0.25, 0.35, 0.45, 0.55, 0.65]:
             for ma10_distance_max in [0.05, 0.09, 0.13]:
                 for breakout_volume_ratio_min in [1.0, 1.1, 1.2]:
                     for trend_follow_momentum_min in [0.02, 0.03, 0.04]:
@@ -82,14 +82,14 @@ def candidate_config_variants() -> List[CandidateConfig]:
 
 def default_backtest_config() -> Dict[str, float]:
     return {
-        "regime_base": 0.785,
+        "regime_base": 0.795,
         "regime_breadth_weight": 0.2,
-        "regime_floor": 0.64,
-        "weak_cap": 0.96,
-        "ma30_stop_multiplier": 0.981,
-        "price_floor_multiplier": 0.973,
+        "regime_floor": 0.62,
+        "weak_cap": 0.98,
+        "ma30_stop_multiplier": 0.979,
+        "price_floor_multiplier": 0.974,
         "stop_cap_multiplier": 0.995,
-        "close_confirm_buffer": 1.002,
+        "close_confirm_buffer": 1.001,
     }
 
 

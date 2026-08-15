@@ -14,11 +14,11 @@ DEFAULT_STRATEGY_RATIOS: Dict[str, float] = {
 
 @dataclass
 class CandidateConfig:
-    momentum_20_min: float = 0.03
+    momentum_20_min: float = 0.075
     volatility_20_max: float = 0.45
     ma10_distance_max: float = 0.09
     breakout_volume_ratio_min: float = 1.2
-    trend_follow_momentum_min: float = 0.04
+    trend_follow_momentum_min: float = 0.02
     score_distance200_weight: float = 0.8
     score_distance50_weight: float = 0.3
 
