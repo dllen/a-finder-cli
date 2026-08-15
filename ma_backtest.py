@@ -67,17 +67,19 @@ def candidate_config_variants() -> List[CandidateConfig]:
                     for trend_follow_momentum_min in [0.02, 0.03, 0.04]:
                         for score_distance200_weight in [0.4, 0.8]:
                             for score_distance50_weight in [0.3, 0.6]:
-                                configs.append(
-                                    CandidateConfig(
-                                        momentum_20_min=momentum_20_min,
-                                        volatility_20_max=volatility_20_max,
-                                        ma10_distance_max=ma10_distance_max,
-                                        breakout_volume_ratio_min=breakout_volume_ratio_min,
-                                        trend_follow_momentum_min=trend_follow_momentum_min,
-                                        score_distance200_weight=score_distance200_weight,
-                                        score_distance50_weight=score_distance50_weight,
+                                for alignment_depth in [2, 3, 4, 5]:
+                                    configs.append(
+                                        CandidateConfig(
+                                            momentum_20_min=momentum_20_min,
+                                            volatility_20_max=volatility_20_max,
+                                            ma10_distance_max=ma10_distance_max,
+                                            breakout_volume_ratio_min=breakout_volume_ratio_min,
+                                            trend_follow_momentum_min=trend_follow_momentum_min,
+                                            score_distance200_weight=score_distance200_weight,
+                                            score_distance50_weight=score_distance50_weight,
+                                            alignment_depth=alignment_depth,
+                                        )
                                     )
-                                )
     return configs
 
 

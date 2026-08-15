@@ -21,6 +21,7 @@ class CandidateConfig:
     trend_follow_momentum_min: float = 0.02
     score_distance200_weight: float = 0.8
     score_distance50_weight: float = 0.3
+    alignment_depth: int = 2
 
 
 DEFAULT_CANDIDATE_CONFIG = CandidateConfig()
@@ -52,7 +53,16 @@ def ma_strategy_candidates(
         recent_momentum_20 = price / prices[-20] - 1
         volatility_20 = max(prices[-20:]) / min(prices[-20:]) - 1
         trend_ok = (
-            price > ma10 > ma30 > ma50 > ma100 > ma200
+            all(
+                a > b
+                for a, b in [
+                    (price, ma10),
+                    (ma10, ma30),
+                    (ma30, ma50),
+                    (ma50, ma100),
+                    (ma100, ma200),
+                ][: config.alignment_depth]
+            )
             and ma10 > ma10_prev
             and ma30 > ma30_prev
             and ma50 > ma50_prev
