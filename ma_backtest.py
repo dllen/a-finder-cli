@@ -82,14 +82,14 @@ def candidate_config_variants() -> List[CandidateConfig]:
 
 def default_backtest_config() -> Dict[str, float]:
     return {
-        "regime_base": 0.75,
+        "regime_base": 0.785,
         "regime_breadth_weight": 0.2,
-        "regime_floor": 0.7,
-        "weak_cap": 0.92,
-        "ma30_stop_multiplier": 0.985,
-        "price_floor_multiplier": 0.97,
+        "regime_floor": 0.64,
+        "weak_cap": 0.96,
+        "ma30_stop_multiplier": 0.981,
+        "price_floor_multiplier": 0.973,
         "stop_cap_multiplier": 0.995,
-        "close_confirm_buffer": 1.005,
+        "close_confirm_buffer": 1.002,
     }
 
 
