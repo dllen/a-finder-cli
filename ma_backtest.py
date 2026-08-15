@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 from dataclasses import replace
 from typing import Dict, List
 
@@ -17,7 +18,7 @@ from view_models import build_ma_picks_rows
 
 def load_stocks(db_path: str) -> List[Stock]:
     if db_path and os.path.exists(db_path):
-        stocks = build_market_from_db(db_path, min_days=221, max_days=520)
+        stocks = build_market_from_db(db_path, min_days=460, max_days=520)
         if stocks:
             return stocks
     return build_market()
@@ -363,6 +364,26 @@ def available_backtest_days(stocks: List[Stock]) -> int:
     return min(valid_lengths) - 221 + 1
 
 
+def tune_on_window(
+    stocks: List[Stock],
+    lows_map: Dict[str, List[float]],
+    top: int,
+    train_days: int,
+    validation_days: int,
+    strategy_ratios: Dict[str, float] | None = None,
+) -> tuple[Dict[str, float], CandidateConfig, Dict[str, float]]:
+    base_config = default_backtest_config()
+    best_candidate = default_candidate_config()
+    best_candidate_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, best_candidate)
+    for cand in candidate_config_variants():
+        cand_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, cand)
+        if result_rank(cand_result) > result_rank(best_candidate_result):
+            best_candidate = cand
+            best_candidate_result = cand_result
+    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days, strategy_ratios, best_candidate)
+    return best_config, best_candidate, train_result
+
+
 def walk_forward_tune(
     stocks: List[Stock],
     lows_map: Dict[str, List[float]],
@@ -386,15 +407,7 @@ def walk_forward_tune(
     train_days = int(total_days * train_ratio)
     train_days = max(30, min(train_days, total_days - 20))
     validation_days = total_days - train_days
-    best_candidate = default_candidate_config()
-    base_config = default_backtest_config()
-    best_candidate_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, best_candidate)
-    for cand in candidate_config_variants():
-        cand_result = run_backtest(stocks, lows_map, top, train_days, base_config, validation_days, strategy_ratios, cand)
-        if result_rank(cand_result) > result_rank(best_candidate_result):
-            best_candidate = cand
-            best_candidate_result = cand_result
-    best_config, train_result = optimize_backtest_params(stocks, lows_map, top, train_days, validation_days, strategy_ratios, best_candidate)
+    best_config, best_candidate, train_result = tune_on_window(stocks, lows_map, top, train_days, validation_days, strategy_ratios)
     validation_result = run_backtest(stocks, lows_map, top, validation_days, best_config, 0, strategy_ratios, best_candidate)
     combined_result = run_backtest(stocks, lows_map, top, total_days, best_config, 0, strategy_ratios, best_candidate)
     return {
@@ -408,6 +421,43 @@ def walk_forward_tune(
     }
 
 
+def robust_walk_forward(
+    stocks: List[Stock],
+    lows_map: Dict[str, List[float]],
+    top: int,
+    backtest_days: int,
+    train_ratio: float = 0.6,
+    strategy_ratios: Dict[str, float] | None = None,
+    splits: int = 10,
+    seed: int = 42,
+) -> Dict[str, object]:
+    # 对当前固化策略做样本外稳健性检验：不再重新寻优（避免 lookahead），
+    # 只用固定参数在多个随机切分的验证段上独立评估。
+    total_days = min(backtest_days, available_backtest_days(stocks))
+    cfg = default_backtest_config()
+    cand = default_candidate_config()
+    fixed_train = int(total_days * train_ratio)
+    fixed_train = max(10, min(fixed_train, total_days - 10))
+    fixed_val = total_days - fixed_train
+    fixed_val_result = run_backtest(stocks, lows_map, top, fixed_val, cfg, 0, strategy_ratios, cand)
+    split_excess = []
+    rng = random.Random(seed)
+    for _ in range(splits):
+        train_days = rng.randint(int(total_days * 0.3), int(total_days * 0.7))
+        train_days = max(10, min(train_days, total_days - 10))
+        val_days = total_days - train_days
+        val_result = run_backtest(stocks, lows_map, top, val_days, cfg, 0, strategy_ratios, cand)
+        split_excess.append(val_result["excess_return"])
+    split_excess.sort()
+    return {
+        "total_days": float(total_days),
+        "fixed_validation_excess": fixed_val_result["excess_return"],
+        "split_excess": split_excess,
+        "positive_ratio": sum(1 for e in split_excess if e > 0) / len(split_excess) if split_excess else 0.0,
+        "combined_result": run_backtest(stocks, lows_map, top, total_days, cfg, 0, strategy_ratios, cand),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="自动运行均线选股并回测一年收益")
     parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
@@ -416,6 +466,8 @@ def main() -> None:
     parser.add_argument("--quota", type=str, default="4,3,3", help="形态配额，格式例如 4,3,3")
     parser.add_argument("--tune", action="store_true", help="自动搜索更优回测参数")
     parser.add_argument("--walk-forward", action="store_true", help="滚动窗口训练/验证寻优")
+    parser.add_argument("--robust", action="store_true", help="稳健性验证：固定末段留出 + 多随机切分")
+    parser.add_argument("--splits", type=int, default=10, help="稳健性验证的随机切分次数")
     args = parser.parse_args()
     strategy_ratios = parse_quota_ratios(args.quota)
     stocks = load_stocks(args.db)
@@ -442,7 +494,7 @@ def main() -> None:
         print("")
         print("最优参数")
         print(format_table(["参数", "值"], config_rows))
-    if args.walk_forward:
+    if args.walk_forward and not args.robust:
         wf_result = walk_forward_tune(stocks, lows_map, args.top, args.days, 0.6, strategy_ratios)
         config = wf_result["config"]
         result = wf_result["combined_result"]
@@ -478,6 +530,22 @@ def main() -> None:
         print("")
         print("训练/验证表现")
         print(format_table(["指标", "结果"], split_rows))
+    if args.robust:
+        robust = robust_walk_forward(stocks, lows_map, args.top, args.days, 0.6, strategy_ratios, args.splits)
+        result = robust["combined_result"]
+        split_excess = robust["split_excess"]
+        median = sorted(split_excess)[len(split_excess) // 2] if split_excess else 0.0
+        robust_rows = [
+            ["固定末段验证超额", f"{robust['fixed_validation_excess']:.2%}"],
+            ["随机切分验证超额中位", f"{median:.2%}"],
+            ["随机切分验证超额最小", f"{min(split_excess):.2%}" if split_excess else "-"],
+            ["随机切分验证超额最大", f"{max(split_excess):.2%}" if split_excess else "-"],
+            ["正超额窗口占比", f"{robust['positive_ratio']:.0%}"],
+            ["结论", "稳健" if median > 0 and robust["positive_ratio"] >= 0.7 else "可能过拟合"],
+        ]
+        print("")
+        print(f"稳健性验证（{len(split_excess)} 次随机切分）")
+        print(format_table(["指标", "结果"], robust_rows))
     quota_rows = [
         ["突破配额", f"{strategy_ratios['多均线突破']:.2%}"],
         ["回踩配额", f"{strategy_ratios['多均线回踩']:.2%}"],
