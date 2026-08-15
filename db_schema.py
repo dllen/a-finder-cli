@@ -65,3 +65,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_picks (
+            date TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            strategy TEXT,
+            buy REAL,
+            stop REAL,
+            target REAL,
+            score REAL,
+            PRIMARY KEY (date, rank, kind)
+        )
+        """
+    )
