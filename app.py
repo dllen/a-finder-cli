@@ -8,6 +8,91 @@ from flask import Flask, jsonify, request
 from pick_history import run_picks
 
 
+PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>每日选股结果</title>
+<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
+</head><body class="bg-light">
+<div class="container py-4">
+  <h1 class="mb-3">每日选股结果</h1>
+  <div class="row g-2 align-items-center mb-3">
+    <div class="col-auto"><label class="form-label mb-0">日期</label></div>
+    <div class="col-auto"><select id="d" class="form-select"></select></div>
+    <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary">重算榜单</button></div>
+    <div class="col-auto"><button id="btn-sync" class="btn btn-primary">同步行情并重算</button></div>
+  </div>
+  <div id="status" class="mb-3"></div>
+  <div id="board"></div>
+</div>
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script>
+function fmt(v){return v==null?'-':Number(v).toFixed(2)}
+function setStatus(html, cls){$('#status').html(html?'<div class="alert '+cls+'">'+html+'</div>':'')}
+function render(date){
+  $.getJSON('/api/picks', {date: date}, function(data){
+    var groups = data.groups || {};
+    var html = '';
+    ['均线','买入信号'].forEach(function(kind){
+      var rs = groups[kind] || [];
+      html += '<h2>'+kind+' Top'+rs.length+'</h2>';
+      html += '<table class="table table-striped table-hover align-middle"><thead><tr>'+
+        '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th>买入</th><th>止损</th><th>目标</th><th>评分</th>'+
+        '</tr></thead><tbody>';
+      rs.forEach(function(r){
+        html += '<tr><td>'+r.rank+'</td><td>'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
+          '<td>'+fmt(r.buy)+'</td><td>'+fmt(r.stop)+'</td><td>'+fmt(r.target)+'</td><td>'+
+          (r.score==null?'-':r.score)+'</td></tr>';
+      });
+      html += '</tbody></table>';
+    });
+    $('#board').html(html || '<p>该日期无数据</p>');
+  });
+}
+function loadDates(){
+  $.getJSON('/api/dates', function(data){
+    var sel = $('#d').empty();
+    (data.dates || []).forEach(function(d){sel.append(new Option(d, d))});
+    if (data.dates && data.dates.length) render(data.dates[0]);
+    else setStatus('无数据，请先同步行情','alert-warning');
+  });
+}
+function refresh(sync){
+  $('#btn-recalc, #btn-sync').prop('disabled', true);
+  setStatus('任务已提交…','alert-info');
+  $.post('/api/refresh', JSON.stringify({sync: sync}), function(data){
+    poll(data.job_id);
+  }, 'json').fail(function(xhr){
+    if (xhr.status === 409) setStatus('已有任务进行中','alert-warning');
+    else setStatus('提交失败','alert-danger');
+    $('#btn-recalc, #btn-sync').prop('disabled', false);
+  });
+}
+function poll(jobId){
+  $.getJSON('/api/jobs/'+jobId, function(data){
+    if (data.status === 'pending' || data.status === 'running'){
+      setStatus('任务进行中…','alert-info');
+      setTimeout(function(){poll(jobId)}, 1000);
+    } else if (data.status === 'done'){
+      setStatus(data.message, 'alert-success');
+      $('#btn-recalc, #btn-sync').prop('disabled', false);
+      loadDates();
+    } else {
+      setStatus('任务失败：'+data.message, 'alert-danger');
+      $('#btn-recalc, #btn-sync').prop('disabled', false);
+    }
+  });
+}
+$(function(){
+  $('#d').on('change', function(){render($(this).val())});
+  $('#btn-recalc').on('click', function(){refresh(false)});
+  $('#btn-sync').on('click', function(){refresh(true)});
+  loadDates();
+});
+</script></body></html>"""
+
+
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 
@@ -59,6 +144,10 @@ def picks_for_date(conn, date):
 def create_app(db_path="hs300.db", top=10):
     app = Flask(__name__)
 
+    @app.get("/")
+    def index():
+        return PAGE
+
     @app.get("/api/dates")
     def dates():
         conn = open_conn(db_path)
@@ -98,3 +187,19 @@ def create_app(db_path="hs300.db", top=10):
         return jsonify(data)
 
     return app
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="每日选股结果 Web 服务（Flask）")
+    parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
+    parser.add_argument("--port", type=int, default=8000, help="监听端口")
+    parser.add_argument("--top", type=int, default=10, help="榜单数量")
+    args = parser.parse_args()
+    app = create_app(db_path=args.db, top=args.top)
+    print(f"http://127.0.0.1:{args.port}")
+    app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
+
+
+if __name__ == "__main__":
+    main()
