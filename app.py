@@ -61,9 +61,15 @@ function loadDates(){
 function refresh(sync){
   $('#btn-recalc, #btn-sync').prop('disabled', true);
   setStatus('任务已提交…','alert-info');
-  $.post('/api/refresh', JSON.stringify({sync: sync}), function(data){
+  $.ajax({
+    url: '/api/refresh',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({sync: sync}),
+    dataType: 'json'
+  }).done(function(data){
     poll(data.job_id);
-  }, 'json').fail(function(xhr){
+  }).fail(function(xhr){
     if (xhr.status === 409) setStatus('已有任务进行中','alert-warning');
     else setStatus('提交失败','alert-danger');
     $('#btn-recalc, #btn-sync').prop('disabled', false);
@@ -82,6 +88,9 @@ function poll(jobId){
       setStatus('任务失败：'+data.message, 'alert-danger');
       $('#btn-recalc, #btn-sync').prop('disabled', false);
     }
+  }).fail(function(){
+    setStatus('查询任务状态失败','alert-danger');
+    $('#btn-recalc, #btn-sync').prop('disabled', false);
   });
 }
 $(function(){
