@@ -6,7 +6,7 @@ from db_repository import get_metadata_by_code, list_fetch_offsets, open_db
 from formatter import format_lines, format_table
 from logger import set_log_level
 from sync_service import sync_hs300, sync_hs300_metadata, sync_hs300_range
-from view_models import build_ma_picks_rows, build_overview_lines, build_picks_rows, build_signals_rows
+from view_models import build_buy_signals_rows, build_ma_picks_rows, build_overview_lines, build_picks_rows, build_signals_rows
 
 
 def format_picks(stocks: List[Stock], scores: Dict[str, float], top: int) -> str:
@@ -24,6 +24,12 @@ def format_ma_picks(stocks: List[Stock], top: int) -> str:
 def format_signals(stocks: List[Stock], code: Optional[str]) -> str:
     rows = build_signals_rows(stocks, code)
     headers = ["代码", "名称", "信号", "策略", "最新价"]
+    return format_table(headers, rows)
+
+
+def format_buy_signals(stocks: List[Stock], top: int) -> str:
+    rows = build_buy_signals_rows(stocks, top)
+    headers = ["代码", "名称", "买入信号数", "主策略", "最新价"]
     return format_table(headers, rows)
 
 
@@ -160,6 +166,10 @@ def build_parser() -> argparse.ArgumentParser:
     signal_parser.add_argument("--code", type=str, help="指定股票代码")
     signal_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
 
+    buy_parser = subparsers.add_parser("buy-signals", help="输出沪深300买入信号并按推荐优先级排序")
+    buy_parser.add_argument("--top", type=int, default=20, help="输出前 N 只股票")
+    buy_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
+
     ma_parser = subparsers.add_parser("ma-picks", help="输出均线选股结果")
     ma_parser.add_argument("--top", type=int, default=10, help="输出前 N 只股票")
     ma_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
@@ -225,6 +235,8 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         print(format_picks(stocks, scores, args.top))
     elif args.command == "signals":
         print(format_signals(stocks, args.code))
+    elif args.command == "buy-signals":
+        print(format_buy_signals(stocks, args.top))
     elif args.command == "ma-picks":
         if args.ui:
             run_ma_picks_textual_ui(stocks, args.top)

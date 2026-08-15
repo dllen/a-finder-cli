@@ -92,6 +92,34 @@ def build_signals_rows(stocks: List[Stock], code: Optional[str]) -> List[List[st
     return rows
 
 
+BUY_STRATEGY_PRIORITY = {"均线突破": 0, "动量突破": 1, "回调买入": 2, "MACD金叉": 3, "RSI超卖": 4}
+
+
+def build_buy_signals_rows(stocks: List[Stock], top: int) -> List[List[str]]:
+    ranked = []
+    for stock in stocks:
+        buys = [s for s in detect_signals(stock) if s["action"] == "买入"]
+        if not buys:
+            continue
+        priority = min(BUY_STRATEGY_PRIORITY.get(s["strategy"], 99) for s in buys)
+        primary = min(buys, key=lambda s: BUY_STRATEGY_PRIORITY.get(s["strategy"], 99))
+        momentum = (stock.prices[-1] / stock.prices[-20] - 1) * 100 if len(stock.prices) >= 20 else 0.0
+        ranked.append((len(buys), -priority, momentum, stock, primary["strategy"]))
+    ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    rows = []
+    for count, _neg_priority, _momentum, stock, strategy in ranked[:top]:
+        rows.append(
+            [
+                stock.code,
+                stock.name,
+                f"{count}",
+                strategy,
+                f"{stock.prices[-1]:.2f}",
+            ]
+        )
+    return rows
+
+
 def build_overview_lines(stocks: List[Stock], scores: Dict[str, float]) -> List[str]:
     top_score = max(scores.values())
     avg_score = sum(scores.values()) / len(scores)

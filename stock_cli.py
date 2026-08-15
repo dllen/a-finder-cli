@@ -11,7 +11,7 @@ def main() -> None:
     if args.command in ("sync-hs300", "sync-hs300-range", "sync-hs300-meta", "meta", "show-offsets") or args.command is None:
         run_cli(args, [], {})
         return
-    min_days = 220 if args.command == "ma-picks" else 60
+    min_days = 220 if args.command == "ma-picks" else (61 if args.command == "buy-signals" else 60)
     db_path = getattr(args, "db", None)
     stocks = []
     if db_path and os.path.exists(db_path):
