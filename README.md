@@ -90,6 +90,31 @@ python3 stock_cli.py buy-signals --db hs300.db --top 30
 - 日K线：Eastmoney `push2his` 为主，腾讯 `fqkline` 前复权为自动备源。
 - 重试：仅对网络类异常重试（指数退避 + 抖动），HTTP 4xx 不重试。
 
+## 均线策略与回测
+
+`ma_backtest.py` 输出均线选股结果并回测一年收益，支持参数寻优与稳健性验证：
+
+```bash
+python3 ma_backtest.py --db hs300.db --top 10 --days 240            # 默认策略回测
+python3 ma_backtest.py --db hs300.db --top 10 --days 240 --tune     # 搜索回测参数
+python3 ma_backtest.py --db hs300.db --top 10 --days 240 --walk-forward  # 滚动训练/验证寻优
+python3 ma_backtest.py --db hs300.db --top 10 --days 240 --robust   # 固定留出 + 随机切分稳健性验证
+python3 ma_backtest.py --db hs300.db --top 10 --days 240 --search-weights  # 搜索评分权重
+python3 ma_backtest.py --db hs300.db --top 10 --days 240 --search-quota   # 搜索形态配额
+```
+
+当前固化策略（240 天回测窗口、沪深 300 中 297 只足历史股票）：
+
+| 指标 | 结果 |
+|---|---|
+| 策略累计收益 | +67.90% |
+| 超额收益 | +52.59% |
+| 随机切分验证中位超额 | +32.18% |
+| 正超额窗口占比 | 100%（10/10） |
+| 平均仓位 | 80.59% |
+
+关键参数：形态配额 突破 75% / 回踩 25% / 趋势 0%；趋势对齐深度 2；评分权重 `slope200=3.0`、`momentum20=200`、`momentum10=50`、`volume_bonus=12`。
+
 ## 区间同步一键运行
 
 ```bash
