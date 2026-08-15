@@ -108,13 +108,21 @@ def build_buy_signals_rows(stocks: List[Stock], top: int) -> List[List[str]]:
     ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     rows = []
     for count, _neg_priority, _momentum, stock, strategy in ranked[:top]:
+        price = stock.prices[-1]
+        ma20 = sum(stock.prices[-20:]) / 20 if len(stock.prices) >= 20 else price
+        stop = min(min(stock.prices[-20:]), ma20 * 0.97)
+        if stop >= price:
+            stop = price * 0.97
+        target = price + 2 * (price - stop)
         rows.append(
             [
                 stock.code,
                 stock.name,
                 f"{count}",
                 strategy,
-                f"{stock.prices[-1]:.2f}",
+                f"{price:.2f}",
+                f"{stop:.2f}",
+                f"{target:.2f}",
             ]
         )
     return rows

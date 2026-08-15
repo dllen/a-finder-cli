@@ -29,7 +29,7 @@ def format_signals(stocks: List[Stock], code: Optional[str]) -> str:
 
 def format_buy_signals(stocks: List[Stock], top: int) -> str:
     rows = build_buy_signals_rows(stocks, top)
-    headers = ["代码", "名称", "买入信号数", "主策略", "最新价"]
+    headers = ["代码", "名称", "买入信号数", "主策略", "买入价", "止损价", "目标价"]
     return format_table(headers, rows)
 
 
