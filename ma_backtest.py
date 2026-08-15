@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Dict, List
 
 from candidate_rules import (
+    DEFAULT_STRATEGY_RATIOS,
     CandidateConfig,
     ma_strategy_candidates,
     select_candidates_with_quota,
@@ -58,6 +59,80 @@ def default_candidate_config() -> CandidateConfig:
     return CandidateConfig()
 
 
+def score_weight_variants(base: CandidateConfig) -> List[CandidateConfig]:
+    variants = []
+    for slope200 in [1.5, 2.0, 2.5, 3.0]:
+        for slope100 in [1.5, 2.0, 2.5]:
+            for momentum20 in [100.0, 150.0, 200.0]:
+                for momentum10 in [50.0, 80.0, 110.0]:
+                    for volume_bonus in [8.0, 10.0, 12.0]:
+                        variants.append(
+                            replace(
+                                base,
+                                slope200_weight=slope200,
+                                slope100_weight=slope100,
+                                momentum20_weight=momentum20,
+                                momentum10_weight=momentum10,
+                                volume_bonus_weight=volume_bonus,
+                            )
+                        )
+    return variants
+
+
+def quota_ratio_variants() -> List[Dict[str, float]]:
+    variants = []
+    for b in [0, 20, 30, 40, 50, 60, 80, 100]:
+        for r in [0, 20, 30, 40, 50, 60, 80, 100]:
+            for t in [0, 20, 30, 40, 50, 60, 80, 100]:
+                total = b + r + t
+                if total <= 0:
+                    continue
+                variants.append(
+                    {
+                        "多均线突破": b / total,
+                        "多均线回踩": r / total,
+                        "多均线趋势": t / total,
+                    }
+                )
+    return variants
+
+
+def optimize_score_weights(
+    stocks: List[Stock],
+    lows_map: Dict[str, List[float]],
+    top: int,
+    backtest_days: int,
+    strategy_ratios: Dict[str, float] | None = None,
+) -> tuple[CandidateConfig, Dict[str, float]]:
+    base = default_candidate_config()
+    best = base
+    best_result = run_backtest(stocks, lows_map, top, backtest_days, default_backtest_config(), 0, strategy_ratios, base)
+    for cand in score_weight_variants(base):
+        result = run_backtest(stocks, lows_map, top, backtest_days, default_backtest_config(), 0, strategy_ratios, cand)
+        if result_rank(result) > result_rank(best_result):
+            best = cand
+            best_result = result
+    return best, best_result
+
+
+def optimize_quota_ratios(
+    stocks: List[Stock],
+    lows_map: Dict[str, List[float]],
+    top: int,
+    backtest_days: int,
+    candidate_config: CandidateConfig | None = None,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    candidate_config = candidate_config or default_candidate_config()
+    best_ratios = DEFAULT_STRATEGY_RATIOS
+    best_result = run_backtest(stocks, lows_map, top, backtest_days, default_backtest_config(), 0, best_ratios, candidate_config)
+    for ratios in quota_ratio_variants():
+        result = run_backtest(stocks, lows_map, top, backtest_days, default_backtest_config(), 0, ratios, candidate_config)
+        if result_rank(result) > result_rank(best_result):
+            best_ratios = ratios
+            best_result = result
+    return best_ratios, best_result
+
+
 def candidate_config_variants() -> List[CandidateConfig]:
     configs = []
     for momentum_20_min in [0.0, 0.015, 0.03, 0.045, 0.06, 0.075, 0.09]:
@@ -105,10 +180,12 @@ def parse_quota_ratios(raw: str) -> Dict[str, float]:
         if not part:
             raise ValueError("quota 存在空值")
         value = float(part)
-        if value <= 0:
-            raise ValueError("quota 的每一项必须大于 0")
+        if value < 0:
+            raise ValueError("quota 的每一项必须为非负数")
         values.append(value)
     total = sum(values)
+    if total <= 0:
+        raise ValueError("quota 之和必须大于 0")
     return {
         "多均线突破": values[0] / total,
         "多均线回踩": values[1] / total,
@@ -465,11 +542,13 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
     parser.add_argument("--top", type=int, default=10, help="每日最多持仓股票数")
     parser.add_argument("--days", type=int, default=240, help="回测交易日数量")
-    parser.add_argument("--quota", type=str, default="4,3,3", help="形态配额，格式例如 4,3,3")
+    parser.add_argument("--quota", type=str, default="3,1,0", help="形态配额，格式例如 3,1,0")
     parser.add_argument("--tune", action="store_true", help="自动搜索更优回测参数")
     parser.add_argument("--walk-forward", action="store_true", help="滚动窗口训练/验证寻优")
     parser.add_argument("--robust", action="store_true", help="稳健性验证：固定末段留出 + 多随机切分")
     parser.add_argument("--splits", type=int, default=10, help="稳健性验证的随机切分次数")
+    parser.add_argument("--search-weights", action="store_true", help="搜索评分权重（slope/动量/量比）")
+    parser.add_argument("--search-quota", action="store_true", help="搜索形态配额（突破/回踩/趋势）")
     args = parser.parse_args()
     strategy_ratios = parse_quota_ratios(args.quota)
     stocks = load_stocks(args.db)
@@ -548,6 +627,30 @@ def main() -> None:
         print("")
         print(f"稳健性验证（{len(split_excess)} 次随机切分）")
         print(format_table(["指标", "结果"], robust_rows))
+    if args.search_weights:
+        best_cand, best_res = optimize_score_weights(stocks, lows_map, args.top, args.days, strategy_ratios)
+        weight_rows = [
+            ["slope200", f"{best_cand.slope200_weight:.1f}"],
+            ["slope100", f"{best_cand.slope100_weight:.1f}"],
+            ["momentum20", f"{best_cand.momentum20_weight:.0f}"],
+            ["momentum10", f"{best_cand.momentum10_weight:.0f}"],
+            ["volume_bonus", f"{best_cand.volume_bonus_weight:.0f}"],
+            ["合并超额", f"{best_res['excess_return']:.2%}"],
+        ]
+        print("")
+        print("评分权重搜索")
+        print(format_table(["权重", "值"], weight_rows))
+    if args.search_quota:
+        best_ratios, best_res = optimize_quota_ratios(stocks, lows_map, args.top, args.days)
+        quota_search_rows = [
+            ["突破配额", f"{best_ratios['多均线突破']:.2%}"],
+            ["回踩配额", f"{best_ratios['多均线回踩']:.2%}"],
+            ["趋势配额", f"{best_ratios['多均线趋势']:.2%}"],
+            ["合并超额", f"{best_res['excess_return']:.2%}"],
+        ]
+        print("")
+        print("形态配额搜索")
+        print(format_table(["指标", "结果"], quota_search_rows))
     quota_rows = [
         ["突破配额", f"{strategy_ratios['多均线突破']:.2%}"],
         ["回踩配额", f"{strategy_ratios['多均线回踩']:.2%}"],

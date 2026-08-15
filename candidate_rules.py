@@ -6,9 +6,9 @@ from domain_models import Stock
 from indicators import moving_average_slice
 
 DEFAULT_STRATEGY_RATIOS: Dict[str, float] = {
-    "多均线突破": 0.4,
-    "多均线回踩": 0.3,
-    "多均线趋势": 0.3,
+    "多均线突破": 0.75,
+    "多均线回踩": 0.25,
+    "多均线趋势": 0.0,
 }
 
 
@@ -22,6 +22,11 @@ class CandidateConfig:
     score_distance200_weight: float = 0.8
     score_distance50_weight: float = 0.3
     alignment_depth: int = 2
+    slope200_weight: float = 3.0
+    slope100_weight: float = 2.0
+    momentum20_weight: float = 200.0
+    momentum10_weight: float = 50.0
+    volume_bonus_weight: float = 12.0
 
 
 DEFAULT_CANDIDATE_CONFIG = CandidateConfig()
@@ -106,11 +111,11 @@ def ma_strategy_candidates(
         score = (
             distance200 * config.score_distance200_weight
             + distance50 * config.score_distance50_weight
-            + slope200 * 2.5
-            + slope100 * 2.0
-            + max(0.0, volume_ratio - 1) * 10
-            + recent_momentum_20 * 150
-            + recent_momentum_10 * 80
+            + slope200 * config.slope200_weight
+            + slope100 * config.slope100_weight
+            + max(0.0, volume_ratio - 1) * config.volume_bonus_weight
+            + recent_momentum_20 * config.momentum20_weight
+            + recent_momentum_10 * config.momentum10_weight
             - max(0.0, volatility_20 * 100 - 18) * 0.6
         )
         if breakout:
@@ -140,7 +145,7 @@ def normalize_strategy_ratios(ratios: Dict[str, float] | None) -> Dict[str, floa
     base = dict(DEFAULT_STRATEGY_RATIOS)
     if ratios:
         for key in base:
-            if key in ratios and ratios[key] > 0:
+            if key in ratios:
                 base[key] = float(ratios[key])
     total = sum(base.values())
     if total <= 0:
