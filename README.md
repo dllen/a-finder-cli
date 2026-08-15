@@ -147,6 +147,18 @@ bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
 - 第 3 个参数：选股命令，支持 `ma-picks` 或 `picks`，默认 `ma-picks`
 - 第 4 个及之后参数：透传给 `sync-hs300 --mode incremental`，可直接传 `--limit`、`--log-level` 等同步参数
 
+## Web 看板
+
+Flask 后端 + Bootstrap/jQuery（CDN）单页看板，只读 `daily_picks` 预计算结果：
+
+```bash
+bash run_web.sh                    # 默认 http://127.0.0.1:8000
+DB=hs300.db PORT=8080 TOP=20 bash run_web.sh
+```
+
+- 「重算榜单」：不联网，仅重算 `daily_picks`（走 `pick_history.run_picks` 的 `do_sync=False`）
+- 「同步行情并重算」：先增量同步沪深300行情再重算榜单（较慢，依赖网络）
+
 ## 一键管理
 
 ```bash
