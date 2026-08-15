@@ -1,6 +1,38 @@
 import sqlite3
+import threading
+import traceback
+import uuid
 
 from flask import Flask, jsonify, request
+
+from pick_history import run_picks
+
+
+JOBS: dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
+
+
+def _start_job(db_path, top, do_sync):
+    with JOBS_LOCK:
+        if any(j["status"] in ("pending", "running") for j in JOBS.values()):
+            return None
+        job_id = uuid.uuid4().hex
+        JOBS[job_id] = {"status": "pending", "message": ""}
+
+    def work():
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "running"
+        try:
+            result = run_picks(db_path, top, do_sync)
+            msg = f"日期 {result.get('date') or '-'}：均线 {result.get('ma') or 0} 条 / 买入信号 {result.get('buy') or 0} 条"
+            with JOBS_LOCK:
+                JOBS[job_id] = {"status": "done", "message": msg}
+        except Exception as e:  # noqa: BLE001
+            with JOBS_LOCK:
+                JOBS[job_id] = {"status": "error", "message": traceback.format_exc(limit=3)}
+
+    threading.Thread(target=work, daemon=True).start()
+    return job_id
 
 
 def open_conn(db_path):
@@ -47,5 +79,22 @@ def create_app(db_path="hs300.db", top=10):
                 groups.setdefault(row["kind"], []).append(row)
         conn.close()
         return jsonify({"date": date, "groups": groups})
+
+    @app.post("/api/refresh")
+    def refresh():
+        body = request.get_json(silent=True) or {}
+        do_sync = bool(body.get("sync", False))
+        job_id = _start_job(db_path, top, do_sync)
+        if job_id is None:
+            return jsonify({"error": "已有任务进行中"}), 409
+        return jsonify({"job_id": job_id}), 202
+
+    @app.get("/api/jobs/<job_id>")
+    def job(job_id):
+        with JOBS_LOCK:
+            data = JOBS.get(job_id)
+        if data is None:
+            return jsonify({"error": "任务不存在"}), 404
+        return jsonify(data)
 
     return app

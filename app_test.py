@@ -42,3 +42,29 @@ def test_picks(client):
     assert data["groups"]["均线"][0]["code"] == "600519"
     assert data["groups"]["买入信号"][0]["code"] == "000001"
     assert data["groups"]["买入信号"][0]["score"] is None
+
+
+def test_refresh_and_job(client):
+    resp = client.post("/api/refresh", json={"sync": False})
+    assert resp.status_code == 202
+    job_id = resp.get_json()["job_id"]
+
+    # busy 时重复提交应 409
+    busy = client.post("/api/refresh", json={"sync": False})
+    assert busy.status_code == 409
+
+    import time
+    status = None
+    for _ in range(50):
+        jr = client.get(f"/api/jobs/{job_id}")
+        assert jr.status_code == 200
+        status = jr.get_json()["status"]
+        if status in ("done", "error"):
+            break
+        time.sleep(0.1)
+    assert status == "done"
+
+
+def test_job_not_found(client):
+    resp = client.get("/api/jobs/nope")
+    assert resp.status_code == 404
