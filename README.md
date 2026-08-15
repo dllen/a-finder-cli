@@ -20,6 +20,7 @@ uv sync
 - picks：输出选股结果，可用 --top 控制数量
 - signals：查询单票信号，可用 --code 指定股票代码
 - ma-picks：基于均线条件输出选股结果，可加 --ui 启动界面
+- buy-signals：在沪深300中筛选买入信号股票，按推荐优先级排序
 - sync-hs300-meta：同步沪深 300 元数据（代码、名称、行业、地区）
 - meta：按股票代码查询元数据
 - ui：启动 Textual 美化界面，可用 --top / --code / --db 控制展示
@@ -41,6 +42,7 @@ uv run a-finder picks --top 5
 uv run a-finder signals --code 600519
 uv run a-finder ma-picks --top 5
 uv run a-finder ma-picks --top 20 --ui
+uv run a-finder buy-signals --top 30
 uv run a-finder ui --top 10
 uv run a-finder ui --code 600519
 uv run a-finder sync-hs300-meta --db hs300.db
@@ -70,7 +72,23 @@ uv sync --reinstall
 
 ```bash
 python3 stock_cli.py overview
+python3 stock_cli.py buy-signals --db hs300.db --top 30
 ```
+
+## 买入信号筛选
+
+`buy-signals` 在沪深300中筛出买入信号股票，并按推荐优先级排序：
+买入信号数 → 策略优先级（均线突破 > 动量突破 > 回调买入 > MACD金叉 > RSI超卖）→ 20日动量。
+
+```bash
+python3 stock_cli.py buy-signals --db hs300.db --top 30
+```
+
+## 数据源稳定性
+
+- 成分股列表：Eastmoney `RPT_INDEX_COMPONENT`（`columns=ALL`）。
+- 日K线：Eastmoney `push2his` 为主，腾讯 `fqkline` 前复权为自动备源。
+- 重试：仅对网络类异常重试（指数退避 + 抖动），HTTP 4xx 不重试。
 
 ## 区间同步一键运行
 
