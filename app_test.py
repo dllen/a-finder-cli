@@ -1,9 +1,11 @@
 import sqlite3
 import tempfile
 import os
+import threading
 
 import pytest
 
+import app as app_module
 from db_schema import ensure_schema
 from app import create_app
 
@@ -44,14 +46,24 @@ def test_picks(client):
     assert data["groups"]["买入信号"][0]["score"] is None
 
 
-def test_refresh_and_job(client):
+def test_refresh_and_job(client, monkeypatch):
+    gate = threading.Event()
+
+    def fake_run_picks(db_path, top, do_sync):
+        gate.wait()
+        return {"date": "", "ma": 0, "buy": 0}
+
+    monkeypatch.setattr(app_module, "run_picks", fake_run_picks)
+
     resp = client.post("/api/refresh", json={"sync": False})
     assert resp.status_code == 202
     job_id = resp.get_json()["job_id"]
 
-    # busy 时重复提交应 409
+    # 首个任务被 gate 阻塞，仍在运行，重复提交应 409
     busy = client.post("/api/refresh", json={"sync": False})
     assert busy.status_code == 409
+
+    gate.set()
 
     import time
     status = None
