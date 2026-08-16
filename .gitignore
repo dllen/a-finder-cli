@@ -12,3 +12,4 @@ __pycache__/
 logs/
 *.db
 .worktrees/
+.web.pid

@@ -3,7 +3,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from config import SyncConfig
 from db_repository import (
@@ -126,7 +126,7 @@ def _build_gap_segments(existing_dates: List[str], start: dt.date, end: dt.date)
     return segments
 
 
-def sync_hs300(db_path: str, mode: str, limit: Optional[int]) -> Dict[str, int]:
+def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional[Callable[[int, str], None]] = None) -> Dict[str, int]:
     logger = get_logger()
     if mode not in {"incremental", "full"}:
         raise InvalidConfigError("mode 仅支持 incremental 或 full")
@@ -153,6 +153,8 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int]) -> Dict[str, int]:
         names: Dict[str, str] = {}
         code_offsets = {} if config.mode == "full" else get_fetch_offsets(conn, list(mapping.keys()))
         updated_offsets: Dict[str, str] = {}
+        total = len(mapping)
+        done = 0
         for code in sorted(mapping.keys()):
             last_date = None if config.mode == "full" else code_offsets.get(code)
             if not last_date and config.mode != "full":
@@ -160,17 +162,30 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int]) -> Dict[str, int]:
             if last_date:
                 next_day = parse_date(last_date) + dt.timedelta(days=1)
                 if next_day > today:
+                    done += 1
+                    if progress:
+                        progress(int(done * 100 / total), f"跳过 {code}（已最新）")
                     continue
                 beg = date_to_str(next_day)
             else:
                 beg = start_str
-            rows, name = fetch_daily_kline_with_name(code, beg, end_str)
+            try:
+                rows, name = fetch_daily_kline_with_name(code, beg, end_str)
+            except Exception as exc:  # noqa: BLE001
+                done += 1
+                logger.warning("拉取失败: code=%s error=%s", code, exc)
+                if progress:
+                    progress(int(done * 100 / total), f"⚠ {code} 拉取失败: {exc}")
+                continue
             if name:
                 names[code] = name
             total_rows += insert_prices(conn, rows)
             if rows:
                 updated_offsets[code] = max(row.trade_date for row in rows)
             time.sleep(config.sleep_seconds)
+            done += 1
+            if progress:
+                progress(int(done * 100 / total), f"同步 {code} 完成（{done}/{total}）")
         upsert_fetch_offsets(conn, updated_offsets)
         if names:
             upsert_metadata(conn, [StockMeta(code=c, name=n, industry="", region="") for c, n in names.items()])
@@ -190,6 +205,7 @@ def sync_hs300_range(
     resume: bool,
     only_failed: bool,
     gap_fill: bool,
+    progress: Optional[Callable[[int, str], None]] = None,
 ) -> Dict[str, int]:
     logger = get_logger()
     if limit is not None and limit <= 0:
@@ -274,8 +290,11 @@ def sync_hs300_range(
                 per_code_failed: Dict[str, str] = {}
                 per_code_last_date: Dict[str, str] = {}
                 per_code_name: Dict[str, str] = {}
+                total_futures = len(futures)
+                done = 0
                 for future in as_completed(futures):
                     code, segment = futures[future]
+                    done += 1
                     try:
                         rows, name = future.result()
                         if name:
@@ -294,6 +313,11 @@ def sync_hs300_range(
                             fail_log,
                             f"{dt.datetime.now().isoformat()} code={code} segment={segment[0]}~{segment[1]} range={start_date}~{end_date} error={exc}",
                         )
+                    if progress:
+                        if code in per_code_failed:
+                            progress(int(done * 100 / total_futures), f"⚠ {code} 拉取失败: {per_code_failed[code]}")
+                        else:
+                            progress(int(done * 100 / total_futures), f"同步 {code} 完成（{done}/{total_futures}）")
                 for code, rows in per_code_rows.items():
                     if code in per_code_failed:
                         continue

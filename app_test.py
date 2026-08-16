@@ -49,7 +49,7 @@ def test_picks(client):
 def test_refresh_and_job(client, monkeypatch):
     gate = threading.Event()
 
-    def fake_run_picks(db_path, top, do_sync):
+    def fake_run_picks(db_path, top, do_sync, progress=None):
         gate.wait()
         return {"date": "", "ma": 0, "buy": 0}
 

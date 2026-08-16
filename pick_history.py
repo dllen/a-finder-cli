@@ -1,7 +1,7 @@
 import argparse
 import datetime as dt
 import os
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
 from db_repository import open_db
@@ -139,9 +139,18 @@ def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
     return len(rows)
 
 
-def run_picks(db_path: str, top: int, do_sync: bool) -> Dict:
+def run_picks(db_path: str, top: int, do_sync: bool, progress: Optional[Callable[[int, str], None]] = None) -> Dict:
+    def report(pct: int, msg: str) -> None:
+        if progress:
+            progress(pct, msg)
+
     if do_sync:
         from sync_service import sync_hs300, sync_hs300_range
+
+        report(2, "开始同步行情…")
+
+        def _sync_progress(pct: int, msg: str) -> None:
+            report(int(pct * 0.83), msg)
 
         if not (os.path.exists(db_path) and os.path.getsize(db_path) > 0):
             today = dt.date.today()
@@ -151,13 +160,31 @@ def run_picks(db_path: str, top: int, do_sync: bool) -> Dict:
                 start.strftime("%Y-%m-%d"),
                 today.strftime("%Y-%m-%d"),
                 None, 6, 6, 3, 0.6, False, False, False,
+                _sync_progress,
             )
         else:
-            sync_hs300(db_path, "incremental", None)
+            sync_hs300(db_path, "incremental", None, _sync_progress)
+        report(85, "行情同步完成")
+    else:
+        report(5, "跳过行情同步")
 
+    report(88, "加载行情数据…")
     stocks = build_market_from_db(db_path, min_days=221, max_days=520)
     if not stocks:
+        report(100, "无可用行情数据")
         return {"date": "", "ma": 0, "buy": 0}
+
+    report(94, "计算榜单…")
+    conn = open_db(db_path)
+    with conn:
+        date = latest_trade_date(conn)
+        if not date:
+            report(100, "无交易日期")
+            return {"date": "", "ma": 0, "buy": 0}
+        ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top))
+        buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
+    report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条")
+    return {"date": date, "ma": ma_count, "buy": buy_count}
 
     conn = open_db(db_path)
     with conn:

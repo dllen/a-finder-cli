@@ -23,6 +23,8 @@ PAGE = """<!doctype html>
     <div class="col-auto"><button id="btn-sync" class="btn btn-primary">同步行情并重算</button></div>
   </div>
   <div id="status" class="mb-3"></div>
+  <div id="prog" class="mb-3"></div>
+  <div id="log" class="mb-3"></div>
   <div id="board"></div>
 </div>
 <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
@@ -30,6 +32,17 @@ PAGE = """<!doctype html>
 <script>
 function fmt(v){return v==null?'-':Number(v).toFixed(2)}
 function setStatus(html, cls){$('#status').html(html?'<div class="alert '+cls+'">'+html+'</div>':'')}
+function setProgress(pct){
+  if (pct==null) {$('#prog').empty(); return;}
+  var color = pct>=100 ? 'bg-success' : 'bg-primary';
+  $('#prog').html('<div class="progress" style="height:1.4rem">'+
+    '<div class="progress-bar progress-bar-striped progress-bar-animated '+color+'" style="width:'+pct+'%">'+pct+'%</div></div>');
+}
+function setLog(lines){
+  if (!lines || !lines.length) {$('#log').empty(); return;}
+  var items = lines.map(function(l){return '<div class="border-bottom py-1 text-muted" style="font-size:.85rem">'+l+'</div>'});
+  $('#log').html('<div class="card"><div class="card-body" style="max-height:14rem;overflow-y:auto">'+items.join('')+'</div></div>');
+}
 function render(date){
   $.getJSON('/api/picks', {date: date}, function(data){
     var groups = data.groups || {};
@@ -77,6 +90,8 @@ function refresh(sync){
 }
 function poll(jobId){
   $.getJSON('/api/jobs/'+jobId, function(data){
+    setProgress(data.progress);
+    setLog(data.log);
     if (data.status === 'pending' || data.status === 'running'){
       setStatus('任务进行中…','alert-info');
       setTimeout(function(){poll(jobId)}, 1000);
@@ -111,19 +126,36 @@ def _start_job(db_path, top, do_sync):
         if any(j["status"] in ("pending", "running") for j in JOBS.values()):
             return None
         job_id = uuid.uuid4().hex
-        JOBS[job_id] = {"status": "pending", "message": ""}
+        JOBS[job_id] = {"status": "pending", "message": "", "progress": 0, "log": []}
+
+    def on_progress(pct, msg):
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if job is None:
+                return
+            job["progress"] = pct
+            job["log"].append(msg)
+            if len(job["log"]) > 200:
+                job["log"] = job["log"][-200:]
 
     def work():
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "running"
         try:
-            result = run_picks(db_path, top, do_sync)
+            result = run_picks(db_path, top, do_sync, on_progress)
             msg = f"日期 {result.get('date') or '-'}：均线 {result.get('ma') or 0} 条 / 买入信号 {result.get('buy') or 0} 条"
             with JOBS_LOCK:
-                JOBS[job_id] = {"status": "done", "message": msg}
+                job = JOBS.get(job_id)
+                if job is not None:
+                    job["status"] = "done"
+                    job["message"] = msg
+                    job["progress"] = 100
         except Exception as e:  # noqa: BLE001
             with JOBS_LOCK:
-                JOBS[job_id] = {"status": "error", "message": traceback.format_exc(limit=3)}
+                job = JOBS.get(job_id)
+                if job is not None:
+                    job["status"] = "error"
+                    job["message"] = traceback.format_exc(limit=3)
 
     threading.Thread(target=work, daemon=True).start()
     return job_id
