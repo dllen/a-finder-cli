@@ -8,8 +8,10 @@ from candidate_rules import (
     DEFAULT_STRATEGY_RATIOS,
     CandidateConfig,
     ma_strategy_candidates,
+    ma_strategy_candidates_adaptive,
     select_candidates_with_quota,
 )
+from market_regime import detect_regime
 from db_repository import open_db
 from domain_models import Stock
 from formatter import format_table
@@ -263,6 +265,7 @@ def run_backtest(
     end_shift_days: int = 0,
     strategy_ratios: Dict[str, float] | None = None,
     candidate_config: CandidateConfig | None = None,
+    adaptive: bool = False,
 ) -> Dict[str, float]:
     config = config or default_backtest_config()
     candidate_config = candidate_config or default_candidate_config()
@@ -295,9 +298,19 @@ def run_backtest(
         regime_factor, weak_market = market_regime_factor(snapshot, config)
         if weak_market:
             weak_market_days += 1
-        candidates = select_candidates_with_quota(
-            ma_strategy_candidates(snapshot, candidate_config), top_size, strategy_ratios
-        )
+        if adaptive:
+            # Use adaptive stock selection with market regime detection
+            index_prices = [s.prices[end_idx] for s in snapshot[:50]]
+            regime = detect_regime(index_prices, {})
+            candidates = select_candidates_with_quota(
+                ma_strategy_candidates_adaptive(snapshot, regime, candidate_config),
+                top_size, strategy_ratios
+            )
+        else:
+            # Use original logic
+            candidates = select_candidates_with_quota(
+                ma_strategy_candidates(snapshot, candidate_config), top_size, strategy_ratios
+            )
         daily_picks = len(candidates)
         total_daily_picks += daily_picks
         daily_return = 0.0
@@ -549,6 +562,7 @@ def main() -> None:
     parser.add_argument("--splits", type=int, default=10, help="稳健性验证的随机切分次数")
     parser.add_argument("--search-weights", action="store_true", help="搜索评分权重（slope/动量/量比）")
     parser.add_argument("--search-quota", action="store_true", help="搜索形态配额（突破/回踩/趋势）")
+    parser.add_argument("--reduce-trades", action="store_true", help="使用自适应策略减少无效交易")
     args = parser.parse_args()
     strategy_ratios = parse_quota_ratios(args.quota)
     stocks = load_stocks(args.db)
@@ -561,7 +575,7 @@ def main() -> None:
     else:
         print("无符合条件的标的")
     config = default_backtest_config()
-    result = run_backtest(stocks, lows_map, args.top, args.days, config, 0, strategy_ratios)
+    result = run_backtest(stocks, lows_map, args.top, args.days, config, 0, strategy_ratios, adaptive=args.reduce_trades)
     if args.tune:
         config, result = optimize_backtest_params(stocks, lows_map, args.top, args.days, 0, strategy_ratios)
         config_rows = [
