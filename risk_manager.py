@@ -100,6 +100,21 @@ class RiskManager:
 
         return False, ""
 
+    def should_exit_by_time(self, holding_days: int, config: PositionConfig) -> tuple[bool, str]:
+        """
+        检查是否应该时间止损退出
+
+        Args:
+            holding_days: 持仓天数
+            config: 仓位配置
+
+        Returns:
+            (should_exit, reason)
+        """
+        if holding_days >= config.time_exit_days:
+            return True, f"时间止损 {holding_days}天 >= {config.time_exit_days}天"
+        return False, ""
+
 
 def calculate_trailing_stop(entry_price: float, highest_price: float,
                             trailing_pct: float = 0.05) -> float:
@@ -126,8 +141,11 @@ def calculate_trailing_stop(entry_price: float, highest_price: float,
         # 盈利不足5%，保本
         return entry_price
 
-    # 止损价格跟随最高价，按trailing_pct设置
-    stop_price = highest_price * (1 - trailing_pct)
+    # Progressive profit locking per brief:
+    # lock_pct = min(0.15, profit_pct - trailing_pct)
+    # stop_price = highest_price * (1 - lock_pct - trailing_pct)
+    lock_pct = min(0.15, profit_pct - trailing_pct)
+    stop_price = highest_price * (1 - lock_pct - trailing_pct)
 
     # 最低不能低于入场价
     return max(entry_price, stop_price)

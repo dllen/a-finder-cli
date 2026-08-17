@@ -4,11 +4,14 @@ from market_regime import MarketRegime, RegimeType
 
 
 def test_bull_trailing_stop():
-    """牛市移动止损跟踪"""
+    """牛市移动止损跟踪 - 15%盈利时锁定10%，但保本线限制在100"""
     entry_price = 100.0
     current_price = 115.0  # 盈利15%
+    # lock_pct = min(0.15, 0.15-0.05) = 0.10
+    # stop = 115 * (1 - 0.10 - 0.05) = 115 * 0.85 = 97.75
+    # max(100, 97.75) = 100 (保本线)
     result = calculate_trailing_stop(entry_price, current_price, trailing_pct=0.05)
-    assert result == 109.25  # 锁定盈利5%
+    assert result == 100.0
 
 
 def test_bear_tighter_stop():
@@ -48,8 +51,10 @@ def test_trailing_stop_10_percent_profit():
     entry_price = 100.0
     highest_price = 110.0  # 盈利10%
     result = calculate_trailing_stop(entry_price, highest_price, trailing_pct=0.05)
-    # stop_price = 110 * 0.95 = 104.5
-    assert result == 104.5
+    # lock_pct = min(0.15, 0.10 - 0.05) = 0.05
+    # stop = 110 * (1 - 0.05 - 0.05) = 110 * 0.90 = 99
+    # max(100, 99) = 100 (保本线)
+    assert result == 100.0
 
 
 def test_trailing_stop_max_lock():
@@ -57,8 +62,10 @@ def test_trailing_stop_max_lock():
     entry_price = 100.0
     highest_price = 130.0  # 盈利30%，但最高只锁定15%
     result = calculate_trailing_stop(entry_price, highest_price, trailing_pct=0.05)
-    # stop_price = 130 * 0.95 = 123.5
-    assert result == 123.5
+    # lock_pct = min(0.15, 0.30 - 0.05) = 0.15
+    # stop = 130 * (1 - 0.15 - 0.05) = 130 * 0.80 = 104
+    # max(100, 104) = 104
+    assert result == pytest.approx(104.0)
 
 
 def test_signal_strength_adjustment():
@@ -106,8 +113,8 @@ def test_should_stop_loss_trailing():
     rm = RiskManager()
     config = rm.get_config(RegimeType.BULL)
     entry_price = 100.0
-    highest_price = 115.0  # 曾经涨到15%
-    current_price = 109.0  # 跌破移动止损线109.25
+    highest_price = 130.0  # 曾经涨到30%
+    current_price = 103.0  # 跌破移动止损线104.0
 
     should_stop, reason = rm.should_stop_loss(entry_price, current_price, highest_price, config)
     assert should_stop is True
@@ -148,3 +155,20 @@ def test_should_not_take_profit():
 
     should_tp, reason = rm.should_take_profit(entry_price, current_price, config)
     assert should_tp is False
+
+
+def test_should_exit_by_time():
+    """时间止损触发"""
+    rm = RiskManager()
+    config = rm.get_config(RegimeType.BULL)  # 30天
+    should_exit, reason = rm.should_exit_by_time(30, config)
+    assert should_exit is True
+    assert "时间止损" in reason
+
+
+def test_should_not_exit_by_time():
+    """未到时间不止损"""
+    rm = RiskManager()
+    config = rm.get_config(RegimeType.BULL)  # 30天
+    should_exit, reason = rm.should_exit_by_time(15, config)
+    assert should_exit is False
