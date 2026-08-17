@@ -3,7 +3,8 @@ from typing import Dict, List, Optional
 
 from candidate_schema import Candidate
 from domain_models import Stock
-from indicators import moving_average_slice
+from indicators import moving_average_slice, rsi, moving_average
+from market_regime import MarketRegime, RegimeType
 
 DEFAULT_STRATEGY_RATIOS: Dict[str, float] = {
     "多均线突破": 0.75,
@@ -208,3 +209,162 @@ def select_candidates_with_quota(
             selected.append(item)
             used_codes.add(code)
     return selected
+
+
+def ma_strategy_candidates_adaptive(
+    stocks: List[Stock],
+    regime: MarketRegime,
+    config: Optional[CandidateConfig] = None,
+) -> List[Candidate]:
+    """
+    Market-adaptive stock selection.
+
+    Bull market: use existing trend-following logic
+    Bear market: strict oversold conditions (RSI<20, near 20d low, volume surge)
+    Sideways market: stricter signals (precise pullback ±1%, tighter stop)
+    """
+    config = config or DEFAULT_CANDIDATE_CONFIG
+
+    if regime.regime == RegimeType.BULL:
+        # Bull market: use existing logic
+        return ma_strategy_candidates(stocks, config)
+
+    elif regime.regime == RegimeType.BEAR:
+        # Bear market: strict oversold bounce conditions
+        return _bear_market_candidates(stocks, config)
+
+    else:
+        # Sideways market: reduce frequency, stricter signals
+        return _sideways_market_candidates(stocks, config)
+
+
+def _bear_market_candidates(stocks: List[Stock], config: CandidateConfig) -> List[Candidate]:
+    """
+    Bear market oversold bounce stock selection.
+
+    Strict conditions:
+    - RSI < 20 (extreme oversold)
+    - Price near 20-day low
+    - Volume surge signal (money flowing in)
+    """
+    candidates = []
+    for stock in stocks:
+        prices = stock.prices
+        volumes = stock.volumes
+        if len(prices) < 30:
+            continue
+
+        # Calculate RSI
+        rsi_value = rsi(prices)
+        if rsi_value is None or rsi_value >= 20:
+            continue  # Must have RSI < 20
+
+        # Price position: near 20-day low
+        low_20 = min(prices[-20:])
+        price = prices[-1]
+        price_near_low = price <= low_20 * 1.03  # Within 3% of 20-day low
+
+        # MA stabilization: MA20 flattening or turning up
+        ma20 = moving_average(prices, 20)
+        ma20_prev = sum(prices[-21:-1]) / 20
+        ma_stabilizing = ma20 >= ma20_prev * 0.995
+
+        # Volume surge signal
+        avg_volume_20 = sum(volumes[-20:]) / 20
+        volume_ratio = volumes[-1] / avg_volume_20
+        volume_surge = volume_ratio >= 1.5
+
+        # All conditions must be met
+        if price_near_low and ma_stabilizing and volume_surge:
+            ma10 = moving_average(prices, 10)
+            ma30 = moving_average(prices, 30)
+            stop_price = min(min(prices[-20:]), ma30 * 0.985)
+
+            # Scoring
+            score = (
+                (20 - rsi_value) * 2 +  # Lower RSI = higher score
+                volume_ratio * 10 +
+                (1 - price / low_20) * 50  # Closer to low = higher score
+            )
+
+            candidates.append({
+                "stock": stock,
+                "strategy": "熊市超跌反弹",
+                "ma10": ma10,
+                "ma30": ma30,
+                "ma50": moving_average(prices, 50),
+                "ma100": moving_average(prices, 100),
+                "ma200": moving_average(prices, 200),
+                "volume_ratio": volume_ratio,
+                "stop_price": stop_price,
+                "score": score,
+            })
+
+    return sorted(candidates, key=lambda item: item["score"], reverse=True)
+
+
+def _sideways_market_candidates(stocks: List[Stock], config: CandidateConfig) -> List[Candidate]:
+    """
+    Sideways market stock selection.
+
+    Stricter conditions:
+    - Pullback requires precise (±1%) MA10 touch
+    - Tighter stop loss
+    - Max holding period of 10 days implied
+    """
+    candidates = []
+    for stock in stocks:
+        prices = stock.prices
+        volumes = stock.volumes
+        if len(prices) < 220:
+            continue
+
+        # Basic moving averages
+        ma10 = sum(prices[-10:]) / 10
+        ma30 = sum(prices[-30:]) / 30
+        ma50 = sum(prices[-50:]) / 50
+        ma100 = sum(prices[-100:]) / 100
+        ma200 = sum(prices[-200:]) / 200
+
+        price = prices[-1]
+
+        # Check for sideways-market valid signals
+        # Condition: price near MA10 with precise pullback (±1%)
+        pullback = abs(price / ma10 - 1) <= 0.01
+        if not pullback:
+            continue
+
+        # Trend confirmation (not too strong)
+        trend_ok = price > ma10 > ma30 > ma50
+        if not trend_ok:
+            continue
+
+        # Volume confirmation
+        avg_volume_20 = sum(volumes[-20:]) / 20
+        volume_ratio = volumes[-1] / avg_volume_20
+        volume_ok = 0.9 <= volume_ratio <= 2.0
+
+        if pullback and trend_ok and volume_ok:
+            stop_price = min(min(prices[-20:]), ma30 * 0.97)  # Tighter stop
+
+            # Scoring
+            score = (
+                (1 - abs(price / ma10 - 1)) * 30 +  # Pullback precision
+                volume_ratio * 15 +
+                (price / ma200 - 1) * 20
+            )
+
+            candidates.append({
+                "stock": stock,
+                "strategy": "震荡市精准回踩",
+                "ma10": ma10,
+                "ma30": ma30,
+                "ma50": ma50,
+                "ma100": ma100,
+                "ma200": ma200,
+                "volume_ratio": volume_ratio,
+                "stop_price": stop_price,
+                "score": score,
+            })
+
+    return sorted(candidates, key=lambda item: item["score"], reverse=True)
