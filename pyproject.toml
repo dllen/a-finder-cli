@@ -36,6 +36,7 @@ py-modules = [
   "logger",
   "market_data",
   "market_regime",
+  "risk_manager",
   "scoring",
   "signal_rules",
   "signal_schema",
