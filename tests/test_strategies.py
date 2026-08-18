@@ -1,3 +1,4 @@
+from strategies.backtest import run_strategy_backtest
 from strategies.base import StrategySignal, bollinger, kdj
 from strategies.base import bollinger as _bollinger
 from domain_models import Stock
@@ -96,3 +97,48 @@ def test_volume_price_fires():
     sigs = vp_detect(make_stock(prices, volumes, pct), RegimeType.BULL)
     assert len(sigs) == 1
     assert sigs[0].entry == 103.0
+
+
+class FakeDetector:
+    def __init__(self, signals):
+        self.signals = signals
+
+    def detect(self, stock, regime):
+        # 仅当快照最新价等于 signal.entry 时触发，保证确定性单笔交易。
+        price = stock.prices[-1]
+        return [s for s in self.signals if s.entry == price]
+
+
+def _up_stock(n=80):
+    prices = [100.0 + i for i in range(n)]
+    volumes = [1_000_000] * n
+    return Stock(code="000001", name="测试", pe=10, pb=1.0, peg=1.0,
+                 revenue_growth=0.1, profit_growth=0.1, roe=0.1, cashflow=0.1,
+                 prices=prices, volumes=volumes)
+
+
+def test_run_strategy_backtest_always_win():
+    stock = _up_stock()
+    # 快照 idx=60 时价 160.0 触发；随后 165.0 触及止盈（先于止损 150.0）。
+    sig = StrategySignal("000001", "x", entry=160.0, stop=150.0, tp=165.0, score=50.0)
+    result = run_strategy_backtest([stock], FakeDetector([sig]).detect, {}, [RegimeType.BULL] * 80, max_hold=10)
+    assert result.trades == 1
+    assert result.win_rate == 1.0
+    assert result.profit_factor > 1.5
+    assert result.expectancy > 0
+    assert result.passed is True
+
+
+def test_run_strategy_backtest_always_lose():
+    # 前 61 根持平于 160.0（idx=60 触发），随后下跌跌破止损 → 确定性亏损。
+    prices = [160.0] * 61 + [159.0 - i for i in range(19)]
+    volumes = [1_000_000] * len(prices)
+    stock = Stock(code="000001", name="测试", pe=10, pb=1.0, peg=1.0,
+                  revenue_growth=0.1, profit_growth=0.1, roe=0.1, cashflow=0.1,
+                  prices=prices, volumes=volumes)
+    sig = StrategySignal("000001", "x", entry=160.0, stop=159.5, tp=165.0, score=50.0)
+    result = run_strategy_backtest([stock], FakeDetector([sig]).detect, {}, [RegimeType.BULL] * 80, max_hold=10)
+    assert result.trades == 1
+    assert result.win_rate == 0.0
+    assert result.expectancy < 0
+    assert result.passed is False
