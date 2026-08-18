@@ -1,4 +1,5 @@
 from strategies.base import StrategySignal, bollinger, kdj
+from strategies.base import bollinger as _bollinger
 from domain_models import Stock
 from market_regime import RegimeType
 from strategies.box_breakout import detect as box_detect
@@ -66,17 +67,26 @@ def test_new_high_fires():
 
 
 def test_bollinger_rebound_fires():
-    prices = [100.0] * 20 + [98.0, 96.0, 97.0]
+    prices = [100.0 - i for i in range(40)]  # 100..61，长下跌 → RSI 低
     volumes = [1_000_000] * len(prices)
+    # 先跌破下轨再收回；下轨本身受末两根影响，迭代到稳定即可
+    for _ in range(10):
+        _mid, _upper, lower = _bollinger(prices)
+        prices[-2] = lower * 0.99   # 跌破下轨
+        prices[-1] = lower * 1.01   # 收回
     sigs = rebound_detect(make_stock(prices, volumes), RegimeType.SIDEWAYS)
-    assert isinstance(sigs, list)
+    assert len(sigs) == 1
+    assert sigs[0].entry == prices[-1]
 
 
 def test_kdj_cross_fires_on_low_cross():
-    prices = [100.0] * 8 + [90.0, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    # 长跌后小幅反弹，K 在低位上穿 D（K 仍 < 20）
+    prices = [100.0] * 5 + [100.0 - i * 2.0 for i in range(15)] + [40.0, 40.5, 41.0]
     volumes = [1_000_000] * len(prices)
     sigs = kdj_detect(make_stock(prices, volumes), RegimeType.SIDEWAYS)
-    assert isinstance(sigs, list)
+    assert len(sigs) == 1
+    assert sigs[0].strategy == "KDJ低位金叉"
+    assert sigs[0].entry == prices[-1]
 
 
 def test_volume_price_fires():
