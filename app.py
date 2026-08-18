@@ -134,8 +134,8 @@ def _nav(active: str) -> str:
         'aria-label="切换导航"><span class="navbar-toggler-icon"></span></button>'
         '<div class="collapse navbar-collapse" id="appNav">'
         '<div class="navbar-nav ms-auto">'
-        f'<a class="{picks_cls}" href="/">每日机会</a>'
-        f'<a class="{plan_cls}" href="/plan">交易计划</a>'
+        f'<a class="{picks_cls}" data-nav="picks" href="/">每日机会</a>'
+        f'<a class="{plan_cls}" data-nav="plan" href="/plan">交易计划</a>'
         '</div></div></div></nav>'
     )
 
@@ -155,8 +155,10 @@ __BODY__
 __FOOTER__
 <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
 <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
-<script src="/static/common.js"></script>
-<script src="/static/dashboard.js"></script>
+<script>__CONFIG__</script>
+<script src="__ASSETS__common.js"></script>
+<script src="__ASSETS__data-source.js"></script>
+<script src="__ASSETS__dashboard.js"></script>
 <script>
 __SCRIPT__
 </script>
@@ -164,7 +166,7 @@ __SCRIPT__
 </html>"""
 
 
-def _page(title: str, active: str, body: str, script: str) -> str:
+def _page(title: str, active: str, body: str, script: str, config: str = "", assets: str = "/static/") -> str:
     return (
         _SHELL
         .replace("__TITLE__", title)
@@ -172,6 +174,8 @@ def _page(title: str, active: str, body: str, script: str) -> str:
         .replace("__NAV__", _nav(active))
         .replace("__BODY__", body)
         .replace("__FOOTER__", _footer())
+        .replace("__CONFIG__", config)
+        .replace("__ASSETS__", assets)
         .replace("__SCRIPT__", script)
     )
 
@@ -191,8 +195,8 @@ PAGE_BODY = """<main class="container py-4">
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
-    <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary">重算榜单</button></div>
-    <div class="col-auto"><button id="btn-sync" class="btn btn-primary">同步行情并重算</button></div>
+    <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button></div>
+    <div class="col-auto"><button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button></div>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
@@ -279,7 +283,7 @@ function drawBoard(){
 
 function render(date){
   showBoardLoading();
-  $.getJSON('/api/picks', {date: date}, function(data){
+  dsFetchPicks(date).done(function(data){
     whenBoardReady(function(){
       PICKS_STATE.data = data;
       PICKS_STATE.sort = { key: 'score', dir: -1 };
@@ -357,9 +361,9 @@ PLAN_BODY = """<main class="container py-4">
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
-    <div class="col-auto"><button id="btn-build" class="btn btn-primary">生成 plan</button></div>
+    <div class="col-auto"><button id="btn-build" class="btn btn-primary write-control">生成 plan</button></div>
     <div class="col-auto">
-      <div class="form-check"><input id="include-failed" type="checkbox" class="form-check-input">
+      <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
         <label for="include-failed" class="form-check-label">含 failed</label></div>
     </div>
   </div>
@@ -405,7 +409,7 @@ function row(r){
 function render(date){
   showBoardLoading();
   var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
-  $.getJSON('/api/plan/'+date, {include_failed: includeFailed}, function(data){
+  dsFetchPlan(date, includeFailed === '1').done(function(data){
     whenBoardReady(function(){ drawPlan(data); });
   }).fail(function(){ setStatus('加载失败','alert-danger'); });
 }
