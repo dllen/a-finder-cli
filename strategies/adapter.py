@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Set
+from typing import List, Optional, Set
 
 from candidate_rules import (
     Candidate,
@@ -14,12 +14,14 @@ from strategies.base import StrategySignal
 def signal_to_candidate(stock: Stock, sig: StrategySignal) -> Candidate:
     prices = stock.prices
     volumes = stock.volumes
+    if not prices:
+        prices = [0.0]
 
     def ma(w: int) -> float:
-        return sum(prices[-w:]) / w
+        return sum(prices[-w:]) / min(w, len(prices))
 
     avg_vol = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else 0.0
-    volume_ratio = (volumes[-1] / avg_vol) if avg_vol > 0 else 0.0
+    volume_ratio = (volumes[-1] / avg_vol) if avg_vol > 0 and volumes else 0.0
     return {
         "stock": stock,
         "strategy": sig.strategy,
