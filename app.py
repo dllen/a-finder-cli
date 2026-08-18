@@ -74,6 +74,13 @@ main{flex:1 0 auto;width:100%}
 .app-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .app-table th.num{text-align:right}
 .app-table td.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem;white-space:nowrap}
+.app-table tbody tr.row-hot{background:#fdecea}
+.app-table tbody tr.row-hot:hover{background:#fbdcd8}
+.app-table tbody tr.row-warm{background:#fff4e0}
+.app-table tbody tr.row-warm:hover{background:#fceccc}
+.app-table tbody tr.row-mild{background:#f7faf7}
+.app-table tbody tr.row-mild:hover{background:#eef4ee}
+.score-chip{display:inline-block;min-width:2.6rem;text-align:right;font-variant-numeric:tabular-nums}
 .rank-badge{
   display:inline-flex;min-width:1.7rem;height:1.7rem;align-items:center;justify-content:center;
   border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
@@ -179,17 +186,26 @@ PAGE_SCRIPT = """function render(date){
     var groups = data.groups || {};
     var html = '';
     ['均线','买入信号'].forEach(function(kind){
-      var rs = groups[kind] || [];
+      var rs = (groups[kind] || []).slice();
+      rs.sort(function(a,b){ return (b.score==null?-1e9:b.score)-(a.score==null?-1e9:a.score); });
+      var maxScore = rs.reduce(function(m,r){ return r.score!=null && r.score>m ? r.score : m; }, 0);
       html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">Top '+rs.length+'</span></h2>';
       html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>'+
         '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th class="num">买入</th><th class="num">止损</th><th class="num">目标</th><th class="num">评分</th>'+
         '</tr></thead><tbody>';
       if (!rs.length) html += '<tr><td colspan="8" class="text-center text-muted py-4">该分类暂无数据</td></tr>';
-      rs.forEach(function(r){
-        html += '<tr><td><span class="rank-badge">'+r.rank+'</span></td>'+
+      rs.forEach(function(r, i){
+        var band = 'row-neutral';
+        if (r.score != null && maxScore > 0) {
+          var ratio = r.score / maxScore;
+          if (ratio >= 0.85) band = 'row-hot';
+          else if (ratio >= 0.7) band = 'row-warm';
+          else if (ratio >= 0.5) band = 'row-mild';
+        }
+        html += '<tr class="'+band+'"><td><span class="rank-badge">'+(i+1)+'</span></td>'+
           '<td class="code">'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
-          '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td><td class="num">'+
-          (r.score==null?'—':r.score)+'</td></tr>';
+          '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td><td class="num"><span class="score-chip">'+
+          (r.score==null?'—':r.score)+'</span></td></tr>';
       });
       html += '</tbody></table></div>';
     });
