@@ -322,8 +322,8 @@ def test_get_trade_plan_by_date_includes_name_from_constituents():
     conn = open_db(path)
     try:
         conn.execute(
-            "INSERT INTO hs300_constituents (code, name, exchange, updated_at) "
-            "VALUES ('600519', '贵州茅台', 'SH', '2026-08-18 00:00:00')"
+            "INSERT INTO hs300_metadata (code, name, industry, region, updated_at) "
+            "VALUES ('600519', '贵州茅台', '', '', '2026-08-18 00:00:00')"
         )
         conn.execute(
             """INSERT INTO trade_plan

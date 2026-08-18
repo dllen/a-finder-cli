@@ -322,9 +322,14 @@ def get_trade_plan_by_date(
     plan_date: str,
     include_failed: bool = False,
 ) -> List[Dict]:
-    """Return all trade_plan rows for a date with stock name. Excludes status='failed' unless asked."""
-    sql = ("SELECT tp.*, c.name AS name "
-           "FROM trade_plan tp LEFT JOIN hs300_constituents c ON c.code = tp.code "
+    """Return all trade_plan rows for a date with stock name. Excludes status='failed' unless asked.
+
+    Stock name comes from `hs300_metadata` (the table that actually stores names).
+    `hs300_constituents.name` is intentionally empty in this codebase — see
+    data_providers.fetch_hs300_constituents_from_api for why.
+    """
+    sql = ("SELECT tp.*, m.name AS name "
+           "FROM trade_plan tp LEFT JOIN hs300_metadata m ON m.code = tp.code "
            "WHERE tp.plan_date = ?")
     if not include_failed:
         sql += " AND tp.status = 'ok'"
