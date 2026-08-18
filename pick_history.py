@@ -210,15 +210,6 @@ def run_picks(db_path: str, top: int, do_sync: bool, progress: Optional[Callable
     report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条")
     return {"date": date, "ma": ma_count, "buy": buy_count}
 
-    conn = open_db(db_path)
-    with conn:
-        date = latest_trade_date(conn)
-        if not date:
-            return {"date": "", "ma": 0, "buy": 0}
-        ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top))
-        buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
-    return {"date": date, "ma": ma_count, "buy": buy_count}
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="选股并落库到 daily_picks")
