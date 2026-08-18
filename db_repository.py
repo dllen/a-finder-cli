@@ -1,9 +1,24 @@
 import datetime as dt
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from db_schema import ensure_schema
+
+MIGRATIONS_DIR = Path(__file__).parent / "db" / "migrations"
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Apply all SQL files in db/migrations/ in lexical order.
+
+    Statements are written with IF NOT EXISTS so this is idempotent
+    and safe to run on every open_db() call.
+    """
+    if not MIGRATIONS_DIR.exists():
+        return
+    for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        conn.executescript(sql_file.read_text())
 
 
 @dataclass
@@ -33,6 +48,8 @@ class StockMeta:
 def open_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     ensure_schema(conn)
+    _run_migrations(conn)
+    conn.commit()
     return conn
 
 
