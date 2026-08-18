@@ -181,6 +181,7 @@ function row(r){
     rationale = '<small class="text-muted" style="font-family:monospace">'+(r.rationale_json||'-')+'</small>';
   }
   return '<tr><td><code>'+r.code+'</code></td>' +
+    '<td>'+(r.name||'<span class="text-muted">—</span>')+'</td>' +
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
     '<td>'+fmt(r.plan_price)+'</td>' +
     '<td>'+sizePct+'</td>' +
@@ -218,7 +219,7 @@ function render(date){
       var meta = actionMeta(a);
       html += '<h5 class="mt-3"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h5>';
       html += '<table class="table table-sm table-striped table-hover align-middle"><thead><tr>' +
-        '<th>代码</th><th>方向</th><th>计划价</th><th>仓位</th><th>止损</th><th>止盈</th><th>RR</th><th>状态</th><th>理由</th>' +
+        '<th>代码</th><th>名称</th><th>方向</th><th>计划价</th><th>仓位</th><th>止损</th><th>止盈</th><th>RR</th><th>状态</th><th>理由</th>' +
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table>';
     });
     $('#board').html(html);

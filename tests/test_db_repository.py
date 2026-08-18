@@ -313,3 +313,38 @@ def test_get_recent_pnl_empty():
         assert get_recent_pnl(conn) == []
     finally:
         conn.close()
+
+def test_get_trade_plan_by_date_includes_name_from_constituents():
+    import tempfile
+    from db_repository import open_db, get_trade_plan_by_date
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        conn.execute(
+            "INSERT INTO hs300_constituents (code, name, exchange, updated_at) "
+            "VALUES ('600519', '贵州茅台', 'SH', '2026-08-18 00:00:00')"
+        )
+        conn.execute(
+            """INSERT INTO trade_plan
+            (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+             rr_ratio, status, reason, rationale_json, params_hash, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("2026-08-18", "600519", "buy", 1500.0, 0.10, 1380.0, 1740.0,
+             2.0, "ok", "", "{}", "h", "2026-08-18T00:00:00"),
+        )
+        conn.execute(
+            """INSERT INTO trade_plan
+            (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+             rr_ratio, status, reason, rationale_json, params_hash, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("2026-08-18", "999999", "buy", 10.0, 0.05, 9.0, 12.0,
+             1.5, "ok", "", "{}", "h", "2026-08-18T00:00:00"),
+        )
+        conn.commit()
+        rows = get_trade_plan_by_date(conn, "2026-08-18")
+        by_code = {r["code"]: r for r in rows}
+        assert by_code["600519"]["name"] == "贵州茅台"
+        assert by_code["999999"]["name"] is None  # not in constituents → None
+    finally:
+        conn.close()

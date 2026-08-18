@@ -322,11 +322,13 @@ def get_trade_plan_by_date(
     plan_date: str,
     include_failed: bool = False,
 ) -> List[Dict]:
-    """Return all trade_plan rows for a date. Excludes status='failed' unless asked."""
-    sql = "SELECT * FROM trade_plan WHERE plan_date = ?"
+    """Return all trade_plan rows for a date with stock name. Excludes status='failed' unless asked."""
+    sql = ("SELECT tp.*, c.name AS name "
+           "FROM trade_plan tp LEFT JOIN hs300_constituents c ON c.code = tp.code "
+           "WHERE tp.plan_date = ?")
     if not include_failed:
-        sql += " AND status = 'ok'"
-    sql += " ORDER BY action DESC, code"  # buy first, then hold/exit
+        sql += " AND tp.status = 'ok'"
+    sql += " ORDER BY tp.action DESC, tp.code"  # buy first, then hold/exit
     cur = conn.execute(sql, (plan_date,))
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
