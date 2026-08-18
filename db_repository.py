@@ -404,9 +404,14 @@ def insert_trade_event(
 
 
 def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
-    """Return the most recently updated daily_picks row: {date, updated_at}. None if empty."""
+    """Return the most recently updated daily_picks row: {date, updated_at}. None if empty.
+
+    Rows with empty updated_at (legacy or not-yet-populated) are ignored so the
+    dashboard's freshness logic only sees real timestamps.
+    """
     cur = conn.execute(
         "SELECT date, updated_at FROM daily_picks "
+        "WHERE updated_at != '' "
         "ORDER BY updated_at DESC, date DESC LIMIT 1"
     )
     row = cur.fetchone()
