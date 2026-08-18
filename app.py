@@ -382,7 +382,10 @@ def _start_job(db_path, top, do_sync):
 
 
 def open_conn(db_path):
-    return sqlite3.connect(db_path)
+    # ponytail: use open_db so fresh/existing DBs get schema + pending migrations applied.
+    # Was raw sqlite3.connect, which broke when the dashboard migration added updated_at.
+    from db_repository import open_db
+    return open_db(db_path)
 
 
 def list_dates(conn):
