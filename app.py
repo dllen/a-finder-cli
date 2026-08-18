@@ -56,8 +56,24 @@ main{flex:1 0 auto;width:100%}
 .app-footer{border-top:1px solid var(--border);color:var(--muted);font-size:.85rem;background:var(--surface)}
 .page-title{font-weight:600}
 .section-title{font-size:1.05rem;font-weight:600;margin-top:1.5rem}
-.app-table th{color:var(--muted);font-weight:600;font-size:.85rem;border-bottom:2px solid var(--border)}
-.app-table td{vertical-align:middle}
+.app-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:.5rem;
+  overflow:hidden;
+}
+.app-card .app-table{margin-bottom:0}
+.app-table{width:100%;border-collapse:collapse}
+.app-table thead th{
+  position:sticky;top:0;z-index:1;
+  background:#fbfcfd;color:var(--muted);font-weight:600;font-size:.8rem;
+  text-transform:uppercase;letter-spacing:.02em;
+  border-bottom:1px solid var(--border);padding:.6rem .75rem;white-space:nowrap;
+}
+.app-table tbody td{padding:.65rem .75rem;vertical-align:middle;border-bottom:1px solid #eef1f4}
+.app-table tbody tr:last-child td{border-bottom:none}
+.app-table tbody tr:hover{background:#f6f9fc}
+.app-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.app-table th.num{text-align:right}
+.app-table td.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem;white-space:nowrap}
 .rank-badge{
   display:inline-flex;min-width:1.7rem;height:1.7rem;align-items:center;justify-content:center;
   border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
@@ -165,14 +181,14 @@ PAGE_SCRIPT = """function render(date){
     ['均线','买入信号'].forEach(function(kind){
       var rs = groups[kind] || [];
       html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">Top '+rs.length+'</span></h2>';
-      html += '<div class="table-responsive"><table class="table table-hover align-middle app-table"><thead><tr>'+
-        '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th>买入</th><th>止损</th><th>目标</th><th>评分</th>'+
+      html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>'+
+        '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th class="num">买入</th><th class="num">止损</th><th class="num">目标</th><th class="num">评分</th>'+
         '</tr></thead><tbody>';
       if (!rs.length) html += '<tr><td colspan="8" class="text-center text-muted py-4">该分类暂无数据</td></tr>';
       rs.forEach(function(r){
         html += '<tr><td><span class="rank-badge">'+r.rank+'</span></td>'+
-          '<td class="font-monospace">'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
-          '<td>'+fmt(r.buy)+'</td><td>'+fmt(r.stop)+'</td><td>'+fmt(r.target)+'</td><td>'+
+          '<td class="code">'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
+          '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td><td class="num">'+
           (r.score==null?'—':r.score)+'</td></tr>';
       });
       html += '</tbody></table></div>';
@@ -273,14 +289,14 @@ function row(r){
   } catch(e) {
     rationale = '<small class="text-muted font-monospace">'+(r.rationale_json||'—')+'</small>';
   }
-  return '<tr><td class="font-monospace">'+r.code+'</td>' +
+  return '<tr><td class="code">'+r.code+'</td>' +
     '<td>'+(r.name||'<span class="text-muted">—</span>')+'</td>' +
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
-    '<td>'+fmt(r.plan_price)+'</td>' +
-    '<td>'+sizePct+'</td>' +
-    '<td>'+fmt(r.stop_price)+'</td>' +
-    '<td>'+fmt(r.tp_price)+'</td>' +
-    '<td>'+fmt(r.rr_ratio)+'</td>' +
+    '<td class="num">'+fmt(r.plan_price)+'</td>' +
+    '<td class="num">'+sizePct+'</td>' +
+    '<td class="num">'+fmt(r.stop_price)+'</td>' +
+    '<td class="num">'+fmt(r.tp_price)+'</td>' +
+    '<td class="num">'+fmt(r.rr_ratio)+'</td>' +
     '<td><span class="badge '+statusBadge(r.status)+'">'+r.status+'</span>' +
       (r.reason? ' <small class="text-muted">'+r.reason+'</small>':'')+'</td>' +
     '<td>'+rationale+'</td></tr>';
@@ -311,8 +327,8 @@ function render(date){
       if (!rs.length) return;
       var meta = actionMeta(a);
       html += '<h2 class="section-title"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h2>';
-      html += '<div class="table-responsive"><table class="table table-sm table-hover align-middle app-table"><thead><tr>' +
-        '<th>代码</th><th>名称</th><th>方向</th><th>计划价</th><th>仓位</th><th>止损</th><th>止盈</th><th>RR</th><th>状态</th><th>理由</th>' +
+      html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+        '<th>代码</th><th>名称</th><th>方向</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
     });
     $('#board').html(html);
