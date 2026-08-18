@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 
@@ -15,3 +15,6 @@ class Stock:
     cashflow: float
     prices: List[float]
     volumes: List[int]
+    turnover: List[float] = field(default_factory=list)
+    amount: List[float] = field(default_factory=list)
+    pct_change: List[float] = field(default_factory=list)

@@ -60,6 +60,9 @@ def build_market() -> List[Stock]:
                 cashflow=cash,
                 prices=prices,
                 volumes=volumes,
+                turnover=[0.0] * len(prices),
+                amount=[0.0] * len(prices),
+                pct_change=[0.0] * len(prices),
             )
         )
     return market
@@ -101,16 +104,20 @@ def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) 
         market: List[Stock] = []
         for code in codes:
             cur = conn.execute(
-                "SELECT close, volume FROM daily_prices WHERE code = ? ORDER BY trade_date",
+                "SELECT close, volume, turnover, amount, pct_change FROM daily_prices "
+                "WHERE code = ? ORDER BY trade_date",
                 (code,),
             )
-            series = [(item[0], item[1]) for item in cur.fetchall() if item[0] is not None]
+            series = [tuple(item) for item in cur.fetchall() if item[0] is not None]
             if len(series) < min_days:
                 continue
             if max_days and len(series) > max_days:
                 series = series[-max_days:]
             prices = [float(item[0]) for item in series]
             volumes = [int(item[1]) if item[1] is not None else 0 for item in series]
+            turnover = [float(item[2]) if item[2] is not None else 0.0 for item in series]
+            amount = [float(item[3]) if item[3] is not None else 0.0 for item in series]
+            pct_change = [float(item[4]) if item[4] is not None else 0.0 for item in series]
             name = names.get(code) or code
             market.append(
                 Stock(
@@ -125,6 +132,9 @@ def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) 
                     cashflow=1.0,
                     prices=prices,
                     volumes=volumes,
+                    turnover=turnover,
+                    amount=amount,
+                    pct_change=pct_change,
                 )
             )
         return market
