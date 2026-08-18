@@ -9,63 +9,173 @@ from flask import Flask, jsonify, request
 from pick_history import run_picks
 
 
-PAGE = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+# ---------------------------------------------------------------------------
+# Shared UI shell: logo + top nav + footer + CSS
+# ---------------------------------------------------------------------------
+
+_LOGO = (
+    '<svg class="brand-logo" viewBox="0 0 24 24" fill="none" '
+    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    '<rect x="4" y="9" width="2.4" height="8" rx="0.6" fill="#5b8def"/>'
+    '<rect x="8.6" y="5" width="2.4" height="12" rx="0.6" fill="#34c98e"/>'
+    '<rect x="13.2" y="11" width="2.4" height="6" rx="0.6" fill="#ef6c6c"/>'
+    '<rect x="17.8" y="3" width="2.4" height="14" rx="0.6" fill="#34c98e"/>'
+    '<path d="M3 19 L21 8" stroke="#8896a6" stroke-width="1.3" stroke-dasharray="3 2"/>'
+    '</svg>'
+)
+
+_APP_CSS = """
+:root{
+  --brand:#16263a;
+  --brand-2:#1f3350;
+  --accent:#2f6f9f;
+  --bg:#f5f6f8;
+  --surface:#ffffff;
+  --border:#e3e6eb;
+  --text:#1a2332;
+  --muted:#66707c;
+}
+html{font-size:16px}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+    "Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  line-height:1.5;
+}
+.app-nav{background:var(--brand);}
+.app-nav .navbar-brand{
+  display:flex;align-items:center;gap:.5rem;color:#fff;font-weight:600;font-size:1.05rem;
+}
+.app-nav .navbar-brand:hover{color:#fff}
+.brand-logo{width:1.5rem;height:1.5rem;flex:none}
+.app-nav .nav-link{color:#c6d0dc}
+.app-nav .nav-link:hover{color:#fff}
+.app-nav .nav-link.active{color:#fff;font-weight:600}
+.app-footer{border-top:1px solid var(--border);color:var(--muted);font-size:.85rem;background:var(--surface)}
+.page-title{font-weight:600}
+.section-title{font-size:1.05rem;font-weight:600;margin-top:1.5rem}
+.app-table th{color:var(--muted);font-weight:600;font-size:.85rem;border-bottom:2px solid var(--border)}
+.app-table td{vertical-align:middle}
+.rank-badge{
+  display:inline-flex;min-width:1.7rem;height:1.7rem;align-items:center;justify-content:center;
+  border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
+}
+.empty-state{text-align:center;color:var(--muted);padding:2.5rem 1rem}
+.log-scroll{max-height:12rem;overflow-y:auto}
+.form-label{font-weight:500}
+"""
+
+
+def _footer() -> str:
+    year = str(_dt_class.now().year)
+    return (
+        '<footer class="app-footer">'
+        '<div class="container d-flex flex-column flex-md-row justify-content-between '
+        'align-items-center py-3 gap-1">'
+        f'<span>&copy; {year} 每日机会</span>'
+        '<span>沪深300 选股与交易计划 &middot; 数据仅供参考，不构成投资建议</span>'
+        '</div></footer>'
+    )
+
+
+def _nav(active: str) -> str:
+    picks_cls = "nav-link active" if active == "picks" else "nav-link"
+    plan_cls = "nav-link active" if active == "plan" else "nav-link"
+    return (
+        '<nav class="navbar navbar-expand-md app-nav">'
+        '<div class="container">'
+        f'<a class="navbar-brand" href="/">{_LOGO}<span>每日机会</span></a>'
+        '<button class="navbar-toggler" type="button" data-bs-toggle="collapse" '
+        'data-bs-target="#appNav" aria-controls="appNav" aria-expanded="false" '
+        'aria-label="切换导航"><span class="navbar-toggler-icon"></span></button>'
+        '<div class="collapse navbar-collapse" id="appNav">'
+        '<div class="navbar-nav ms-auto">'
+        f'<a class="{picks_cls}" href="/">每日机会</a>'
+        f'<a class="{plan_cls}" href="/plan">交易计划</a>'
+        '</div></div></div></nav>'
+    )
+
+
+_SHELL = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>每日机会</title>
+<title>__TITLE__</title>
 <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
-</head><body class="bg-light">
-<div class="container py-4">
-  <h1 class="mb-3">每日机会</h1>
-  <div id="dashboard"></div>
+<style>__CSS__</style>
+</head>
+<body>
+__NAV__
+__BODY__
+__FOOTER__
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="/static/common.js"></script>
 <script src="/static/dashboard.js"></script>
-<script>startDashboard();</script>
+<script>
+__SCRIPT__
+</script>
+</body>
+</html>"""
+
+
+def _page(title: str, active: str, body: str, script: str) -> str:
+    return (
+        _SHELL
+        .replace("__TITLE__", title)
+        .replace("__CSS__", _APP_CSS)
+        .replace("__NAV__", _nav(active))
+        .replace("__BODY__", body)
+        .replace("__FOOTER__", _footer())
+        .replace("__SCRIPT__", script)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page bodies + scripts
+# ---------------------------------------------------------------------------
+
+PAGE_BODY = """<main class="container py-4">
+  <div class="d-flex align-items-baseline justify-content-between mb-3">
+    <h1 class="h3 mb-0 page-title">每日机会</h1>
+    <span class="text-muted small" id="page-date">日期：{{today}}</span>
+  </div>
+
+  <div id="dashboard"></div>
+
   <div class="row g-2 align-items-center mb-3">
-    <div class="col-auto"><label class="form-label mb-0">日期</label></div>
+    <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
     <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary">重算榜单</button></div>
     <div class="col-auto"><button id="btn-sync" class="btn btn-primary">同步行情并重算</button></div>
-    <div class="col-auto"><a class="btn btn-outline-secondary" href="/plan">查看 Plan</a></div>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
   <div id="log" class="mb-3"></div>
   <div id="board"></div>
-</div>
-<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
-<script>
-function fmt(v){return v==null?'-':Number(v).toFixed(2)}
-function setStatus(html, cls){$('#status').html(html?'<div class="alert '+cls+'">'+html+'</div>':'')}
-function setProgress(pct){
-  if (pct==null) {$('#prog').empty(); return;}
-  var color = pct>=100 ? 'bg-success' : 'bg-primary';
-  $('#prog').html('<div class="progress" style="height:1.4rem">'+
-    '<div class="progress-bar progress-bar-striped progress-bar-animated '+color+'" style="width:'+pct+'%">'+pct+'%</div></div>');
-}
-function setLog(lines){
-  if (!lines || !lines.length) {$('#log').empty(); return;}
-  var items = lines.map(function(l){return '<div class="border-bottom py-1 text-muted" style="font-size:.85rem">'+l+'</div>'});
-  $('#log').html('<div class="card"><div class="card-body" style="max-height:14rem;overflow-y:auto">'+items.join('')+'</div></div>');
-}
-function render(date){
+</main>"""
+
+PAGE_SCRIPT = """function render(date){
   $.getJSON('/api/picks', {date: date}, function(data){
     var groups = data.groups || {};
     var html = '';
     ['均线','买入信号'].forEach(function(kind){
       var rs = groups[kind] || [];
-      html += '<h2>'+kind+' Top'+rs.length+'</h2>';
-      html += '<table class="table table-striped table-hover align-middle"><thead><tr>'+
+      html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">Top '+rs.length+'</span></h2>';
+      html += '<div class="table-responsive"><table class="table table-hover align-middle app-table"><thead><tr>'+
         '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th>买入</th><th>止损</th><th>目标</th><th>评分</th>'+
         '</tr></thead><tbody>';
+      if (!rs.length) html += '<tr><td colspan="8" class="text-center text-muted py-4">该分类暂无数据</td></tr>';
       rs.forEach(function(r){
-        html += '<tr><td>'+r.rank+'</td><td>'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
+        html += '<tr><td><span class="rank-badge">'+r.rank+'</span></td>'+
+          '<td class="font-monospace">'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
           '<td>'+fmt(r.buy)+'</td><td>'+fmt(r.stop)+'</td><td>'+fmt(r.target)+'</td><td>'+
-          (r.score==null?'-':r.score)+'</td></tr>';
+          (r.score==null?'—':r.score)+'</td></tr>';
       });
-      html += '</tbody></table>';
+      html += '</tbody></table></div>';
     });
-    $('#board').html(html || '<p>该日期无数据</p>');
+    $('#board').html(html || '<div class="empty-state">该日期暂无选股数据</div>');
   });
 }
 function loadDates(){
@@ -111,34 +221,24 @@ function poll(jobId){
   });
 }
 $(function(){
-  $('#d').on('change', function(){render($(this).val())});
-  $('#btn-recalc').on('click', function(){refresh(false)});
-  $('#btn-sync').on('click', function(){refresh(true)});
+  $('#d').on('change', function(){ render($(this).val()); });
+  $('#btn-recalc').on('click', function(){ refresh(false); });
+  $('#btn-sync').on('click', function(){ refresh(true); });
+  startDashboard();
   loadDates();
-});
-</script></body></html>"""
+});"""
 
-
-PLAN_PAGE = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>每日 Plan</title>
-<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
-</head><body class="bg-light">
-<div class="container py-4">
-  <div id="dashboard"></div>
-<script src="/static/dashboard.js"></script>
-<script>startDashboard();</script>
-  <div class="d-flex align-items-center mb-3">
-    <a class="btn btn-link p-0 me-3" href="/">&larr; 返回榜单</a>
-    <h1 class="mb-0">每日 Plan（paper）</h1>
+PLAN_BODY = """<main class="container py-4">
+  <div class="d-flex align-items-baseline justify-content-between mb-3">
+    <h1 class="h3 mb-0 page-title">交易计划 <span class="badge bg-secondary align-middle">paper</span></h1>
   </div>
+
+  <div id="dashboard"></div>
+
   <div class="row g-2 align-items-center mb-3">
-    <div class="col-auto"><label class="form-label mb-0">日期</label></div>
+    <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
-    <div class="col-auto">
-      <button id="btn-build" class="btn btn-primary">生成 plan</button>
-    </div>
+    <div class="col-auto"><button id="btn-build" class="btn btn-primary">生成 plan</button></div>
     <div class="col-auto">
       <div class="form-check"><input id="include-failed" type="checkbox" class="form-check-input">
         <label for="include-failed" class="form-check-label">含 failed</label></div>
@@ -148,18 +248,9 @@ PLAN_PAGE = """<!doctype html>
   <div id="prog" class="mb-3"></div>
   <div id="log" class="mb-3"></div>
   <div id="board"></div>
-</div>
-<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-<script>
-function fmt(v){return v==null?'-':Number(v).toFixed(2)}
-function setStatus(html, cls){$('#status').html(html?'<div class="alert '+cls+'">'+html+'</div>':'')}
-function setProgress(pct){
-  if (pct==null) {$('#prog').empty(); return;}
-  var color = pct>=100 ? 'bg-success' : 'bg-primary';
-  $('#prog').html('<div class="progress" style="height:1.4rem">'+
-    '<div class="progress-bar progress-bar-striped progress-bar-animated '+color+'" style="width:'+pct+'%">'+pct+'%</div></div>');
-}
-var ACTION_META = {
+</main>"""
+
+PLAN_SCRIPT = """var ACTION_META = {
   buy:  {label: '买入', cls: 'bg-success'},
   hold: {label: '持有', cls: 'bg-secondary'},
   exit: {label: '退出', cls: 'bg-warning text-dark'}
@@ -168,7 +259,7 @@ function actionMeta(a){ return ACTION_META[a] || {label:a, cls:'bg-light text-da
 function statusBadge(s){ return s==='ok' ? 'bg-success' : 'bg-danger'; }
 function row(r){
   var meta = actionMeta(r.action);
-  var sizePct = r.size_pct==null ? '-' : (r.size_pct*100).toFixed(1) + '%';
+  var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
   var rationale;
   try {
     var obj = JSON.parse(r.rationale_json || '{}');
@@ -176,11 +267,11 @@ function row(r){
     rationale = keys.length
       ? '<details><summary class="text-muted">'+keys.length+' 字段</summary>' +
         '<pre class="mb-0 small">' + JSON.stringify(obj, null, 2) + '</pre></details>'
-      : '<span class="text-muted">-</span>';
+      : '<span class="text-muted">—</span>';
   } catch(e) {
-    rationale = '<small class="text-muted" style="font-family:monospace">'+(r.rationale_json||'-')+'</small>';
+    rationale = '<small class="text-muted font-monospace">'+(r.rationale_json||'—')+'</small>';
   }
-  return '<tr><td><code>'+r.code+'</code></td>' +
+  return '<tr><td class="font-monospace">'+r.code+'</td>' +
     '<td>'+(r.name||'<span class="text-muted">—</span>')+'</td>' +
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
     '<td>'+fmt(r.plan_price)+'</td>' +
@@ -196,7 +287,7 @@ function render(date){
   var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
   $.getJSON('/api/plan/'+date, {include_failed: includeFailed}, function(data){
     var rows = data.rows || [];
-    if (!rows.length) { $('#board').html('<p class="text-muted">该日期无 plan</p>'); return; }
+    if (!rows.length) { $('#board').html('<div class="empty-state">该日期暂无 plan</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
     var buySize = 0, failed = 0;
     rows.forEach(function(r){
@@ -217,19 +308,15 @@ function render(date){
       var rs = groups[a] || [];
       if (!rs.length) return;
       var meta = actionMeta(a);
-      html += '<h5 class="mt-3"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h5>';
-      html += '<table class="table table-sm table-striped table-hover align-middle"><thead><tr>' +
+      html += '<h2 class="section-title"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h2>';
+      html += '<div class="table-responsive"><table class="table table-sm table-hover align-middle app-table"><thead><tr>' +
         '<th>代码</th><th>名称</th><th>方向</th><th>计划价</th><th>仓位</th><th>止损</th><th>止盈</th><th>RR</th><th>状态</th><th>理由</th>' +
-        '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table>';
+        '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
     });
     $('#board').html(html);
   }).fail(function(){ setStatus('加载失败','alert-danger'); });
 }
-function setLog(lines){
-  if (!lines || !lines.length) {$('#log').empty(); return;}
-  var items = lines.map(function(l){return '<div class="border-bottom py-1 text-muted" style="font-size:.85rem">'+l+'</div>'});
-  $('#log').html('<div class="card"><div class="card-body" style="max-height:12rem;overflow-y:auto">'+items.join('')+'</div></div>');
-}
+function loadDates(){ render($('#d').val()); }
 function buildPlan(){
   var date = $('#d').val();
   if (!date) { setStatus('请先选日期','alert-warning'); return; }
@@ -276,9 +363,9 @@ $(function(){
   $('#d').on('change', function(){ render($(this).val()); });
   $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
   $('#btn-build').on('click', buildPlan);
+  startDashboard();
   render($('#d').val());
-});
-</script></body></html>"""
+});"""
 
 
 JOBS: dict[str, dict] = {}
@@ -412,12 +499,22 @@ def create_app(db_path="hs300.db", top=10):
     @app.get("/")
     def index():
         from datetime import date as _date
-        return PAGE.replace("{{today}}", _date.today().isoformat())
+        today = _date.today().isoformat()
+        return _page(
+            "每日机会", "picks",
+            PAGE_BODY.replace("{{today}}", today),
+            PAGE_SCRIPT,
+        )
 
     @app.get("/plan")
     def plan_page():
         from datetime import date as _date
-        return PLAN_PAGE.replace("{{today}}", _date.today().isoformat())
+        today = _date.today().isoformat()
+        return _page(
+            "每日 Plan", "plan",
+            PLAN_BODY.replace("{{today}}", today),
+            PLAN_SCRIPT,
+        )
 
     @app.get("/api/dates")
     def dates():
@@ -534,7 +631,7 @@ def create_app(db_path="hs300.db", top=10):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="每日选股结果 Web 服务（Flask）")
+    parser = argparse.ArgumentParser(description="每日机会 Web 服务（Flask）")
     parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
     parser.add_argument("--port", type=int, default=8000, help="监听端口")
     parser.add_argument("--top", type=int, default=10, help="榜单数量")
