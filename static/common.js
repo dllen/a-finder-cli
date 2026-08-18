@@ -25,7 +25,9 @@ function setLog(lines) {
   $('#log').html('<div class="card"><div class="card-body log-scroll">' + items.join('') + '</div></div>');
 }
 
+var __loadingSince = 0;
 function showBoardLoading() {
+  __loadingSince = Date.now();
   var rows = '';
   for (var i = 0; i < 5; i++) {
     rows += '<div class="skeleton skeleton-row"></div>';
@@ -33,4 +35,11 @@ function showBoardLoading() {
   $('#board').html(
     '<div class="app-card skeleton-table" aria-busy="true" aria-label="加载中">' + rows + '</div>'
   );
+}
+
+// 保证骨架屏至少展示 minMs，避免本地响应太快一闪而过
+function whenBoardReady(fn, minMs) {
+  var elapsed = Date.now() - __loadingSince;
+  var wait = Math.max(0, (minMs || 300) - elapsed);
+  setTimeout(fn, wait);
 }

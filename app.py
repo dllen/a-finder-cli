@@ -280,9 +280,11 @@ function drawBoard(){
 function render(date){
   showBoardLoading();
   $.getJSON('/api/picks', {date: date}, function(data){
-    PICKS_STATE.data = data;
-    PICKS_STATE.sort = { kind: null, key: null, dir: -1 };
-    drawBoard();
+    whenBoardReady(function(){
+      PICKS_STATE.data = data;
+      PICKS_STATE.sort = { kind: null, key: null, dir: -1 };
+      drawBoard();
+    });
   });
 }
 function loadDates(){
@@ -405,6 +407,10 @@ function render(date){
   showBoardLoading();
   var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
   $.getJSON('/api/plan/'+date, {include_failed: includeFailed}, function(data){
+    whenBoardReady(function(){ drawPlan(data); });
+  }).fail(function(){ setStatus('加载失败','alert-danger'); });
+}
+function drawPlan(data){
     var rows = data.rows || [];
     if (!rows.length) { $('#board').html('<div class="empty-state">该日期暂无 plan</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
@@ -433,7 +439,6 @@ function render(date){
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
     });
     $('#board').html(html);
-  }).fail(function(){ setStatus('加载失败','alert-danger'); });
 }
 function loadDates(){ render($('#d').val()); }
 function buildPlan(){
