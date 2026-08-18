@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Callable, Dict, List
 
 from domain_models import Stock
@@ -55,16 +55,13 @@ def run_strategy_backtest(
     if not valid:
         return BacktestResult(strategy, 0, 0, 0.0, 0.0, 0.0, False)
     n = min(len(s.prices) for s in valid)
-    code_to_stock = {s.code: s for s in valid}
     returns: List[float] = []
     for idx in range(60, n - 1):
         regime = regimes[idx] if idx < len(regimes) else RegimeType.SIDEWAYS
         for s in valid:
             sigs = detect(_snapshot(s, idx), regime)
             for sig in sigs:
-                full = code_to_stock[sig.code]
-                ret = _simulate(full, idx, sig, max_hold)
-                returns.append(ret)
+                returns.append(_simulate(s, idx, sig, max_hold))
     wins = sum(1 for r in returns if r > 0)
     losses = [r for r in returns if r <= 0]
     gains = [r for r in returns if r > 0]
