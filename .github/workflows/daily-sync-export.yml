@@ -42,6 +42,7 @@ jobs:
         run: |
           python export_json.py --db hs300.db --out site
           cp site/index.html site/404.html
+          touch site/.nojekyll
 
       - name: Save hs300.db to cache
         uses: actions/cache@v4
@@ -49,14 +50,10 @@ jobs:
           path: hs300.db
           key: hs300-db-${{ github.run_id }}
 
-      - name: Commit generated site
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add site/
-          if git diff --cached --quiet; then
-            echo "no changes"
-          else
-            git commit -m "chore: regenerate static site ($(date +%F))"
-            git push
-          fi
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          force_orphan: true

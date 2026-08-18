@@ -13,3 +13,4 @@ logs/
 *.db
 .worktrees/
 .web.pid
+site/
