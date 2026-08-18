@@ -200,7 +200,7 @@ PAGE_BODY = """<main class="container py-4">
   <div id="board"></div>
 </main>"""
 
-PAGE_SCRIPT = """var PICKS_STATE = { data: null, sort: { kind: null, key: null, dir: -1 } };
+PAGE_SCRIPT = """var PICKS_STATE = { data: null, sort: { key: 'score', dir: -1 } };
 
 var PICKS_COLS = [
   { key: 'code',     label: '代码', type: 'str',  cls: '' },
@@ -246,14 +246,14 @@ function drawBoard(){
     if (!hasScore) return;  // 评分列为空 → 完全隐藏该组
     anyGroup = true;
     var s = PICKS_STATE.sort;
-    var rows = sortRows(rs, s.kind === kind ? s.key : null, s.dir);
+    var rows = sortRows(rs, s.key, s.dir);
     var maxScore = rows.reduce(function(m,r){ return r.score!=null && r.score>m ? r.score : m; }, 0);
     html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">Top '+rows.length+'</span></h2>';
     html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr><th>排名</th>';
     PICKS_COLS.forEach(function(c){
-      var active = s.kind === kind && s.key === c.key;
+      var active = s.key === c.key;
       var arrow = active ? (s.dir === -1 ? ' \u25BC' : ' \u25B2') : '';
-      html += '<th class="'+c.cls+' sortable'+(active?' sorted':'')+'" data-sort="'+c.key+'" data-kind="'+kind+'">'+c.label+arrow+'</th>';
+      html += '<th class="'+c.cls+' sortable'+(active?' sorted':'')+'" data-sort="'+c.key+'">'+c.label+arrow+'</th>';
     });
     html += '</tr></thead><tbody>';
     rows.forEach(function(r, i){
@@ -282,7 +282,7 @@ function render(date){
   $.getJSON('/api/picks', {date: date}, function(data){
     whenBoardReady(function(){
       PICKS_STATE.data = data;
-      PICKS_STATE.sort = { kind: null, key: null, dir: -1 };
+      PICKS_STATE.sort = { key: 'score', dir: -1 };
       drawBoard();
     });
   });
@@ -335,12 +335,11 @@ $(function(){
   $('#btn-sync').on('click', function(){ refresh(true); });
   $('#board').on('click', 'th.sortable', function(){
     var key = $(this).data('sort');
-    var kind = $(this).data('kind');
     var s = PICKS_STATE.sort;
-    if (s.kind === kind && s.key === key) {
+    if (s.key === key) {
       s.dir = -s.dir;
     } else {
-      s.kind = kind; s.key = key; s.dir = -1;
+      s.key = key; s.dir = -1;
     }
     drawBoard();
   });
