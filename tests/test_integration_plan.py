@@ -94,12 +94,12 @@ def test_end_to_end_plan_pipeline():
 # ---------------------------------------------------------------------------
 
 def test_rebuild_plan_is_idempotent():
-    """Second build_plan for same plan_date must NOT duplicate trade_plan rows.
+    """Second build_plan for same plan_date must NOT duplicate any side-effect.
 
-    UNIQUE(plan_date, code, action) protects trade_plan via INSERT OR IGNORE.
-    On the second run, the pick is still here → buy row ignored as dup.
-    But carryover may insert a new (date, code, hold) row, which is expected
-    and not a regression. So we assert buy rows specifically are stable.
+    C1: paper fills gated on `insert_trade_plan > 0` so:
+      - trade_plan rows: stable per (date, code, action)
+      - open_positions: stable (no duplicate fill)
+      - trade_events: stable (no duplicate 'open' event)
     """
     path, conn = _fresh_db()
     try:
@@ -114,10 +114,11 @@ def test_rebuild_plan_is_idempotent():
 
     conn = open_db(path)
     try:
-        buys_before = len(
-            get_trade_plan_by_date(conn, "2026-08-18", include_failed=True)
-        )
-        assert buys_before >= 1
+        plan_before = get_trade_plan_by_date(conn, "2026-08-18", include_failed=True)
+        opens_before = get_open_positions(conn)
+        events_before = conn.execute(
+            "SELECT code, event_type FROM trade_events"
+        ).fetchall()
     finally:
         conn.close()
 
@@ -126,13 +127,26 @@ def test_rebuild_plan_is_idempotent():
 
     conn = open_db(path)
     try:
-        rows_after = get_trade_plan_by_date(conn, "2026-08-18", include_failed=True)
-        buy_codes = [r["code"] for r in rows_after if r["action"] == "buy"]
+        plan_after = get_trade_plan_by_date(conn, "2026-08-18", include_failed=True)
+        opens_after = get_open_positions(conn)
+        events_after = conn.execute(
+            "SELECT code, event_type FROM trade_events"
+        ).fetchall()
     finally:
         conn.close()
 
     # Buy row for this code present exactly once.
+    buy_codes = [r["code"] for r in plan_after if r["action"] == "buy"]
     assert buy_codes.count("600519") == 1
+    # No new open position row (C1: paper fill must not duplicate).
+    assert len(opens_after) == len(opens_before) == 1
+    # No new trade_event row.
+    assert len(events_after) == len(events_before) == 1
+    # Buy row count is stable. Hold/exit rows from carryover legitimately
+    # accumulate (the carryover was just opened on the first run).
+    buys_before = [r for r in plan_before if r["action"] == "buy"]
+    buys_after = [r for r in plan_after if r["action"] == "buy"]
+    assert len(buys_after) == len(buys_before)
 
 
 def test_ma_backtest_importable_after_refactor():
@@ -142,3 +156,102 @@ def test_ma_backtest_importable_after_refactor():
     # didn't break the canonical entry point.
     import ma_backtest  # noqa: F401
     assert callable(ma_backtest.run_backtest)
+
+
+# ---------------------------------------------------------------------------
+# Final-fix wave: C2 + C3 coverage
+# ---------------------------------------------------------------------------
+
+def test_held_code_not_rebought():
+    """C2: a code held from yesterday that appears again in today's picks
+    must NOT yield a new buy row, NOT yield a duplicate open_positions row,
+    and the held size_pct must be counted toward max_total.
+    """
+    path, conn = _fresh_db()
+    try:
+        # Open position from prior day for 600519, size 0.10
+        conn.execute(
+            """INSERT INTO open_positions
+               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'open')""",
+            ("600519", "2026-08-10", 100.0, 0.10, 92.0, 120.0),
+        )
+        # Today's pick for the SAME code — should be skipped
+        _seed_pick(conn, date="2026-08-18", code="600519", score=2.0)
+        # A second held-eligible pick for 000001 to verify it CAN buy
+        _seed_pick(conn, date="2026-08-18", code="000001", score=2.0)
+        _seed_price(conn, code="600519", close=100.0, trade_date="2026-08-18")
+        _seed_price(conn, code="000001", close=50.0, trade_date="2026-08-18")
+    finally:
+        conn.close()
+
+    from plan_builder import build_plan
+    result = build_plan(
+        "2026-08-18", path,
+        params={"regime": "BULL", "max_total": 0.95},
+    )
+
+    # 600519: hold row only, NO buy row
+    actions_600519 = [r.action for r in result.rows if r.code == "600519"]
+    assert "buy" not in actions_600519
+    assert "hold" in actions_600519
+
+    # 000001: buy row only
+    actions_000001 = [r.action for r in result.rows if r.code == "000001"]
+    assert "buy" in actions_000001
+
+    # Only one open position for 600519 (the original carryover)
+    conn = open_db(path)
+    try:
+        opens = conn.execute(
+            "SELECT code, status FROM open_positions WHERE code='600519'"
+        ).fetchall()
+    finally:
+        conn.close()
+    open_rows = [o for o in opens if o[1] == "open"]
+    assert len(open_rows) == 1
+
+    # Total exposure (held 0.10 + buy 0.15 = 0.25) is within max_total=0.95
+    total = sum(r.size_pct for r in result.rows if r.action in ("buy", "hold"))
+    assert total <= 0.95 + 0.001
+
+
+def test_tp_exit_fires_when_price_above_tp():
+    """C3: take-profit must fire when cur_px >= tp_price."""
+    path, conn = _fresh_db()
+    try:
+        # Open position with tp_price=110; current price above tp → tp_hit
+        conn.execute(
+            """INSERT INTO open_positions
+               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'open')""",
+            ("000002", "2026-08-10", 100.0, 0.10, 92.0, 110.0),
+        )
+        _seed_price(conn, code="000002", close=115.0, trade_date="2026-08-18")
+    finally:
+        conn.close()
+
+    from plan_builder import build_plan
+    result = build_plan("2026-08-18", path, params={"regime": "BULL"})
+
+    exits = [r for r in result.rows if r.action == "exit"]
+    assert len(exits) == 1
+    assert exits[0].code == "000002"
+    assert exits[0].rationale.get("trigger") == "tp_hit"
+
+    conn = open_db(path)
+    try:
+        opens = get_open_positions(conn)
+        events = conn.execute(
+            "SELECT event_type, pnl_pct FROM trade_events"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Position closed
+    assert opens == []
+    # Close event recorded with positive pnl
+    close_events = [e for e in events if e[0] == "close"]
+    assert len(close_events) == 1
+    # pnl = (115/100 - 1) * 100 = 15.0
+    assert abs(close_events[0][1] - 15.0) < 0.01
