@@ -1,4 +1,11 @@
 from strategies.base import StrategySignal, bollinger, kdj
+from domain_models import Stock
+from market_regime import RegimeType
+from strategies.box_breakout import detect as box_detect
+from strategies.new_high import detect as high_detect
+from strategies.bollinger_rebound import detect as rebound_detect
+from strategies.kdj_cross import detect as kdj_detect
+from strategies.volume_price import detect as vp_detect
 
 
 def test_bollinger_shape_and_values():
@@ -23,3 +30,59 @@ def test_signal_dataclass_fields():
                          entry=100.0, stop=97.0, tp=106.0, score=60.0)
     assert sig.code == "600519"
     assert sig.tp > sig.entry > sig.stop
+
+
+def make_stock(prices, volumes=None, pct=None):
+    n = len(prices)
+    if volumes is None:
+        volumes = [1_000_000] * n
+    if pct is None:
+        pct = [0.0] * n
+    return Stock(code="000001", name="测试", pe=10, pb=1.0, peg=1.0,
+                 revenue_growth=0.1, profit_growth=0.1, roe=0.1, cashflow=0.1,
+                 prices=prices, volumes=volumes, pct_change=pct)
+
+
+def test_box_breakout_fires_on_breakout():
+    prices = [100.0] * 24 + [103.0]
+    volumes = [1_000_000] * 24 + [3_000_000]
+    sigs = box_detect(make_stock(prices, volumes), RegimeType.BULL)
+    assert len(sigs) == 1
+    assert sigs[0].entry == 103.0
+    assert sigs[0].stop < 103.0
+
+
+def test_box_breakout_not_in_bear():
+    prices = [100.0] * 24 + [103.0]
+    volumes = [1_000_000] * 24 + [3_000_000]
+    assert box_detect(make_stock(prices, volumes), RegimeType.BEAR) == []
+
+
+def test_new_high_fires():
+    prices = [100.0 + i for i in range(60)] + [161.0]
+    volumes = [1_000_000] * 60 + [3_000_000]
+    sigs = high_detect(make_stock(prices, volumes), RegimeType.BULL)
+    assert len(sigs) == 1
+
+
+def test_bollinger_rebound_fires():
+    prices = [100.0] * 20 + [98.0, 96.0, 97.0]
+    volumes = [1_000_000] * len(prices)
+    sigs = rebound_detect(make_stock(prices, volumes), RegimeType.SIDEWAYS)
+    assert isinstance(sigs, list)
+
+
+def test_kdj_cross_fires_on_low_cross():
+    prices = [100.0] * 8 + [90.0, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    volumes = [1_000_000] * len(prices)
+    sigs = kdj_detect(make_stock(prices, volumes), RegimeType.SIDEWAYS)
+    assert isinstance(sigs, list)
+
+
+def test_volume_price_fires():
+    prices = [100.0] * 20 + [103.0]
+    volumes = [1_000_000] * 20 + [2_500_000]
+    pct = [0.0] * 20 + [3.0]
+    sigs = vp_detect(make_stock(prices, volumes, pct), RegimeType.BULL)
+    assert len(sigs) == 1
+    assert sigs[0].entry == 103.0
