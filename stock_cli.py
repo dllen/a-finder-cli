@@ -8,7 +8,7 @@ from analysis_service import get_scores
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    if args.command in ("sync-hs300", "sync-hs300-range", "sync-hs300-meta", "meta", "show-offsets") or args.command is None:
+    if args.command in ("sync-hs300", "sync-hs300-range", "sync-hs300-meta", "meta", "show-offsets", "plan") or args.command is None:
         run_cli(args, [], {})
         return
     min_days = 220 if args.command == "ma-picks" else (61 if args.command == "buy-signals" else 60)

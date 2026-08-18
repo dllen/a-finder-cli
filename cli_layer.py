@@ -227,6 +227,21 @@ def build_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument("--code", type=str, help="信号指定股票代码")
     ui_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
 
+    plan_parser = subparsers.add_parser("plan", help="生成 / 查看每日交易计划（paper）")
+    plan_parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD（默认今日）")
+    plan_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
+    plan_parser.add_argument("--rr-target", type=float, default=None, help="止盈/止损比（覆盖 config）")
+    plan_parser.add_argument("--max-single", type=float, default=None, help="单只最大仓位（覆盖 config）")
+    plan_parser.add_argument("--slippage", type=float, default=None, help="纸面撮合滑点（覆盖 config）")
+    plan_parser.add_argument("--regime", type=str, default=None,
+                              choices=["bull", "bear", "sideways"], help="市场状态")
+    plan_parser.add_argument("--dry-run", action="store_true", help="仅打印将处理的日期，不写库")
+    plan_parser.add_argument("--list", dest="list_mode", action="store_true",
+                              help="列出最近 N 天已生成的 plan")
+    plan_parser.add_argument("--days", type=int, default=30, help="--list 时回看天数")
+    plan_parser.add_argument("--show", dest="show_mode", action="store_true",
+                              help="显示某日 plan 详情（含 failed 行）")
+
     return parser
 
 
@@ -295,5 +310,88 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         print(format_overview(stocks, scores))
     elif args.command == "ui":
         run_textual_ui(stocks, scores, args.top, args.code)
+    elif args.command == "plan":
+        _run_plan(args)
     else:
         build_parser().print_help()
+
+
+def _run_plan(args) -> None:
+    """CLI handler for `plan` subcommand: build / list / show."""
+    from datetime import date as _date
+    from config import (
+        MAX_SINGLE as DEFAULT_MAX_SINGLE,
+        MAX_TOTAL as DEFAULT_MAX_TOTAL,
+        RR_TARGET as DEFAULT_RR_TARGET,
+        SLIPPAGE as DEFAULT_SLIPPAGE,
+    )
+    from db_repository import open_db, get_trade_plan_by_date
+    from plan_builder import build_plan
+
+    today = _date.today().isoformat()
+    plan_date = args.date or today
+
+    # --- list mode: skip build, query trade_plan directly ---
+    if args.list_mode:
+        from datetime import date as _date, timedelta
+        end = _date.fromisoformat(plan_date)
+        start = end - timedelta(days=args.days)
+        conn = open_db(args.db)
+        try:
+            cur = conn.execute(
+                "SELECT DISTINCT plan_date FROM trade_plan "
+                "WHERE plan_date >= ? AND plan_date <= ? ORDER BY plan_date DESC",
+                (start.isoformat(), end.isoformat()),
+            )
+            dates = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+        if not dates:
+            print(f"无 plan（{start} ~ {end}）")
+            return
+        print(f"已生成 plan（共 {len(dates)} 天）：")
+        for d in dates:
+            print(f"  {d}")
+        return
+
+    # --- show mode: read existing trade_plan for the date ---
+    if args.show_mode:
+        conn = open_db(args.db)
+        try:
+            rows = get_trade_plan_by_date(conn, plan_date, include_failed=True)
+        finally:
+            conn.close()
+        if not rows:
+            print(f"无 plan：{plan_date}")
+            return
+        print(f"plan_date={plan_date} rows={len(rows)}")
+        for r in rows:
+            print(f"  {r['action']:4s} {r['code']} px={r['plan_price']:.2f} "
+                  f"size={r['size_pct']} stop={r['stop_price']:.2f} "
+                  f"tp={r['tp_price']:.2f} rr={r['rr_ratio']:.2f} "
+                  f"status={r['status']} reason={r['reason']}")
+        return
+
+    # --- build mode ---
+    params: dict = {
+        "max_single": args.max_single if args.max_single is not None else DEFAULT_MAX_SINGLE,
+        "max_total": DEFAULT_MAX_TOTAL,
+        "rr_target": args.rr_target if args.rr_target is not None else DEFAULT_RR_TARGET,
+        "regime": args.regime or "sideways",
+    }
+    slippage = args.slippage if args.slippage is not None else DEFAULT_SLIPPAGE
+
+    if args.dry_run:
+        print(f"[dry-run] would build plan for {plan_date} (params={params})")
+        return
+
+    result = build_plan(plan_date, args.db, params, slippage=slippage)
+    print(f"plan_date={plan_date} picks={result.num_picks} "
+          f"open={result.num_open_positions} sanity={result.sanity_passed}")
+    if result.sanity_reasons:
+        print(f"sanity_reasons: {result.sanity_reasons}")
+    for r in result.rows:
+        print(f"  {r.action:4s} {r.code} px={r.plan_price:.2f} "
+              f"size={r.size_pct} stop={r.stop_price:.2f} "
+              f"tp={r.tp_price:.2f} rr={r.rr_ratio:.2f} "
+              f"status={r.status} reason={r.reason}")

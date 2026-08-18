@@ -21,6 +21,7 @@ PAGE = """<!doctype html>
     <div class="col-auto"><select id="d" class="form-select"></select></div>
     <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary">重算榜单</button></div>
     <div class="col-auto"><button id="btn-sync" class="btn btn-primary">同步行情并重算</button></div>
+    <div class="col-auto"><a class="btn btn-outline-secondary" href="/plan">查看 Plan</a></div>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
@@ -117,6 +118,72 @@ $(function(){
 </script></body></html>"""
 
 
+PLAN_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>每日 Plan</title>
+<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
+</head><body class="bg-light">
+<div class="container py-4">
+  <div class="d-flex align-items-center mb-3">
+    <a class="btn btn-link p-0 me-3" href="/">&larr; 返回榜单</a>
+    <h1 class="mb-0">每日 Plan（paper）</h1>
+  </div>
+  <div class="row g-2 align-items-center mb-3">
+    <div class="col-auto"><label class="form-label mb-0">日期</label></div>
+    <div class="col-auto"><select id="d" class="form-select"></select></div>
+    <div class="col-auto">
+      <div class="form-check"><input id="include-failed" type="checkbox" class="form-check-input">
+        <label for="include-failed" class="form-check-label">含 failed</label></div>
+    </div>
+  </div>
+  <div id="status" class="mb-3"></div>
+  <div id="board"></div>
+</div>
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script>
+function fmt(v){return v==null?'-':Number(v).toFixed(2)}
+function setStatus(html, cls){$('#status').html(html?'<div class="alert '+cls+'">'+html+'</div>':'')}
+function render(date){
+  var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
+  $.getJSON('/api/plan/'+date, {include_failed: includeFailed}, function(data){
+    var rows = data.rows || [];
+    var html = '<p class="text-muted">plan_date=' + data.plan_date + '，共 ' + rows.length + ' 行</p>';
+    html += '<table class="table table-striped table-hover align-middle"><thead><tr>' +
+      '<th>代码</th><th>方向</th><th>计划价</th><th>仓位%</th><th>止损</th><th>止盈</th><th>RR</th><th>状态</th><th>理由</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function(r){
+      html += '<tr><td>'+r.code+'</td><td>'+r.action+'</td>' +
+        '<td>'+fmt(r.plan_price)+'</td>' +
+        '<td>'+(r.size_pct==null?'-':(r.size_pct*100).toFixed(1))+'</td>' +
+        '<td>'+fmt(r.stop_price)+'</td>' +
+        '<td>'+fmt(r.tp_price)+'</td>' +
+        '<td>'+fmt(r.rr_ratio)+'</td>' +
+        '<td><span class="badge '+(r.status==="ok"?"bg-success":"bg-secondary")+'">'+r.status+'</span>' +
+          (r.reason? ' <small class="text-muted">'+r.reason+'</small>':'')+'</td>' +
+        '<td><small class="text-muted" style="font-family:monospace">'+(r.rationale_json||'-')+'</small></td></tr>';
+    });
+    html += '</tbody></table>';
+    $('#board').html(html || '<p>该日期无 plan</p>');
+  }).fail(function(){ setStatus('加载失败','alert-danger'); });
+}
+function loadDates(){
+  $.getJSON('/api/plan/dates', function(data){
+    var sel = $('#d').empty();
+    var dates = data.dates || [];
+    dates.forEach(function(d){ sel.append(new Option(d, d)); });
+    if (dates.length) render(dates[0]);
+    else { setStatus('暂无 plan，请先生成', 'alert-warning'); $('#board').empty(); }
+  });
+}
+$(function(){
+  $('#d').on('change', function(){ render($(this).val()); });
+  $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
+  loadDates();
+});
+</script></body></html>"""
+
+
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 
@@ -189,6 +256,10 @@ def create_app(db_path="hs300.db", top=10):
     def index():
         return PAGE
 
+    @app.get("/plan")
+    def plan_page():
+        return PLAN_PAGE
+
     @app.get("/api/dates")
     def dates():
         conn = open_conn(db_path)
@@ -226,6 +297,35 @@ def create_app(db_path="hs300.db", top=10):
         if data is None:
             return jsonify({"error": "任务不存在"}), 404
         return jsonify(data)
+
+    # ---- Plan (paper trading) ----
+    from datetime import date as _date
+    from db_repository import get_trade_plan_by_date as _get_plan
+
+    @app.get("/api/plan/dates")
+    def plan_dates():
+        conn = open_conn(db_path)
+        cur = conn.execute(
+            "SELECT DISTINCT plan_date FROM trade_plan ORDER BY plan_date DESC"
+        )
+        ds = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"dates": ds})
+
+    @app.get("/api/plan/today")
+    def plan_today():
+        conn = open_conn(db_path)
+        rows = _get_plan(conn, _date.today().isoformat())
+        conn.close()
+        return jsonify({"plan_date": _date.today().isoformat(), "rows": rows})
+
+    @app.get("/api/plan/<plan_date>")
+    def plan_by_date(plan_date):
+        include_failed = request.args.get("include_failed", "0") == "1"
+        conn = open_conn(db_path)
+        rows = _get_plan(conn, plan_date, include_failed=include_failed)
+        conn.close()
+        return jsonify({"plan_date": plan_date, "rows": rows})
 
     return app
 
