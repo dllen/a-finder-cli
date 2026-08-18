@@ -11,15 +11,42 @@ MIGRATIONS_DIR = Path(__file__).parent / "db" / "migrations"
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Apply all SQL files in db/migrations/ in lexical order.
+    """Apply unapplied SQL files in db/migrations/ in lexical order.
 
-    Statements are written with IF NOT EXISTS so this is idempotent
-    and safe to run on every open_db() call.
+    Each file is recorded in `_applied_migrations` after successful execution,
+    so non-idempotent statements (e.g. ALTER TABLE ADD COLUMN) only run once
+    across the lifetime of a database, even though _run_migrations is called
+    on every open_db().
     """
     if not MIGRATIONS_DIR.exists():
         return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _applied_migrations (
+            filename TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    applied = {
+        row[0]
+        for row in conn.execute("SELECT filename FROM _applied_migrations").fetchall()
+    }
     for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        conn.executescript(sql_file.read_text())
+        name = sql_file.name
+        if name in applied:
+            continue
+        try:
+            conn.executescript(sql_file.read_text())
+            conn.execute(
+                "INSERT INTO _applied_migrations (filename, applied_at) VALUES (?, ?)",
+                (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
 
 
 @dataclass
