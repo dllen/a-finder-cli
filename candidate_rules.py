@@ -145,13 +145,9 @@ def ma_strategy_candidates(
 def normalize_strategy_ratios(ratios: Dict[str, float] | None) -> Dict[str, float]:
     base = dict(DEFAULT_STRATEGY_RATIOS)
     if ratios:
-        for key in base:
-            if key in ratios:
-                base[key] = float(ratios[key])
-    total = sum(base.values())
-    if total <= 0:
-        return dict(DEFAULT_STRATEGY_RATIOS)
-    return {key: value / total for key, value in base.items()}
+        for key in ratios:
+            base[key] = float(ratios[key])
+    return base
 
 
 def select_candidates_with_quota(
@@ -164,17 +160,23 @@ def select_candidates_with_quota(
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
     if len(ranked) <= top:
         return ranked
-    groups: Dict[str, List[Candidate]] = {"多均线突破": [], "多均线回踩": [], "多均线趋势": []}
+    groups: Dict[str, List[Candidate]] = {}
     for item in ranked:
-        strategy = item["strategy"]
-        if strategy in groups:
-            groups[strategy].append(item)
+        groups.setdefault(item["strategy"], []).append(item)
     normalized = normalize_strategy_ratios(ratios)
+    for key in list(normalized):
+        if key not in groups:
+            normalized.pop(key)
+    total = sum(normalized.values())
+    if total <= 0:
+        normalized = {key: 1 / len(groups) for key in groups}
+    else:
+        normalized = {key: value / total for key, value in normalized.items()}
     targets: Dict[str, int] = {}
     fractions = []
     allocated = 0
-    for strategy, ratio in normalized.items():
-        raw_target = top * ratio
+    for strategy in groups:
+        raw_target = top * normalized.get(strategy, 0.0)
         base = int(raw_target)
         targets[strategy] = base
         allocated += base
@@ -182,32 +184,29 @@ def select_candidates_with_quota(
     for _, strategy in sorted(fractions, reverse=True):
         if allocated >= top:
             break
-        targets[strategy] += 1
+        targets[strategy] = targets.get(strategy, 0) + 1
         allocated += 1
     selected: List[Candidate] = []
     used_codes = set()
-    for strategy in ["多均线突破", "多均线回踩", "多均线趋势"]:
-        quota = targets[strategy]
-        if quota <= 0:
+    for item in ranked:
+        if len(selected) >= top:
+            break
+        strategy = item["strategy"]
+        if targets.get(strategy, 0) <= 0:
             continue
-        for item in groups[strategy]:
-            if len(selected) >= top or quota <= 0:
-                break
-            code = item["stock"].code
-            if code in used_codes:
-                continue
-            selected.append(item)
-            used_codes.add(code)
-            quota -= 1
+        if item["stock"].code in used_codes:
+            continue
+        selected.append(item)
+        used_codes.add(item["stock"].code)
+        targets[strategy] -= 1
     if len(selected) < top:
         for item in ranked:
             if len(selected) >= top:
                 break
-            code = item["stock"].code
-            if code in used_codes:
+            if item["stock"].code in used_codes:
                 continue
             selected.append(item)
-            used_codes.add(code)
+            used_codes.add(item["stock"].code)
     return selected
 
 

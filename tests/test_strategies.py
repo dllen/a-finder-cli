@@ -10,6 +10,7 @@ from strategies.kdj_cross import detect as kdj_detect
 from strategies.volume_price import detect as vp_detect
 import strategies
 from strategies.report import build_report
+from strategies.adapter import signal_to_candidate, merge_candidates
 
 
 def test_bollinger_shape_and_values():
@@ -157,3 +158,26 @@ def test_build_report_returns_five_entries():
     report = build_report([stock], {}, [RegimeType.BULL] * 80, max_hold=10)
     assert len(report) == 5
     assert all("strategy" in r and "passed" in r for r in report)
+
+
+def test_signal_to_candidate_shape():
+    stock = _up_stock(250)
+    sig = StrategySignal("000001", "箱体突破", entry=120.0, stop=116.0, tp=128.0, score=60.0)
+    cand = signal_to_candidate(stock, sig)
+    assert cand["strategy"] == "箱体突破"
+    assert cand["stock"].code == "000001"
+    assert cand["ma10"] > 0 and cand["ma200"] > 0
+    assert cand["volume_ratio"] > 0
+    assert cand["stop_price"] == sig.stop
+
+
+def test_merge_candidates_includes_passed_strategies():
+    # 构造一个真实的箱体突破样本：前 249 天窄幅平盘，末天放量突破上沿
+    prices = [100.0] * 249 + [103.0]
+    volumes = [1_000_000] * 249 + [3_000_000]
+    stock = Stock(code="000001", name="测试", pe=10, pb=1.0, peg=1.0,
+                  revenue_growth=0.1, profit_growth=0.1, roe=0.1, cashflow=0.1,
+                  prices=prices, volumes=volumes)
+    merged = merge_candidates([stock], RegimeType.BULL, {"箱体突破"})
+    strategies_ = {c["strategy"] for c in merged}
+    assert "箱体突破" in strategies_
