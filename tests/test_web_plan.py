@@ -124,6 +124,19 @@ def test_api_dashboard_returns_four_sections(plan_db, monkeypatch):
         "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
         "VALUES ('2026-08-17', 1, '均线', '600519', '2026-08-17 10:00:00')"
     )
+    # today_plan 依据真实系统日期，用当天重新建一条 buy/ok 行，避免测试随日期漂移。
+    from datetime import date as _date
+    conn.execute("DELETE FROM trade_plan")
+    conn.execute(
+        """INSERT INTO trade_plan
+        (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+         rr_ratio, status, reason, rationale_json, params_hash, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            _date.today().isoformat(), "600519", "buy", 1500.0, 0.10, 1380.0, 1740.0,
+            2.0, "ok", "", "{}", "deadbeef", "2026-08-18T00:00:00",
+        ),
+    )
     conn.commit()
     conn.close()
 

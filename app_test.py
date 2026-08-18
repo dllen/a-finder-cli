@@ -21,7 +21,7 @@ def client(tmp_path):
     )
     conn.execute(
         "INSERT INTO daily_picks (date, rank, kind, code, name, strategy, buy, stop, target, score) "
-        "VALUES ('2026-08-15', 1, '买入信号', '000001', '平安银行', '均线突破', 10.0, 9.5, 11.0, NULL)"
+        "VALUES ('2026-08-15', 1, '买入信号', '000001', '平安银行', '均线突破', 10.0, 9.5, 11.0, 8.0)"
     )
     conn.commit()
     conn.close()

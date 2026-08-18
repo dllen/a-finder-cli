@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -41,6 +42,20 @@ from app import (
 )
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
+
+# 静态页去掉写入类操作按钮（重算/同步/生成 plan/含 failed）。
+_WRITE_BTN = re.compile(
+    r'<div class="col-auto">\s*<button[^>]*write-control[^>]*>.*?</button>\s*</div>',
+    re.S,
+)
+_WRITE_CHECK = re.compile(
+    r'<div class="col-auto">\s*<div class="form-check write-control">.*?</div>\s*</div>',
+    re.S,
+)
+
+
+def _strip_write_controls(body: str) -> str:
+    return _WRITE_CHECK.sub("", _WRITE_BTN.sub("", body))
 
 
 def _dashboard_payload(conn) -> dict:
@@ -111,13 +126,13 @@ def export(db_path: str, out_dir: str) -> int:
 
     (out / "index.html").write_text(
         _page("每日机会", "picks",
-              PAGE_BODY.replace("{{today}}", picks_default),
+              _strip_write_controls(PAGE_BODY).replace("{{today}}", picks_default),
               PAGE_SCRIPT, config=STATIC_CONFIG, assets="static/"),
         encoding="utf-8",
     )
     (out / "plan.html").write_text(
         _page("每日 Plan", "plan",
-              PLAN_BODY.replace("{{today}}", plan_default),
+              _strip_write_controls(PLAN_BODY).replace("{{today}}", plan_default),
               PLAN_SCRIPT, config=STATIC_CONFIG, assets="static/"),
         encoding="utf-8",
     )
