@@ -24,3 +24,13 @@ function setLog(lines) {
   });
   $('#log').html('<div class="card"><div class="card-body log-scroll">' + items.join('') + '</div></div>');
 }
+
+function showBoardLoading() {
+  var rows = '';
+  for (var i = 0; i < 5; i++) {
+    rows += '<div class="skeleton skeleton-row"></div>';
+  }
+  $('#board').html(
+    '<div class="app-card skeleton-table" aria-busy="true" aria-label="加载中">' + rows + '</div>'
+  );
+}

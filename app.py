@@ -95,6 +95,16 @@ main{flex:1 0 auto;width:100%}
   border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
 }
 .empty-state{text-align:center;color:var(--muted);padding:2.5rem 1rem}
+.skeleton{position:relative;overflow:hidden;background:#eef1f4;border-radius:.35rem}
+.skeleton::after{
+  content:"";position:absolute;inset:0;
+  transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);
+  animation:shimmer 1.2s infinite;
+}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+.skeleton-row{height:2.4rem;margin:.5rem 0}
+.skeleton-table{padding:1rem}
 .log-scroll{max-height:12rem;overflow-y:auto}
 .form-label{font-weight:500}
 """
@@ -268,6 +278,7 @@ function drawBoard(){
 }
 
 function render(date){
+  showBoardLoading();
   $.getJSON('/api/picks', {date: date}, function(data){
     PICKS_STATE.data = data;
     PICKS_STATE.sort = { kind: null, key: null, dir: -1 };
@@ -391,6 +402,7 @@ function row(r){
     '<td>'+rationale+'</td></tr>';
 }
 function render(date){
+  showBoardLoading();
   var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
   $.getJSON('/api/plan/'+date, {include_failed: includeFailed}, function(data){
     var rows = data.rows || [];
