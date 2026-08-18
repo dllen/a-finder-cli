@@ -80,9 +80,11 @@ def _build_ma_fallback(stocks, top: int) -> List[Dict]:
 
 
 def build_buy_picks(stocks, top: int) -> List[Dict]:
+    from signal_rules import score_signal_strength
     ranked = []
     for stock in stocks:
-        buys = [s for s in detect_signals(stock) if s["action"] == "买入"]
+        all_signals = detect_signals(stock)
+        buys = [s for s in all_signals if s["action"] == "买入"]
         if not buys:
             continue
         priority = min(BUY_STRATEGY_PRIORITY.get(s["strategy"], 99) for s in buys)
@@ -98,6 +100,9 @@ def build_buy_picks(stocks, top: int) -> List[Dict]:
     ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     picks = []
     for rank, (_, _, _, stock, strategy, buy, stop, target) in enumerate(ranked[:top], start=1):
+        signals_dict = {"买入": [s["strategy"] for s in detect_signals(stock) if s["action"] == "买入"],
+                        "卖出": [s["strategy"] for s in detect_signals(stock) if s["action"] == "卖出"]}
+        score_total = score_signal_strength(stock, signals_dict).total
         picks.append(
             {
                 "rank": rank,
@@ -107,7 +112,7 @@ def build_buy_picks(stocks, top: int) -> List[Dict]:
                 "buy": round(buy, 2),
                 "stop": round(stop, 2),
                 "target": round(target, 2),
-                "score": None,
+                "score": round(score_total, 2),
             }
         )
     return picks

@@ -43,7 +43,8 @@ def test_picks(client):
     assert data["date"] == "2026-08-15"
     assert data["groups"]["均线"][0]["code"] == "600519"
     assert data["groups"]["买入信号"][0]["code"] == "000001"
-    assert data["groups"]["买入信号"][0]["score"] is None
+    assert data["groups"]["买入信号"][0]["score"] is not None
+    assert isinstance(data["groups"]["买入信号"][0]["score"], (int, float))
 
 
 def test_refresh_and_job(client, monkeypatch):
