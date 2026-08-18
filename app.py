@@ -12,11 +12,11 @@ from pick_history import run_picks
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>每日选股结果</title>
+<title>每日机会</title>
 <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
 </head><body class="bg-light">
 <div class="container py-4">
-  <h1 class="mb-3">每日选股结果</h1>
+  <h1 class="mb-3">每日机会</h1>
   <div id="dashboard"></div>
 <script src="/static/dashboard.js"></script>
 <script>startDashboard();</script>
