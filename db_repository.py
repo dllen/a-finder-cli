@@ -413,3 +413,32 @@ def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
     if row is None:
         return None
     return {"date": row[0], "updated_at": row[1]}
+
+
+def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
+    """Counts by action + total buy size + failed count for a given plan_date."""
+    cur = conn.execute(
+        """SELECT action, status, COUNT(*), COALESCE(SUM(size_pct), 0.0)
+           FROM trade_plan WHERE plan_date = ? GROUP BY action, status""",
+        (today,),
+    )
+    buy = hold = exit_ = failed = 0
+    size_total = 0.0
+    for action, status, count, sum_size in cur.fetchall():
+        if action == "buy" and status == "ok":
+            buy += count
+            size_total += sum_size
+        elif action == "buy":
+            failed += count  # buy + failed
+        elif action == "hold":
+            hold += count
+        elif action == "exit":
+            exit_ += count
+        if status == "failed" and action != "buy":
+            failed += count
+    return {
+        "date": today,
+        "buy": buy, "hold": hold, "exit": exit_,
+        "size_total": round(size_total, 4),
+        "failed": failed,
+    }
