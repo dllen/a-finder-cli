@@ -1,0 +1,47 @@
+[
+  {
+    "strategy": "箱体突破",
+    "trades": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "profit_factor": Infinity,
+    "expectancy": 0.0,
+    "passed": false
+  },
+  {
+    "strategy": "新高突破",
+    "trades": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "profit_factor": Infinity,
+    "expectancy": 0.0,
+    "passed": false
+  },
+  {
+    "strategy": "布林超卖反弹",
+    "trades": 122,
+    "wins": 59,
+    "win_rate": 0.48360655737704916,
+    "profit_factor": 2.3414427466877803,
+    "expectancy": 0.013652934236777377,
+    "passed": true
+  },
+  {
+    "strategy": "KDJ低位金叉",
+    "trades": 2418,
+    "wins": 1034,
+    "win_rate": 0.42762613730355664,
+    "profit_factor": 1.5275528732330321,
+    "expectancy": 0.002061422290264542,
+    "passed": true
+  },
+  {
+    "strategy": "量价齐升",
+    "trades": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "profit_factor": Infinity,
+    "expectancy": 0.0,
+    "passed": false
+  }
+]
