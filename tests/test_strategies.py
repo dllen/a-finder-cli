@@ -8,6 +8,8 @@ from strategies.new_high import detect as high_detect
 from strategies.bollinger_rebound import detect as rebound_detect
 from strategies.kdj_cross import detect as kdj_detect
 from strategies.volume_price import detect as vp_detect
+import strategies
+from strategies.report import build_report
 
 
 def test_bollinger_shape_and_values():
@@ -142,3 +144,16 @@ def test_run_strategy_backtest_always_lose():
     assert result.win_rate == 0.0
     assert result.expectancy < 0
     assert result.passed is False
+
+
+def test_registry_has_five_strategies():
+    assert set(strategies.STRATEGIES.keys()) == {
+        "箱体突破", "新高突破", "布林超卖反弹", "KDJ低位金叉", "量价齐升"
+    }
+
+
+def test_build_report_returns_five_entries():
+    stock = _up_stock(80)
+    report = build_report([stock], {}, [RegimeType.BULL] * 80, max_hold=10)
+    assert len(report) == 5
+    assert all("strategy" in r and "passed" in r for r in report)
