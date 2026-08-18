@@ -348,3 +348,30 @@ def test_get_trade_plan_by_date_includes_name_from_constituents():
         assert by_code["999999"]["name"] is None  # not in constituents → None
     finally:
         conn.close()
+
+
+def test_get_trade_plan_by_date_and_hash_returns_rows_for_matching_hash():
+    import tempfile
+    from db_repository import open_db, get_trade_plan_by_date_and_hash
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        today = "2026-08-18"
+        # two plans, different hash (different codes to avoid UNIQUE on (plan_date, code, action))
+        for code, h in [("600519", "aaa"), ("000001", "bbb")]:
+            conn.execute(
+                """INSERT INTO trade_plan
+                (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+                 rr_ratio, status, reason, rationale_json, params_hash, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (today, code, "buy", 1500.0, 0.10, 1380.0, 1740.0,
+                 2.0, "ok", "", "{}", h, today + "T00:00:00"),
+            )
+        conn.commit()
+        assert len(get_trade_plan_by_date_and_hash(conn, today, "aaa")) == 1
+        assert len(get_trade_plan_by_date_and_hash(conn, today, "bbb")) == 1
+        assert get_trade_plan_by_date_and_hash(conn, today, "ccc") == []
+        assert get_trade_plan_by_date_and_hash(conn, "1999-01-01", "aaa") == []
+    finally:
+        conn.close()

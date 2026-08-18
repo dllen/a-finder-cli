@@ -88,6 +88,27 @@ def _read_picks(conn, plan_date: str) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def _row_from_db(r: Dict[str, Any]) -> PlanRow:
+    """Reconstruct a PlanRow from a trade_plan DB dict (cache-hit reconstruction)."""
+    import json
+    try:
+        rationale = json.loads(r.get("rationale_json") or "{}")
+    except (TypeError, ValueError):
+        rationale = {}
+    return PlanRow(
+        code=str(r["code"]),
+        action=r["action"],
+        plan_price=float(r["plan_price"]),
+        size_pct=float(r["size_pct"]),
+        stop_price=float(r["stop_price"]),
+        tp_price=float(r["tp_price"]),
+        rr_ratio=float(r["rr_ratio"]),
+        rationale=rationale,
+        status=r["status"],
+        reason=r.get("reason", "") or "",
+    )
+
+
 def _read_open_positions(conn) -> List[Dict[str, Any]]:
     """Read all open positions (carryover)."""
     return get_open_positions(conn)
@@ -343,6 +364,26 @@ def build_plan(
     max_total = float(params.get("max_total", 0.95))
     regime = _regime_from_str(params.get("regime", "SIDEWAYS"))
     risk_manager = RiskManager()
+    phash = params_hash(params)
+
+    # Cache hit: same (plan_date, params_hash) already persisted → skip rebuild.
+    # INSERT OR IGNORE already prevents duplicate rows, but build_plan still
+    # does the pick/open/price reads + sanity gate + paper fill on every call.
+    from db_repository import get_trade_plan_by_date_and_hash
+    cache_conn = open_db(db_path)
+    try:
+        cached_rows = get_trade_plan_by_date_and_hash(cache_conn, plan_date, phash)
+    finally:
+        cache_conn.close()
+    if cached_rows:
+        return PlanResult(
+            plan_date=plan_date,
+            rows=[_row_from_db(r) for r in cached_rows],
+            num_picks=0,  # not stored; callers don't use it for cached path
+            num_open_positions=0,
+            sanity_passed=all(r["status"] == "ok" for r in cached_rows),
+            sanity_reasons=[],
+        )
 
     conn = open_db(db_path)
     try:
@@ -362,8 +403,7 @@ def build_plan(
 
     reasons = _apply_sanity_gate(rows, max_single, max_total)
 
-    # Persist the plan
-    phash = params_hash(params)
+    # Persist the plan (phash already computed above)
     # Persist ALL plan rows (buy + hold + exit) before any paper fill so
     # that the trade_plan row acts as the gate for the fill (C1).
     write_conn = open_db(db_path)

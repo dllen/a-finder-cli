@@ -339,6 +339,22 @@ def get_trade_plan_by_date(
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def get_trade_plan_by_date_and_hash(
+    conn: sqlite3.Connection,
+    plan_date: str,
+    params_hash: str,
+) -> List[Dict]:
+    """Return trade_plan rows for a (plan_date, params_hash). Empty if cache miss.
+    Used by build_plan to short-circuit when the plan for this date+params is already persisted.
+    """
+    cur = conn.execute(
+        "SELECT * FROM trade_plan WHERE plan_date = ? AND params_hash = ?",
+        (plan_date, params_hash),
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
 def insert_open_position(
     conn: sqlite3.Connection,
     code: str,
