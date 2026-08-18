@@ -105,3 +105,85 @@ def test_api_plan_dates(plan_db):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["dates"] == ["2026-08-18"]
+
+
+def test_api_dashboard_returns_four_sections(plan_db, monkeypatch):
+    """Seed daily_picks + verify 4 sections + freshness boundary."""
+    import types
+    from datetime import datetime as _dt
+    fake_mod = types.SimpleNamespace(
+        now=lambda: _dt(2026, 8, 18, 12, 0, 0),
+        fromisoformat=_dt.fromisoformat,
+        strptime=_dt.strptime,
+    )
+    import app as app_module
+    monkeypatch.setattr(app_module, "_dashboard_now", fake_mod)
+
+    conn = sqlite3.connect(plan_db)
+    conn.execute(
+        "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+        "VALUES ('2026-08-17', 1, '均线', '600519', '2026-08-17 10:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    app = create_app(db_path=plan_db)
+    app.config["TESTING"] = True
+    resp = app.test_client().get("/api/dashboard")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert set(data.keys()) == {"last_refresh", "today_plan", "open_positions", "pnl_5d"}
+    # last_refresh: 26h ago = warm (>24, <72)
+    assert data["last_refresh"]["date"] == "2026-08-17"
+    assert data["last_refresh"]["ago_hours"] == 26.0
+    assert data["last_refresh"]["freshness"] == "warm"
+    # today_plan: 来自 plan_db fixture 已插入的 ok 行
+    assert data["today_plan"]["buy"] == 1
+    # open_positions: 空
+    assert data["open_positions"]["count"] == 0
+    # pnl_5d: 空
+    assert data["pnl_5d"] == []
+
+
+def test_api_dashboard_freshness_fresh(plan_db, monkeypatch):
+    """1h ago = fresh (<24). warm+stale covered by other tests / endpoint logic."""
+    import types
+    from datetime import datetime as _dt, timedelta
+    import app as app_module
+    fake_mod = types.SimpleNamespace(
+        now=lambda: _dt(2026, 8, 18, 12, 0, 0),
+        fromisoformat=_dt.fromisoformat,
+        strptime=_dt.strptime,
+    )
+    monkeypatch.setattr(app_module, "_dashboard_now", fake_mod)
+
+    conn = sqlite3.connect(plan_db)
+    conn.execute("DELETE FROM daily_picks")
+    ts = (_dt(2026, 8, 18, 12, 0, 0) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+        "VALUES ('2026-08-18', 1, '均线', '600519', ?)",
+        (ts,),
+    )
+    conn.commit()
+    conn.close()
+
+    app = create_app(db_path=plan_db)
+    app.config["TESTING"] = True
+    data = app.test_client().get("/api/dashboard").get_json()
+    assert data["last_refresh"]["freshness"] == "fresh"
+
+
+def test_api_dashboard_empty_db():
+    import tempfile
+    from db_repository import open_db
+    from app import create_app
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    open_db(path).close()
+    client = create_app(db_path=path).test_client()
+    data = client.get("/api/dashboard").get_json()
+    assert data["last_refresh"] is None
+    assert data["today_plan"]["buy"] == 0
+    assert data["open_positions"]["count"] == 0
+    assert data["pnl_5d"] == []

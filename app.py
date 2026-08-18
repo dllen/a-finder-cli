@@ -2,6 +2,7 @@ import sqlite3
 import threading
 import traceback
 import uuid
+from datetime import datetime as _dashboard_now
 
 from flask import Flask, jsonify, request
 
@@ -483,6 +484,38 @@ def create_app(db_path="hs300.db", top=10):
         rows = _get_plan(conn, plan_date, include_failed=include_failed)
         conn.close()
         return jsonify({"plan_date": plan_date, "rows": rows})
+
+    @app.get("/api/dashboard")
+    def dashboard():
+        from datetime import date as _date
+        from db_repository import (
+            get_last_refresh,
+            get_today_plan_summary,
+            get_open_positions_with_unrealized,
+            get_recent_pnl,
+        )
+        conn = open_conn(db_path)
+        try:
+            last = get_last_refresh(conn)
+            today = get_today_plan_summary(conn, _date.today().isoformat())
+            opens = get_open_positions_with_unrealized(conn)
+            pnl = get_recent_pnl(conn, days=5)
+        finally:
+            conn.close()
+        if last:
+            try:
+                dt = _dashboard_now.fromisoformat(last["updated_at"])
+            except ValueError:
+                dt = _dashboard_now.strptime(last["updated_at"], "%Y-%m-%d %H:%M:%S")
+            ago = (_dashboard_now.now() - dt).total_seconds() / 3600
+            last["ago_hours"] = round(ago, 1)
+            last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
+        return jsonify({
+            "last_refresh": last,
+            "today_plan": today,
+            "open_positions": opens,
+            "pnl_5d": pnl,
+        })
 
     return app
 
