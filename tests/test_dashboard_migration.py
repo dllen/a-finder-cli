@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 
 from db_repository import open_db
+from pick_history import upsert_picks
 
 
 def test_daily_picks_has_updated_at():
@@ -22,5 +23,26 @@ def test_daily_picks_has_updated_at():
             "SELECT updated_at FROM daily_picks WHERE date='2026-08-18' AND code='600519'"
         ).fetchone()
         assert row[0] is not None and len(row[0]) >= 10  # ISO-ish string
+    finally:
+        conn.close()
+
+
+def test_pick_history_writes_updated_at():
+    """pick_history upserts daily_picks rows with updated_at populated."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        picks = [{
+            "date": "2026-08-18", "rank": 1, "kind": "均线",
+            "code": "600519", "name": "贵州茅台", "strategy": "突破",
+            "buy": 1500.0, "stop": 1450.0, "target": 1600.0, "score": 9.5,
+        }]
+        upsert_picks(conn, "2026-08-18", "均线", picks)
+        conn.commit()
+        row = conn.execute(
+            "SELECT updated_at FROM daily_picks WHERE date='2026-08-18' AND code='600519'"
+        ).fetchone()
+        assert row[0] is not None
     finally:
         conn.close()
