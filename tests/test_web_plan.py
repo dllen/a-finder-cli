@@ -187,3 +187,27 @@ def test_api_dashboard_empty_db():
     assert data["today_plan"]["buy"] == 0
     assert data["open_positions"]["count"] == 0
     assert data["pnl_5d"] == []
+
+
+def test_dashboard_partial_present_on_both_pages(plan_db):
+    app = create_app(db_path=plan_db)
+    client = app.test_client()
+    for path in ("/", "/plan"):
+        r = client.get(path)
+        assert b'<div id="dashboard"></div>' in r.data
+        assert b'startDashboard();' in r.data
+
+
+def test_dashboard_js_served():
+    """dashboard.js is served at /static/dashboard.js."""
+    import tempfile
+    from db_repository import open_db
+    from app import create_app
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    open_db(path).close()
+    app = create_app(db_path=path)
+    client = app.test_client()
+    resp = client.get("/static/dashboard.js")
+    assert resp.status_code == 200
+    assert b"startDashboard" in resp.data

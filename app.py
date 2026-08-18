@@ -17,6 +17,9 @@ PAGE = """<!doctype html>
 </head><body class="bg-light">
 <div class="container py-4">
   <h1 class="mb-3">每日选股结果</h1>
+  <div id="dashboard"></div>
+<script src="/static/dashboard.js"></script>
+<script>startDashboard();</script>
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
@@ -96,6 +99,7 @@ function poll(jobId){
     } else if (data.status === 'done'){
       setStatus(data.message, 'alert-success');
       $('#btn-recalc, #btn-sync').prop('disabled', false);
+      window.refreshDashboard && window.refreshDashboard();
       loadDates();
     } else {
       setStatus('任务失败：'+data.message, 'alert-danger');
@@ -122,6 +126,9 @@ PLAN_PAGE = """<!doctype html>
 <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
 </head><body class="bg-light">
 <div class="container py-4">
+  <div id="dashboard"></div>
+<script src="/static/dashboard.js"></script>
+<script>startDashboard();</script>
   <div class="d-flex align-items-center mb-3">
     <a class="btn btn-link p-0 me-3" href="/">&larr; 返回榜单</a>
     <h1 class="mb-0">每日 Plan（paper）</h1>
@@ -253,6 +260,7 @@ function pollBuild(jobId){
     } else if (data.status === 'done'){
       setStatus(data.message, 'alert-success');
       $('#btn-build').prop('disabled', false);
+      window.refreshDashboard && window.refreshDashboard();
       loadDates();
     } else {
       setStatus('任务失败：'+data.message, 'alert-danger');
