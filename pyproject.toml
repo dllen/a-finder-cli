@@ -47,6 +47,12 @@ py-modules = [
   "view_models",
 ]
 
+[tool.setuptools.packages]
+find = { include = ["shared_lib*"] }
+
+[tool.setuptools.package-dir]
+"" = "."
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
