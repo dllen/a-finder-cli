@@ -182,3 +182,62 @@ def test_get_last_refresh_returns_max_updated_at():
         assert r["date"] == "2026-08-17"
     finally:
         conn.close()
+
+
+def test_get_open_positions_with_unrealized_joins_daily_prices():
+    import tempfile
+    from db_repository import open_db, get_open_positions_with_unrealized
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        # seed open_positions
+        conn.executemany(
+            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [
+                ("600519", "2026-08-10", 1500.0, 0.10, 1380.0, 1740.0, "open"),
+                ("000001", "2026-08-12", 10.0, 0.05, 9.0, 12.0, "open"),
+            ],
+        )
+        # seed daily_prices (latest close per code)
+        conn.executemany(
+            "INSERT INTO daily_prices (code, trade_date, open, close, high, low, volume, amount, amplitude, pct_change, turnover) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("600519", "2026-08-17", 1500, 1545, 1550, 1490, 1e6, 1e9, 0, 0.03, 0.5),
+                ("600519", "2026-08-18", 1545, 1530, 1555, 1525, 1e6, 1e9, 0, -0.01, 0.5),
+                ("000001", "2026-08-18", 10.0, 11.5, 11.6, 10.0, 1e6, 1e7, 0, 0.15, 0.5),
+            ],
+        )
+        conn.commit()
+        r = get_open_positions_with_unrealized(conn)
+        assert r["count"] == 2
+        assert abs(r["size_total"] - 0.15) < 1e-9
+        # unrealized_pct: 600519 (1530-1500)/1500*100 = 2.0; 000001 (11.5-10)/10*100 = 15.0
+        assert abs(r["avg_unrealized_pct"] - 8.5) < 1e-9
+        codes = [it["code"] for it in r["items"]]
+        assert codes == ["600519", "000001"]
+        assert abs(r["items"][1]["unrealized_pct"] - 15.0) < 1e-9
+    finally:
+        conn.close()
+
+
+def test_get_open_positions_no_prices_returns_null_unrealized():
+    import tempfile
+    from db_repository import open_db, get_open_positions_with_unrealized
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        conn.execute(
+            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status) "
+            "VALUES ('999999', '2026-08-10', 5.0, 0.10, 4.0, 7.0, 'open')"
+        )
+        conn.commit()
+        r = get_open_positions_with_unrealized(conn)
+        assert r["count"] == 1
+        assert r["items"][0]["unrealized_pct"] is None
+        assert r["avg_unrealized_pct"] is None
+    finally:
+        conn.close()

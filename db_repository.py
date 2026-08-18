@@ -442,3 +442,39 @@ def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
         "size_total": round(size_total, 4),
         "failed": failed,
     }
+
+
+def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
+    """Open positions with latest close price; computes unrealized_pct per row."""
+    cur = conn.execute(
+        """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
+                  op.stop_price, op.tp_price,
+                  dp.close AS close_price
+           FROM open_positions op
+           LEFT JOIN (
+               SELECT code, close FROM daily_prices dp1
+               WHERE trade_date = (SELECT MAX(trade_date) FROM daily_prices dp2
+                                   WHERE dp2.code = dp1.code)
+           ) dp ON dp.code = op.code
+           WHERE op.status = 'open'
+           ORDER BY op.entry_date, op.code"""
+    )
+    items = []
+    total_size = 0.0
+    pct_sum = 0.0
+    pct_count = 0
+    for code, ed, ep, sz, sp, tp, close in cur.fetchall():
+        unrealized = None
+        if close is not None and ep:
+            unrealized = round((close - ep) / ep * 100, 2)
+            pct_sum += unrealized
+            pct_count += 1
+        items.append({
+            "code": code, "entry_date": ed, "entry_price": ep,
+            "size_pct": sz, "stop_price": sp, "tp_price": tp,
+            "unrealized_pct": unrealized,
+        })
+        total_size += sz
+    avg = round(pct_sum / pct_count, 2) if pct_count else None
+    return {"count": len(items), "size_total": round(total_size, 4),
+            "avg_unrealized_pct": avg, "items": items[:3]}
