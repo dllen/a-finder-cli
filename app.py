@@ -41,7 +41,9 @@ body{
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
     "Hiragino Sans GB","Microsoft YaHei",sans-serif;
   line-height:1.5;
+  min-height:100vh;display:flex;flex-direction:column;
 }
+main{flex:1 0 auto;width:100%}
 .app-nav{background:var(--brand);}
 .app-nav .navbar-brand{
   display:flex;align-items:center;gap:.5rem;color:#fff;font-weight:600;font-size:1.05rem;
