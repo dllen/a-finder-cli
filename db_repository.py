@@ -433,13 +433,13 @@ def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
         if action == "buy" and status == "ok":
             buy += count
             size_total += sum_size
-        elif action == "buy":
+        elif action == "buy" and status == "failed":
             failed += count  # buy + failed
-        elif action == "hold":
+        elif action == "hold" and status == "ok":
             hold += count
-        elif action == "exit":
+        elif action == "exit" and status == "ok":
             exit_ += count
-        if status == "failed" and action != "buy":
+        elif status == "failed":  # hold/exit + failed
             failed += count
     return {
         "date": today,

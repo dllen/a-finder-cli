@@ -153,6 +153,38 @@ def test_get_today_plan_summary_counts_actions_and_size():
         conn.close()
 
 
+def test_get_today_plan_summary_failed_hold_exit_excluded_from_action_count():
+    """hold/exit + failed rows count as failed, NOT as hold/exit (regression)."""
+    import tempfile
+    from db_repository import open_db, get_today_plan_summary
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        today = "2026-08-18"
+        rows = [
+            (today, "600001", "hold", 5, 0.05, 4.5, 6, 1.0, "ok", "", "{}", "h", today + "T00:00:00"),
+            (today, "600002", "hold", 5, 0.05, 4.5, 6, 1.0, "failed", "trigger_gone", "{}", "h", today + "T00:00:00"),
+            (today, "600003", "exit", 8, 0.0, 7, 10, 2.0, "ok", "", "{}", "h", today + "T00:00:00"),
+            (today, "600004", "exit", 8, 0.0, 7, 10, 2.0, "failed", "stale_price", "{}", "h", today + "T00:00:00"),
+        ]
+        conn.executemany(
+            "INSERT INTO trade_plan (plan_date,code,action,plan_price,size_pct,stop_price,tp_price,rr_ratio,status,reason,rationale_json,params_hash,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        s = get_today_plan_summary(conn, today)
+        assert s == {
+            "date": today,
+            "buy": 0, "hold": 1, "exit": 1,
+            "size_total": 0.0,
+            "failed": 2,  # hold+failed + exit+failed
+        }
+    finally:
+        conn.close()
+
+
 def test_get_last_refresh_returns_max_updated_at():
     import tempfile
     from db_repository import open_db, get_last_refresh

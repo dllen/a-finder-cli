@@ -117,7 +117,7 @@ def test_api_dashboard_returns_four_sections(plan_db, monkeypatch):
         strptime=_dt.strptime,
     )
     import app as app_module
-    monkeypatch.setattr(app_module, "_dashboard_now", fake_mod)
+    monkeypatch.setattr(app_module, "_dt_class", fake_mod)
 
     conn = sqlite3.connect(plan_db)
     conn.execute(
@@ -155,7 +155,7 @@ def test_api_dashboard_freshness_fresh(plan_db, monkeypatch):
         fromisoformat=_dt.fromisoformat,
         strptime=_dt.strptime,
     )
-    monkeypatch.setattr(app_module, "_dashboard_now", fake_mod)
+    monkeypatch.setattr(app_module, "_dt_class", fake_mod)
 
     conn = sqlite3.connect(plan_db)
     conn.execute("DELETE FROM daily_picks")

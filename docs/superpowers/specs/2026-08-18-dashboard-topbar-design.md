@@ -83,11 +83,11 @@ hs300.db
 `db/migrations/2026_08_18_daily_picks_updated_at.sql`：
 
 ```sql
-ALTER TABLE daily_picks ADD COLUMN updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP);
+ALTER TABLE daily_picks ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_updated_at ON daily_picks(updated_at);
 ```
 
-`pick_history.py` 中所有 `INSERT INTO daily_picks` 增加 `updated_at` 字段（默认值由 SQLite 自动填）。
+`pick_history.py` 中所有 `INSERT INTO daily_picks` 显式写入 `updated_at`（ISO 时间戳）。迁移默认 `''` 是为了避开 SQLite ALTER TABLE ADD COLUMN 在表内有数据时拒绝非常量默认（`CURRENT_TIMESTAMP` 即便不加括号也不行），所以老数据拿不到默认时间，由 `get_last_refresh` 过滤空串只看真实更新时间。
 
 ### `db_repository.py` 新增 4 个函数
 
@@ -163,7 +163,7 @@ function startDashboard(){
 
 - `/api/dashboard` 任一块数据缺失 → 对应卡片显示「—」或「无数据」，其他块正常渲染。
 - DB 锁/异常 → 返回 500，卡片区域「刷新失败」，不抛红 alert。
-- `updated_at` 列在新 DB 自动加；老 DB 通过迁移添加并回填（已有行用 `CURRENT_TIMESTAMP` 取当前时间）。
+- `updated_at` 列在新 DB 自动加（默认 `''`），由 `pick_history` 显式写入。老 DB 通过迁移添加，老行默认 `''`；`get_last_refresh` 过滤空串，等下次 `pick_history` 写入才计入。
 
 ## 文件改动
 

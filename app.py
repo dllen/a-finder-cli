@@ -2,7 +2,7 @@ import sqlite3
 import threading
 import traceback
 import uuid
-from datetime import datetime as _dashboard_now
+from datetime import datetime as _dt_class
 
 from flask import Flask, jsonify, request
 
@@ -515,10 +515,10 @@ def create_app(db_path="hs300.db", top=10):
             conn.close()
         if last:
             try:
-                dt = _dashboard_now.fromisoformat(last["updated_at"])
+                parsed = _dt_class.fromisoformat(last["updated_at"])
             except ValueError:
-                dt = _dashboard_now.strptime(last["updated_at"], "%Y-%m-%d %H:%M:%S")
-            ago = (_dashboard_now.now() - dt).total_seconds() / 3600
+                parsed = _dt_class.strptime(last["updated_at"], "%Y-%m-%d %H:%M:%S")
+            ago = (_dt_class.now() - parsed).total_seconds() / 3600
             last["ago_hours"] = round(ago, 1)
             last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
         return jsonify({
