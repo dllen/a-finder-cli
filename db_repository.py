@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -260,3 +261,116 @@ def insert_prices(conn: sqlite3.Connection, rows: Iterable[PriceRow]) -> int:
         data,
     )
     return len(data)
+
+
+def insert_trade_plan(
+    conn: sqlite3.Connection,
+    row: "PlanRow",  # forward ref; imported lazily to avoid import cycle
+    plan_date: str,
+    params_hash: str,
+) -> int:
+    """Insert a trade_plan row. Idempotent via UNIQUE(plan_date, code, action).
+
+    Returns plan_id (>0) on insert, 0 on duplicate ignored.
+    """
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO trade_plan
+        (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+         rr_ratio, status, reason, rationale_json, params_hash, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            plan_date, row.code, row.action, row.plan_price, row.size_pct,
+            row.stop_price, row.tp_price, row.rr_ratio, row.status, row.reason,
+            json.dumps(row.rationale), params_hash,
+            dt.datetime.utcnow().isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    # cur.rowcount=1 on insert, 0 on ignored dup; lastrowid is unreliable on ignore.
+    return cur.lastrowid if cur.rowcount > 0 else 0
+
+
+def get_trade_plan_by_date(
+    conn: sqlite3.Connection,
+    plan_date: str,
+    include_failed: bool = False,
+) -> List[Dict]:
+    """Return all trade_plan rows for a date. Excludes status='failed' unless asked."""
+    sql = "SELECT * FROM trade_plan WHERE plan_date = ?"
+    if not include_failed:
+        sql += " AND status = 'ok'"
+    sql += " ORDER BY action DESC, code"  # buy first, then hold/exit
+    cur = conn.execute(sql, (plan_date,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def insert_open_position(
+    conn: sqlite3.Connection,
+    code: str,
+    entry_date: str,
+    entry_price: float,
+    size_pct: float,
+    stop_price: float,
+    tp_price: float,
+) -> int:
+    """Open a new paper position. Returns pos_id."""
+    cur = conn.execute(
+        """INSERT INTO open_positions
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
+        VALUES (?,?,?,?,?,?,'open')""",
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_open_positions(conn: sqlite3.Connection) -> List[Dict]:
+    """Return all open positions."""
+    cur = conn.execute(
+        """SELECT * FROM open_positions WHERE status='open'
+        ORDER BY entry_date, code"""
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def close_open_position(
+    conn: sqlite3.Connection,
+    pos_id: int,
+    close_date: str,
+    close_price: float,
+    reason: str,
+) -> None:
+    """Mark an open position as closed."""
+    conn.execute(
+        """UPDATE open_positions
+        SET status='closed', close_date=?, close_price=?, close_reason=?
+        WHERE pos_id=?""",
+        (close_date, close_price, reason, pos_id),
+    )
+    conn.commit()
+
+
+def insert_trade_event(
+    conn: sqlite3.Connection,
+    plan_date: str,
+    code: str,
+    event_type: str,
+    price: float,
+    size_pct: Optional[float] = None,
+    pnl_pct: Optional[float] = None,
+    note: Optional[str] = None,
+) -> int:
+    """Record a trade event (open/close). Returns event_id."""
+    cur = conn.execute(
+        """INSERT INTO trade_events
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, created_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            plan_date, code, event_type, price, size_pct, pnl_pct, note,
+            dt.datetime.utcnow().isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
