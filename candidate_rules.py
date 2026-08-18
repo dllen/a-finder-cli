@@ -163,19 +163,24 @@ def select_candidates_with_quota(
     groups: Dict[str, List[Candidate]] = {}
     for item in ranked:
         groups.setdefault(item["strategy"], []).append(item)
+    # 稳定顺序：优先 DEFAULT_STRATEGY_RATIOS 的声明顺序，再按候选首次出现顺序补未知策略。
+    order = [key for key in DEFAULT_STRATEGY_RATIOS if key in groups]
+    order += [key for key in groups if key not in order]
     normalized = normalize_strategy_ratios(ratios)
     for key in list(normalized):
         if key not in groups:
             normalized.pop(key)
+    for key in order:
+        normalized.setdefault(key, 0.0)
     total = sum(normalized.values())
     if total <= 0:
-        normalized = {key: 1 / len(groups) for key in groups}
+        normalized = {key: 1 / len(order) for key in order}
     else:
-        normalized = {key: value / total for key, value in normalized.items()}
+        normalized = {key: normalized.get(key, 0.0) / total for key in order}
     targets: Dict[str, int] = {}
     fractions = []
     allocated = 0
-    for strategy in groups:
+    for strategy in order:
         raw_target = top * normalized.get(strategy, 0.0)
         base = int(raw_target)
         targets[strategy] = base
@@ -188,17 +193,15 @@ def select_candidates_with_quota(
         allocated += 1
     selected: List[Candidate] = []
     used_codes = set()
-    for item in ranked:
-        if len(selected) >= top:
-            break
-        strategy = item["strategy"]
-        if targets.get(strategy, 0) <= 0:
-            continue
-        if item["stock"].code in used_codes:
-            continue
-        selected.append(item)
-        used_codes.add(item["stock"].code)
-        targets[strategy] -= 1
+    for strategy in order:
+        for item in groups[strategy]:
+            if len(selected) >= top or targets.get(strategy, 0) <= 0:
+                break
+            if item["stock"].code in used_codes:
+                continue
+            selected.append(item)
+            used_codes.add(item["stock"].code)
+            targets[strategy] -= 1
     if len(selected) < top:
         for item in ranked:
             if len(selected) >= top:

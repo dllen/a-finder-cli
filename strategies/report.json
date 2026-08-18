@@ -4,7 +4,7 @@
     "trades": 0,
     "wins": 0,
     "win_rate": 0.0,
-    "profit_factor": Infinity,
+    "profit_factor": null,
     "expectancy": 0.0,
     "passed": false
   },
@@ -13,34 +13,34 @@
     "trades": 0,
     "wins": 0,
     "win_rate": 0.0,
-    "profit_factor": Infinity,
+    "profit_factor": null,
     "expectancy": 0.0,
     "passed": false
   },
   {
     "strategy": "布林超卖反弹",
     "trades": 122,
-    "wins": 59,
-    "win_rate": 0.48360655737704916,
-    "profit_factor": 2.3414427466877803,
-    "expectancy": 0.013652934236777377,
+    "wins": 48,
+    "win_rate": 0.39344262295081966,
+    "profit_factor": 2.2642889989336283,
+    "expectancy": 0.0067706840317107424,
     "passed": true
   },
   {
     "strategy": "KDJ低位金叉",
     "trades": 2418,
-    "wins": 1034,
-    "win_rate": 0.42762613730355664,
-    "profit_factor": 1.5275528732330321,
-    "expectancy": 0.002061422290264542,
-    "passed": true
+    "wins": 894,
+    "win_rate": 0.369727047146402,
+    "profit_factor": 1.4587351638168757,
+    "expectancy": -0.002444439393754619,
+    "passed": false
   },
   {
     "strategy": "量价齐升",
     "trades": 0,
     "wins": 0,
     "win_rate": 0.0,
-    "profit_factor": Infinity,
+    "profit_factor": null,
     "expectancy": 0.0,
     "passed": false
   }

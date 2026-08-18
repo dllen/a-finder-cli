@@ -1,6 +1,7 @@
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from candidate_rules import (
+    DEFAULT_STRATEGY_RATIOS,
     Candidate,
     CandidateConfig,
     ma_strategy_candidates_adaptive,
@@ -64,3 +65,36 @@ def merge_candidates(
             for sig in detect(stock, regime):
                 candidates.append(signal_to_candidate(stock, sig))
     return candidates
+
+
+def load_passed_strategies(report_path: str = "strategies/report.json") -> Set[str]:
+    """从回测报告读取达标（passed=True）的策略名。报告缺失/损坏时返回空集。"""
+    import json
+    from pathlib import Path
+
+    path = Path(report_path)
+    if not path.exists():
+        return set()
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    return {row["strategy"] for row in rows if row.get("passed")}
+
+
+def merged_strategy_ratios(
+    passed_strategies: Set[str],
+    new_budget: float = 0.30,
+) -> Dict[str, float]:
+    """为达标新策略分配配额：多均线保留 (1-new_budget)，达标策略均分 new_budget。"""
+    ratios: Dict[str, float] = dict(DEFAULT_STRATEGY_RATIOS)
+    total_ma = sum(ratios.values())
+    if total_ma > 0:
+        scale = (1 - new_budget) / total_ma
+        ratios = {key: value * scale for key, value in ratios.items()}
+    passed = list(passed_strategies)
+    if passed:
+        share = new_budget / len(passed)
+        for name in passed:
+            ratios[name] = share
+    return ratios

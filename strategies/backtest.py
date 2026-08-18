@@ -30,7 +30,13 @@ def _snapshot(stock: Stock, idx: int) -> Stock:
     )
 
 
-def _simulate(stock: Stock, entry_idx: int, sig: StrategySignal, max_hold: int) -> float:
+def _simulate(
+    stock: Stock,
+    entry_idx: int,
+    sig: StrategySignal,
+    max_hold: int,
+    lows: List[float] | None = None,
+) -> float:
     prices = stock.prices
     end = min(entry_idx + max_hold, len(prices) - 1)
     if end <= entry_idx:
@@ -38,7 +44,8 @@ def _simulate(stock: Stock, entry_idx: int, sig: StrategySignal, max_hold: int) 
     for j in range(entry_idx + 1, end + 1):
         if prices[j] >= sig.tp:
             return sig.tp / sig.entry - 1
-        if prices[j] <= sig.stop:
+        low = lows[j] if lows and j < len(lows) else prices[j]
+        if low <= sig.stop:
             return sig.stop / sig.entry - 1
     return prices[end] / sig.entry - 1
 
@@ -60,8 +67,9 @@ def run_strategy_backtest(
         regime = regimes[idx] if idx < len(regimes) else RegimeType.SIDEWAYS
         for s in valid:
             sigs = detect(_snapshot(s, idx), regime)
+            lows = lows_map.get(s.code) if lows_map else None
             for sig in sigs:
-                returns.append(_simulate(s, idx, sig, max_hold))
+                returns.append(_simulate(s, idx, sig, max_hold, lows))
     wins = sum(1 for r in returns if r > 0)
     losses = [r for r in returns if r <= 0]
     gains = [r for r in returns if r > 0]

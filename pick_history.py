@@ -6,7 +6,9 @@ from typing import Callable, Dict, List, Optional
 from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
 from db_repository import open_db
 from market_data import build_market_from_db
+from market_regime import RegimeType, detect_regime
 from signal_rules import detect_signals
+from strategies.adapter import load_passed_strategies, merge_candidates, merged_strategy_ratios
 from view_models import BUY_STRATEGY_PRIORITY
 
 DEFAULT_TOP = 10
@@ -17,9 +19,23 @@ def latest_trade_date(conn) -> str:
     return row[0] if row and row[0] else ""
 
 
-def build_ma_picks(stocks, top: int) -> List[Dict]:
-    candidates = ma_strategy_candidates(stocks)
-    ranked = select_candidates_with_quota(candidates, top)
+def _detect_market_regime(stocks) -> RegimeType:
+    index_prices = [s.prices[-1] for s in stocks]
+    if len(index_prices) < 20:
+        return RegimeType.SIDEWAYS
+    regime = detect_regime(index_prices, {})
+    return regime.regime
+
+
+def build_ma_picks(stocks, top: int, passed_strategies=None, regime=None) -> List[Dict]:
+    if passed_strategies:
+        regime = regime if regime is not None else _detect_market_regime(stocks)
+        candidates = merge_candidates(stocks, regime, set(passed_strategies))
+        ratios = merged_strategy_ratios(set(passed_strategies))
+        ranked = select_candidates_with_quota(candidates, top, ratios)
+    else:
+        candidates = ma_strategy_candidates(stocks)
+        ranked = select_candidates_with_quota(candidates, top)
     picks = []
     for rank, item in enumerate(ranked, start=1):
         stock = item["stock"]
@@ -182,13 +198,14 @@ def run_picks(db_path: str, top: int, do_sync: bool, progress: Optional[Callable
         return {"date": "", "ma": 0, "buy": 0}
 
     report(94, "计算榜单…")
+    passed_strategies = load_passed_strategies()
     conn = open_db(db_path)
     with conn:
         date = latest_trade_date(conn)
         if not date:
             report(100, "无交易日期")
             return {"date": "", "ma": 0, "buy": 0}
-        ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top))
+        ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top, passed_strategies))
         buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
     report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条")
     return {"date": date, "ma": ma_count, "buy": buy_count}

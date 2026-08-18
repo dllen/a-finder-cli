@@ -10,7 +10,13 @@ from strategies.kdj_cross import detect as kdj_detect
 from strategies.volume_price import detect as vp_detect
 import strategies
 from strategies.report import build_report
-from strategies.adapter import signal_to_candidate, merge_candidates
+from strategies.adapter import (
+    load_passed_strategies,
+    merge_candidates,
+    merged_strategy_ratios,
+    signal_to_candidate,
+)
+from candidate_rules import select_candidates_with_quota
 
 
 def test_bollinger_shape_and_values():
@@ -181,3 +187,38 @@ def test_merge_candidates_includes_passed_strategies():
     merged = merge_candidates([stock], RegimeType.BULL, {"箱体突破"})
     strategies_ = {c["strategy"] for c in merged}
     assert "箱体突破" in strategies_
+
+
+def test_merged_strategy_ratios_allocates_new_budget():
+    ratios = merged_strategy_ratios({"布林超卖反弹", "KDJ低位金叉"})
+    assert "布林超卖反弹" in ratios and "KDJ低位金叉" in ratios
+    # 多均线保留 0.70，两个达标策略各分 0.15
+    assert abs(sum(ratios.values()) - 1.0) < 1e-9
+    assert abs(ratios["布林超卖反弹"] - 0.15) < 1e-9
+    assert abs(ratios["KDJ低位金叉"] - 0.15) < 1e-9
+
+
+def test_load_passed_strategies_empty_when_missing(tmp_path):
+    assert load_passed_strategies(str(tmp_path / "nope.json")) == set()
+
+
+def test_quota_remainder_uses_default_order():
+    # 默认配额下，余数席位应分配给声明顺序靠前的「多均线突破」，而非分数排序靠前的「多均线回踩」。
+    def cand(code, strategy, score):
+        s = Stock(code=code, name="t", pe=1, pb=1, peg=1,
+                  revenue_growth=0.1, profit_growth=0.1, roe=0.1, cashflow=0.1,
+                  prices=[100.0] * 250, volumes=[1_000_000] * 250)
+        return {"stock": s, "strategy": strategy, "ma10": 100.0, "ma30": 100.0,
+                "ma50": 100.0, "ma100": 100.0, "ma200": 100.0,
+                "volume_ratio": 1.0, "stop_price": 97.0, "score": score}
+
+    cs = [cand(f"00{i:04d}", "多均线回踩", 1000 - i) for i in range(8)]
+    cs += [cand(f"01{i:04d}", "多均线突破", 500 - i) for i in range(8)]
+    selected = select_candidates_with_quota(cs, top=10)
+    counts = {}
+    for c in selected:
+        counts[c["strategy"]] = counts.get(c["strategy"], 0) + 1
+    # top=10，默认 0.75/0.25：突破 floor 7 + 余数 1 = 8，回踩 2，趋势 0
+    assert counts["多均线突破"] == 8
+    assert counts["多均线回踩"] == 2
+
