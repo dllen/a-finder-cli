@@ -115,3 +115,34 @@ def test_trade_event_with_pnl():
         assert row[1] == "tp_hit"
     finally:
         conn.close()
+
+
+def test_get_last_refresh_returns_max_updated_at():
+    import tempfile
+    from db_repository import open_db, get_last_refresh
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        # empty DB
+        assert get_last_refresh(conn) is None
+        # one row
+        conn.execute(
+            "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+            "VALUES ('2026-08-18', 1, '均线', '600519', '2026-08-18 12:00:00')"
+        )
+        conn.commit()
+        r = get_last_refresh(conn)
+        assert r["date"] == "2026-08-18"
+        assert r["updated_at"] == "2026-08-18 12:00:00"
+        # newer row wins
+        conn.execute(
+            "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+            "VALUES ('2026-08-17', 1, '均线', '000001', '2026-08-18 14:00:00')"
+        )
+        conn.commit()
+        r = get_last_refresh(conn)
+        assert r["updated_at"] == "2026-08-18 14:00:00"
+        assert r["date"] == "2026-08-17"
+    finally:
+        conn.close()

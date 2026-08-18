@@ -401,3 +401,15 @@ def insert_trade_event(
     )
     conn.commit()
     return cur.lastrowid
+
+
+def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
+    """Return the most recently updated daily_picks row: {date, updated_at}. None if empty."""
+    cur = conn.execute(
+        "SELECT date, updated_at FROM daily_picks "
+        "ORDER BY updated_at DESC, date DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return {"date": row[0], "updated_at": row[1]}
