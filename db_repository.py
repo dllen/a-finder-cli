@@ -11,15 +11,42 @@ MIGRATIONS_DIR = Path(__file__).parent / "db" / "migrations"
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Apply all SQL files in db/migrations/ in lexical order.
+    """Apply unapplied SQL files in db/migrations/ in lexical order.
 
-    Statements are written with IF NOT EXISTS so this is idempotent
-    and safe to run on every open_db() call.
+    Each file is recorded in `_applied_migrations` after successful execution,
+    so non-idempotent statements (e.g. ALTER TABLE ADD COLUMN) only run once
+    across the lifetime of a database, even though _run_migrations is called
+    on every open_db().
     """
     if not MIGRATIONS_DIR.exists():
         return
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _applied_migrations (
+            filename TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    applied = {
+        row[0]
+        for row in conn.execute("SELECT filename FROM _applied_migrations").fetchall()
+    }
     for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        conn.executescript(sql_file.read_text())
+        name = sql_file.name
+        if name in applied:
+            continue
+        try:
+            conn.executescript(sql_file.read_text())
+            conn.execute(
+                "INSERT INTO _applied_migrations (filename, applied_at) VALUES (?, ?)",
+                (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
 
 
 @dataclass
@@ -374,3 +401,98 @@ def insert_trade_event(
     )
     conn.commit()
     return cur.lastrowid
+
+
+def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
+    """Return the most recently updated daily_picks row: {date, updated_at}. None if empty.
+
+    Rows with empty updated_at (legacy or not-yet-populated) are ignored so the
+    dashboard's freshness logic only sees real timestamps.
+    """
+    cur = conn.execute(
+        "SELECT date, updated_at FROM daily_picks "
+        "WHERE updated_at != '' "
+        "ORDER BY updated_at DESC, date DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return {"date": row[0], "updated_at": row[1]}
+
+
+def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
+    """Counts by action + total buy size + failed count for a given plan_date."""
+    cur = conn.execute(
+        """SELECT action, status, COUNT(*), COALESCE(SUM(size_pct), 0.0)
+           FROM trade_plan WHERE plan_date = ? GROUP BY action, status""",
+        (today,),
+    )
+    buy = hold = exit_ = failed = 0
+    size_total = 0.0
+    for action, status, count, sum_size in cur.fetchall():
+        if action == "buy" and status == "ok":
+            buy += count
+            size_total += sum_size
+        elif action == "buy" and status == "failed":
+            failed += count  # buy + failed
+        elif action == "hold" and status == "ok":
+            hold += count
+        elif action == "exit" and status == "ok":
+            exit_ += count
+        elif status == "failed":  # hold/exit + failed
+            failed += count
+    return {
+        "date": today,
+        "buy": buy, "hold": hold, "exit": exit_,
+        "size_total": round(size_total, 4),
+        "failed": failed,
+    }
+
+
+def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
+    """Open positions with latest close price; computes unrealized_pct per row."""
+    cur = conn.execute(
+        """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
+                  op.stop_price, op.tp_price,
+                  dp.close AS close_price
+           FROM open_positions op
+           LEFT JOIN (
+               SELECT code, close FROM daily_prices dp1
+               WHERE trade_date = (SELECT MAX(trade_date) FROM daily_prices dp2
+                                   WHERE dp2.code = dp1.code)
+           ) dp ON dp.code = op.code
+           WHERE op.status = 'open'
+           ORDER BY op.entry_date, op.code"""
+    )
+    items = []
+    total_size = 0.0
+    pct_sum = 0.0
+    pct_count = 0
+    for code, ed, ep, sz, sp, tp, close in cur.fetchall():
+        unrealized = None
+        if close is not None and ep:
+            unrealized = round((close - ep) / ep * 100, 2)
+            pct_sum += unrealized
+            pct_count += 1
+        items.append({
+            "code": code, "entry_date": ed, "entry_price": ep,
+            "size_pct": sz, "stop_price": sp, "tp_price": tp,
+            "unrealized_pct": unrealized,
+        })
+        total_size += sz
+    avg = round(pct_sum / pct_count, 2) if pct_count else None
+    return {"count": len(items), "size_total": round(total_size, 4),
+            "avg_unrealized_pct": avg, "items": items[:3]}
+
+
+def get_recent_pnl(conn: sqlite3.Connection, days: int = 5) -> List[Dict]:
+    """Last `days` distinct plan_date close events, DESC. [{date, pnl_pct}]."""
+    cur = conn.execute(
+        """SELECT plan_date, SUM(pnl_pct) FROM trade_events
+           WHERE event_type = 'close' AND pnl_pct IS NOT NULL
+           GROUP BY plan_date
+           ORDER BY plan_date DESC
+           LIMIT ?""",
+        (days,),
+    )
+    return [{"date": d, "pnl_pct": round(p, 2)} for d, p in cur.fetchall()]

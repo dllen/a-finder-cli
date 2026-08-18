@@ -114,6 +114,7 @@ def build_buy_picks(stocks, top: int) -> List[Dict]:
 
 
 def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
+    now = dt.datetime.now().isoformat(timespec="seconds")
     rows = [
         (
             date,
@@ -126,13 +127,14 @@ def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
             p["stop"],
             p["target"],
             p["score"],
+            now,
         )
         for p in picks
     ]
     conn.executemany(
         """
-        INSERT OR REPLACE INTO daily_picks (date, rank, kind, code, name, strategy, buy, stop, target, score)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO daily_picks (date, rank, kind, code, name, strategy, buy, stop, target, score, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

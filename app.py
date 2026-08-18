@@ -2,6 +2,7 @@ import sqlite3
 import threading
 import traceback
 import uuid
+from datetime import datetime as _dt_class
 
 from flask import Flask, jsonify, request
 
@@ -16,6 +17,9 @@ PAGE = """<!doctype html>
 </head><body class="bg-light">
 <div class="container py-4">
   <h1 class="mb-3">每日选股结果</h1>
+  <div id="dashboard"></div>
+<script src="/static/dashboard.js"></script>
+<script>startDashboard();</script>
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
@@ -95,6 +99,7 @@ function poll(jobId){
     } else if (data.status === 'done'){
       setStatus(data.message, 'alert-success');
       $('#btn-recalc, #btn-sync').prop('disabled', false);
+      window.refreshDashboard && window.refreshDashboard();
       loadDates();
     } else {
       setStatus('任务失败：'+data.message, 'alert-danger');
@@ -121,6 +126,9 @@ PLAN_PAGE = """<!doctype html>
 <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
 </head><body class="bg-light">
 <div class="container py-4">
+  <div id="dashboard"></div>
+<script src="/static/dashboard.js"></script>
+<script>startDashboard();</script>
   <div class="d-flex align-items-center mb-3">
     <a class="btn btn-link p-0 me-3" href="/">&larr; 返回榜单</a>
     <h1 class="mb-0">每日 Plan（paper）</h1>
@@ -252,6 +260,7 @@ function pollBuild(jobId){
     } else if (data.status === 'done'){
       setStatus(data.message, 'alert-success');
       $('#btn-build').prop('disabled', false);
+      window.refreshDashboard && window.refreshDashboard();
       loadDates();
     } else {
       setStatus('任务失败：'+data.message, 'alert-danger');
@@ -373,7 +382,10 @@ def _start_job(db_path, top, do_sync):
 
 
 def open_conn(db_path):
-    return sqlite3.connect(db_path)
+    # ponytail: use open_db so fresh/existing DBs get schema + pending migrations applied.
+    # Was raw sqlite3.connect, which broke when the dashboard migration added updated_at.
+    from db_repository import open_db
+    return open_db(db_path)
 
 
 def list_dates(conn):
@@ -483,6 +495,38 @@ def create_app(db_path="hs300.db", top=10):
         rows = _get_plan(conn, plan_date, include_failed=include_failed)
         conn.close()
         return jsonify({"plan_date": plan_date, "rows": rows})
+
+    @app.get("/api/dashboard")
+    def dashboard():
+        from datetime import date as _date
+        from db_repository import (
+            get_last_refresh,
+            get_today_plan_summary,
+            get_open_positions_with_unrealized,
+            get_recent_pnl,
+        )
+        conn = open_conn(db_path)
+        try:
+            last = get_last_refresh(conn)
+            today = get_today_plan_summary(conn, _date.today().isoformat())
+            opens = get_open_positions_with_unrealized(conn)
+            pnl = get_recent_pnl(conn, days=5)
+        finally:
+            conn.close()
+        if last:
+            try:
+                parsed = _dt_class.fromisoformat(last["updated_at"])
+            except ValueError:
+                parsed = _dt_class.strptime(last["updated_at"], "%Y-%m-%d %H:%M:%S")
+            ago = (_dt_class.now() - parsed).total_seconds() / 3600
+            last["ago_hours"] = round(ago, 1)
+            last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
+        return jsonify({
+            "last_refresh": last,
+            "today_plan": today,
+            "open_positions": opens,
+            "pnl_5d": pnl,
+        })
 
     return app
 
