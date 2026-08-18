@@ -241,3 +241,43 @@ def test_get_open_positions_no_prices_returns_null_unrealized():
         assert r["avg_unrealized_pct"] is None
     finally:
         conn.close()
+
+
+def test_get_recent_pnl_groups_by_plan_date():
+    import tempfile
+    from db_repository import open_db, get_recent_pnl
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        rows = [
+            ("2026-08-14", "600519", "close", 1600, None, 5.0, None, "2026-08-14T00:00:00"),
+            ("2026-08-14", "000001", "close", 11, None, 10.0, None, "2026-08-14T00:00:00"),
+            ("2026-08-15", "600519", "close", 1580, None, -3.0, None, "2026-08-15T00:00:00"),
+            ("2026-08-17", "000002", "open", 10, None, None, "买入", "2026-08-17T00:00:00"),  # 不计入
+        ]
+        conn.executemany(
+            "INSERT INTO trade_events (plan_date, code, event_type, price, size_pct, pnl_pct, note, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        pnl = get_recent_pnl(conn, days=5)
+        assert pnl == [
+            {"date": "2026-08-15", "pnl_pct": -3.0},
+            {"date": "2026-08-14", "pnl_pct": 15.0},
+        ]
+    finally:
+        conn.close()
+
+
+def test_get_recent_pnl_empty():
+    import tempfile
+    from db_repository import open_db, get_recent_pnl
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        assert get_recent_pnl(conn) == []
+    finally:
+        conn.close()

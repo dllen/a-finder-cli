@@ -478,3 +478,16 @@ def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
     avg = round(pct_sum / pct_count, 2) if pct_count else None
     return {"count": len(items), "size_total": round(total_size, 4),
             "avg_unrealized_pct": avg, "items": items[:3]}
+
+
+def get_recent_pnl(conn: sqlite3.Connection, days: int = 5) -> List[Dict]:
+    """Last `days` distinct plan_date close events, DESC. [{date, pnl_pct}]."""
+    cur = conn.execute(
+        """SELECT plan_date, SUM(pnl_pct) FROM trade_events
+           WHERE event_type = 'close' AND pnl_pct IS NOT NULL
+           GROUP BY plan_date
+           ORDER BY plan_date DESC
+           LIMIT ?""",
+        (days,),
+    )
+    return [{"date": d, "pnl_pct": round(p, 2)} for d, p in cur.fetchall()]
