@@ -35,7 +35,7 @@ jobs:
 
       - name: Run daily pipeline (sync + picks + plan)
         run: |
-          bash sync_incremental_pick.sh hs300.db 20 picks || true
+          bash sync_incremental_pick.sh hs300.db 20 pick-history || true
           python stock_cli.py plan --db hs300.db --date "$(date +%F)" || true
 
       - name: Export static site

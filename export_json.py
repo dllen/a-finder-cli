@@ -119,8 +119,8 @@ def export(db_path: str, out_dir: str) -> int:
     finally:
         conn.close()
 
-    # Static pages (default date = latest available; fallback to today)
-    today = _dt_class.now().strftime("%Y-%m-%d")
+    # 静态页默认日期 = 最新可用数据日期（fallback 到今天仅用于展示占位）
+    # 注意：无需 fallback —— 只要有任意一天的 picks 数据就用它
     picks_default = pick_dates[0] if pick_dates else today
     plan_default = plan_dates[0] if plan_dates else today
 
