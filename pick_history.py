@@ -162,7 +162,8 @@ def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
     return len(rows)
 
 
-def run_picks(db_path: str, top: int, do_sync: bool, progress: Optional[Callable[[int, str], None]] = None) -> Dict:
+def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] = None,
+              progress: Optional[Callable[[int, str], None]] = None) -> Dict:
     def report(pct: int, msg: str) -> None:
         if progress:
             progress(pct, msg)
@@ -201,10 +202,18 @@ def run_picks(db_path: str, top: int, do_sync: bool, progress: Optional[Callable
     passed_strategies = load_passed_strategies()
     conn = open_db(db_path)
     with conn:
-        date = latest_trade_date(conn)
-        if not date:
-            report(100, "无交易日期")
-            return {"date": "", "ma": 0, "buy": 0}
+        if trade_date:
+            # 验证指定日期有行情
+            row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (trade_date,)).fetchone()
+            if not row:
+                report(100, f"指定日期 {trade_date} 无行情数据")
+                return {"date": "", "ma": 0, "buy": 0}
+            date = trade_date
+        else:
+            date = latest_trade_date(conn)
+            if not date:
+                report(100, "无交易日期")
+                return {"date": "", "ma": 0, "buy": 0}
         ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top, passed_strategies))
         buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
     report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条")
@@ -216,8 +225,46 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
     parser.add_argument("--top", type=int, default=DEFAULT_TOP, help="榜单数量")
     parser.add_argument("--no-sync", action="store_true", help="跳过数据同步")
+    parser.add_argument("--date", type=str, default=None, help="指定交易日（YYYY-MM-DD）")
+    parser.add_argument("--batch", action="store_true", help="批量补齐最近5个交易日")
     args = parser.parse_args()
-    result = run_picks(args.db, args.top, not args.no_sync)
+
+    if args.batch:
+        # 批量补齐最近 5 个交易日（不含今天）
+        today = dt.date.today()
+        trade_dates = []
+        for i in range(1, 20):
+            d = today - dt.timedelta(days=i)
+            if d.weekday() < 5:
+                trade_dates.append(d.isoformat())
+            if len(trade_dates) >= 5:
+                break
+        print(f"批量回填 {len(trade_dates)} 个交易日：{trade_dates}")
+        # 只同步一次行情，之后逐日计算
+        stocks = build_market_from_db(args.db, min_days=221, max_days=520)
+        if not stocks:
+            print("无可用行情数据")
+            return
+        passed_strategies = load_passed_strategies()
+        conn = open_db(args.db)
+        for td in trade_dates:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM daily_picks WHERE date = ?", (td,)
+            ).fetchone()[0]
+            if existing > 0:
+                print(f"  {td}: 已存在 {existing} 条，跳过")
+                continue
+            row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (td,)).fetchone()
+            if not row:
+                print(f"  {td}: 无行情数据，跳过")
+                continue
+            ma_count = upsert_picks(conn, td, "均线", build_ma_picks(stocks, args.top, passed_strategies))
+            buy_count = upsert_picks(conn, td, "买入信号", build_buy_picks(stocks, args.top))
+            print(f"  {td}: 均线 {ma_count} 条 / 买入信号 {buy_count} 条")
+        conn.close()
+        return
+
+    result = run_picks(args.db, args.top, not args.no_sync, trade_date=args.date)
     print(f"日期: {result['date'] or '无数据'}")
     print(f"均线榜单: {result['ma']} 条")
     print(f"买入信号榜单: {result['buy']} 条")
