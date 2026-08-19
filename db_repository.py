@@ -509,13 +509,65 @@ def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
 
 
 def get_recent_pnl(conn: sqlite3.Connection, days: int = 5) -> List[Dict]:
-    """Last `days` distinct plan_date close events, DESC. [{date, pnl_pct}]."""
-    cur = conn.execute(
-        """SELECT plan_date, SUM(pnl_pct) FROM trade_events
-           WHERE event_type = 'close' AND pnl_pct IS NOT NULL
-           GROUP BY plan_date
-           ORDER BY plan_date DESC
-           LIMIT ?""",
-        (days,),
-    )
-    return [{"date": d, "pnl_pct": round(p, 2)} for d, p in cur.fetchall()]
+    """Last `days` distinct trade dates' portfolio return, newest first.
+
+    Portfolio return (%) per day is size-weighted and combines:
+      - realized: positions closed that day  → (close_price/entry_price - 1) * 100 * size_pct
+      - unrealized: positions still open, marked to that day's close
+                   → (close/entry_price - 1) * 100 * size_pct (skips dates before entry)
+
+    Returns [{date, pnl_pct}]; [] when there is no price data at all.
+    """
+    dates = [
+        r[0]
+        for r in conn.execute(
+            """SELECT DISTINCT trade_date FROM daily_prices
+               ORDER BY trade_date DESC LIMIT ?""",
+            (days,),
+        ).fetchall()
+    ]
+    if not dates:
+        return []
+
+    closed = conn.execute(
+        """SELECT close_date, entry_price, close_price, size_pct
+           FROM open_positions
+           WHERE status = 'closed' AND close_date IS NOT NULL""",
+    ).fetchall()
+    opens = conn.execute(
+        """SELECT code, entry_date, entry_price, size_pct
+           FROM open_positions WHERE status = 'open'""",
+    ).fetchall()
+
+    # Close price per (code, trade_date) for open codes across the window.
+    open_codes = [r[0] for r in opens]
+    prices: Dict[Tuple[str, str], float] = {}
+    if open_codes:
+        ph = ",".join("?" for _ in open_codes)
+        prices = {
+            (code, tdate): close
+            for code, tdate, close in conn.execute(
+                f"""SELECT code, trade_date, close FROM daily_prices
+                    WHERE code IN ({ph}) AND trade_date BETWEEN ? AND ?""",
+                (*open_codes, dates[-1], dates[0]),
+            )
+        }
+
+    out: List[Dict] = []
+    for d in dates:
+        pnl = 0.0
+        contributed = False
+        for close_date, entry, close, size in closed:
+            if close_date == d and entry:
+                pnl += (close / entry - 1) * 100 * (size or 0)
+                contributed = True
+        for code, entry_date, entry, size in opens:
+            if entry_date > d or not entry:
+                continue
+            close = prices.get((code, d))
+            if close is not None:
+                pnl += (close / entry - 1) * 100 * (size or 0)
+                contributed = True
+        if contributed:
+            out.append({"date": d, "pnl_pct": round(pnl, 2)})
+    return out

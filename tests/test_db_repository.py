@@ -275,29 +275,35 @@ def test_get_open_positions_no_prices_returns_null_unrealized():
         conn.close()
 
 
-def test_get_recent_pnl_groups_by_plan_date():
+def test_get_recent_pnl_realized_from_closed_positions():
     import tempfile
     from db_repository import open_db, get_recent_pnl
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         path = f.name
     conn = open_db(path)
     try:
-        rows = [
-            ("2026-08-14", "600519", "close", 1600, None, 5.0, None, "2026-08-14T00:00:00"),
-            ("2026-08-14", "000001", "close", 11, None, 10.0, None, "2026-08-14T00:00:00"),
-            ("2026-08-15", "600519", "close", 1580, None, -3.0, None, "2026-08-15T00:00:00"),
-            ("2026-08-17", "000002", "open", 10, None, None, "买入", "2026-08-17T00:00:00"),  # 不计入
-        ]
+        # daily_prices supply the trade-date axis for the window.
         conn.executemany(
-            "INSERT INTO trade_events (plan_date, code, event_type, price, size_pct, pnl_pct, note, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            rows,
+            "INSERT INTO daily_prices (code, trade_date, close) VALUES (?,?,?)",
+            [("600519", "2026-08-14", 100.0),
+             ("600519", "2026-08-15", 100.0)],
+        )
+        # Two positions closed on different dates, each realized at its own pnl.
+        conn.executemany(
+            """INSERT INTO open_positions
+            (code, entry_date, entry_price, size_pct, stop_price, tp_price,
+             status, close_date, close_price)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                ("600519", "2026-08-13", 100.0, 0.5, 0, 0, "closed", "2026-08-14", 110.0),  # +5.0
+                ("000001", "2026-08-13", 10.0, 1.0, 0, 0, "closed", "2026-08-15", 9.7),    # -3.0
+            ],
         )
         conn.commit()
         pnl = get_recent_pnl(conn, days=5)
         assert pnl == [
             {"date": "2026-08-15", "pnl_pct": -3.0},
-            {"date": "2026-08-14", "pnl_pct": 15.0},
+            {"date": "2026-08-14", "pnl_pct": 5.0},
         ]
     finally:
         conn.close()
