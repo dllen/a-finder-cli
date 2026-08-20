@@ -450,16 +450,16 @@ def insert_trade_event(
     size_pct: Optional[float] = None,
     pnl_pct: Optional[float] = None,
     note: Optional[str] = None,
+    shares: Optional[int] = None,
+    pnl_amt: Optional[float] = None,
 ) -> int:
     """Record a trade event (open/close). Returns event_id."""
     cur = conn.execute(
         """INSERT INTO trade_events
-        (plan_date, code, event_type, price, size_pct, pnl_pct, note, created_at)
-        VALUES (?,?,?,?,?,?,?,?)""",
-        (
-            plan_date, code, event_type, price, size_pct, pnl_pct, note,
-            dt.datetime.utcnow().isoformat(timespec="seconds"),
-        ),
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt,
+         dt.datetime.utcnow().isoformat(timespec="seconds")),
     )
     conn.commit()
     return cur.lastrowid

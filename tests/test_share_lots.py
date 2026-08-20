@@ -4,6 +4,7 @@ import tempfile
 
 from db_repository import open_db
 from db_repository import insert_open_position, accumulate_open_position, get_open_positions
+from plan_builder import build_plan
 
 
 def test_migration_adds_shares_and_backfills_open():
@@ -66,5 +67,62 @@ def test_accumulate_open_position_creates_when_missing():
         accumulate_open_position(conn, "000001", 10.0, 0.1, 9.2, 12.0, 200)
         opens = get_open_positions(conn)
         assert len(opens) == 1 and opens[0]["shares"] == 200
+    finally:
+        conn.close()
+
+
+def _seed_pick(conn, date, code, buy=100.0, score=2.0):
+    conn.execute(
+        """INSERT INTO daily_picks (date, rank, kind, code, name, strategy, buy, stop, target, score)
+        VALUES (?, 1, '均线', ?, ?, 'test', ?, ?, ?, ?)""",
+        (date, code, code, buy, buy * 0.9, buy * 1.2, score),
+    )
+    conn.commit()
+
+
+def test_build_plan_buys_200_shares_and_accumulates_next_day():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0)
+    conn.close()
+    build_plan("2026-08-18", path, params={"regime": "BULL"})
+
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-19", "600519", buy=110.0)
+    conn.close()
+    build_plan("2026-08-19", path, params={"regime": "BULL"})
+
+    conn = open_db(path)
+    try:
+        opens = conn.execute(
+            "SELECT shares, entry_price FROM open_positions WHERE code='600519' AND status='open'"
+        ).fetchall()
+        assert len(opens) == 1
+        assert opens[0][0] == 400  # 累积 400 股
+        # 加权均价 = (200*100.1 + 200*110.11)/400 ≈ 105.1（滑点 0.1%）
+        assert 104.0 < opens[0][1] < 106.0
+        evts = conn.execute(
+            "SELECT plan_date, shares FROM trade_events WHERE event_type='open' ORDER BY plan_date"
+        ).fetchall()
+        assert evts == [("2026-08-18", 200), ("2026-08-19", 200)]
+    finally:
+        conn.close()
+
+
+def test_build_plan_same_day_rebuild_does_not_double_buy():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0)
+    conn.close()
+    build_plan("2026-08-18", path, params={"regime": "BULL"})
+    build_plan("2026-08-18", path, params={"regime": "BULL"})  # 同日重跑
+    conn = open_db(path)
+    try:
+        shares = conn.execute(
+            "SELECT shares FROM open_positions WHERE code='600519' AND status='open'"
+        ).fetchone()[0]
+        assert shares == 200  # 未重复买
     finally:
         conn.close()

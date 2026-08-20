@@ -26,9 +26,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from db_repository import (
+    accumulate_open_position,
     close_open_position,
     get_open_positions,
-    insert_open_position,
     insert_trade_event,
     insert_trade_plan,
     open_db,
@@ -168,6 +168,7 @@ def _build_buy_rows(
             stop_price=stop,
             tp_price=tp,
             rr_ratio=round(rr, 4),
+            shares=200,
             rationale={
                 "score": score,
                 "regime": regime.value,
@@ -209,6 +210,7 @@ def _build_carryover_rows(
                 plan_price=cur_px, size_pct=o["size_pct"],
                 stop_price=o["stop_price"], tp_price=o["tp_price"],
                 rr_ratio=0.0,
+                shares=int(o.get("shares") or 0),
                 rationale={"trigger": "hold", "current_price": cur_px},
                 status="ok", reason="",
             ))
@@ -218,6 +220,7 @@ def _build_carryover_rows(
                 plan_price=cur_px, size_pct=0.0,
                 stop_price=o["stop_price"], tp_price=o["tp_price"],
                 rr_ratio=0.0,
+                shares=int(o.get("shares") or 0),
                 rationale={"trigger": trigger, "current_price": cur_px},
                 status="ok", reason="",
             ))
@@ -302,23 +305,23 @@ def _paper_trade(
     try:
         for r in rows:
             if r.action == "buy" and r.status == "ok":
-                # Idempotency gate (C1): if a fill already exists for this
-                # code on this date, skip the fill entirely.
+                # C1 幂等（改）：以 trade_events 的 (code, plan_date, 'open') 为准，
+                # 允许同 code 跨日累积。
                 existing = conn.execute(
-                    "SELECT 1 FROM open_positions "
-                    "WHERE code=? AND entry_date=? AND status='open' LIMIT 1",
+                    "SELECT 1 FROM trade_events "
+                    "WHERE code=? AND plan_date=? AND event_type='open' LIMIT 1",
                     (r.code, plan_date),
                 ).fetchone()
                 if existing:
                     continue
                 fill_price = round(r.plan_price * (1 + slippage), 4)
-                insert_open_position(
-                    conn, r.code, plan_date, fill_price,
-                    r.size_pct, r.stop_price, r.tp_price,
+                accumulate_open_position(
+                    conn, r.code, fill_price, r.size_pct,
+                    r.stop_price, r.tp_price, r.shares,
                 )
                 insert_trade_event(
                     conn, plan_date, r.code, "open",
-                    fill_price, r.size_pct, note="paper_fill",
+                    fill_price, r.size_pct, shares=r.shares, note="paper_fill",
                 )
             elif r.action == "exit" and r.status == "ok":
                 cur = conn.execute(
@@ -396,10 +399,7 @@ def build_plan(
         conn.close()
 
     rows: List[PlanRow] = []
-    # C2: skip buy rows for codes already held (avoid duplicate position).
-    held_codes = {o["code"] for o in opens}
-    buy_picks = [p for p in picks if str(p.get("code", "")) not in held_codes]
-    rows.extend(_build_buy_rows(buy_picks, regime, risk_manager))
+    rows.extend(_build_buy_rows(picks, regime, risk_manager))
     rows.extend(_build_carryover_rows(opens, current_prices))
 
     reasons = _apply_sanity_gate(rows, max_single, max_total)
