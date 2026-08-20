@@ -224,3 +224,13 @@ def test_dashboard_js_served():
     resp = client.get("/static/dashboard.js")
     assert resp.status_code == 200
     assert b"startDashboard" in resp.data
+
+
+def test_api_holdings_returns_summary(plan_db):
+    app = create_app(db_path=plan_db)
+    app.config["TESTING"] = True
+    resp = app.test_client().get("/api/holdings")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert set(data.keys()) == {"holdings", "summary"}
+    assert "total_pnl" in data["summary"]

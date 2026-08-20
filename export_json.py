@@ -29,6 +29,7 @@ from db_repository import (
     get_today_plan_summary,
     get_open_positions_with_unrealized,
     get_recent_pnl,
+    get_holdings_detail,
 )
 from app import (
     _page,
@@ -76,6 +77,7 @@ def _dashboard_payload(conn) -> dict:
         "today_plan": today,
         "open_positions": opens,
         "pnl_5d": pnl,
+        "holdings_summary": get_holdings_detail(conn)["summary"],
     }
 
 

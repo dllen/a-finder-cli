@@ -721,6 +721,15 @@ def create_app(db_path="hs300.db", top=10):
         conn.close()
         return jsonify({"plan_date": plan_date, "rows": rows})
 
+    @app.get("/api/holdings")
+    def holdings():
+        from db_repository import get_holdings_detail
+        conn = open_conn(db_path)
+        try:
+            return jsonify(get_holdings_detail(conn))
+        finally:
+            conn.close()
+
     @app.get("/api/dashboard")
     def dashboard():
         from datetime import date as _date
@@ -729,6 +738,7 @@ def create_app(db_path="hs300.db", top=10):
             get_today_plan_summary,
             get_open_positions_with_unrealized,
             get_recent_pnl,
+            get_holdings_detail,
         )
         conn = open_conn(db_path)
         try:
@@ -736,6 +746,7 @@ def create_app(db_path="hs300.db", top=10):
             today = get_today_plan_summary(conn, _date.today().isoformat())
             opens = get_open_positions_with_unrealized(conn)
             pnl = get_recent_pnl(conn, days=5)
+            hd = get_holdings_detail(conn)
         finally:
             conn.close()
         if last:
@@ -751,6 +762,7 @@ def create_app(db_path="hs300.db", top=10):
             "today_plan": today,
             "open_positions": opens,
             "pnl_5d": pnl,
+            "holdings_summary": hd["summary"],
         })
 
     return app
