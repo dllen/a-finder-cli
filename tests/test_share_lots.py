@@ -4,6 +4,7 @@ import tempfile
 
 from db_repository import open_db
 from db_repository import insert_open_position, accumulate_open_position, get_open_positions
+from db_repository import get_holdings_detail
 from plan_builder import build_plan
 
 
@@ -199,3 +200,30 @@ def test_sanity_gate_no_scaling_under_fixed_shares():
     assert all(r.status == "ok" for r in buys)
     assert not any("scaled_to_fit" in r.reason for r in buys)
     assert not any("size_exceed_max" in r.reason for r in buys)
+
+
+def test_holdings_detail_summary():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    conn.execute(
+        "INSERT INTO hs300_metadata (code, name) VALUES ('600519','贵州茅台')"
+    )
+    conn.execute(
+        """INSERT INTO open_positions
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+        VALUES ('600519','2026-08-18',100.0,0.1,92.0,120.0,'open',200)"""
+    )
+    conn.execute(
+        "INSERT INTO daily_prices (code, trade_date, close) VALUES ('600519','2026-08-19',110.0)"
+    )
+    conn.commit()
+    d = get_holdings_detail(conn)
+    assert d["summary"]["open_count"] == 1
+    assert d["summary"]["shares_total"] == 200
+    assert d["summary"]["floating_pnl"] == 2000.0
+    assert d["summary"]["realized_pnl"] == 0.0
+    assert d["holdings"][0]["name"] == "贵州茅台"
+    assert d["holdings"][0]["floating_pnl"] == 2000.0
+    assert d["holdings"][0]["stop_pnl"] == (92.0 - 100.0) * 200
+    conn.close()
