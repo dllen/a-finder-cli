@@ -91,7 +91,7 @@ def main() -> None:
             "SELECT code, entry_price, size_pct, status FROM open_positions"
         ).fetchall()
         evts = conn.execute(
-            "SELECT code, event_type, price, pnl_pct, note FROM trade_events"
+            "SELECT code, event_type, price, shares, pnl_amt, note FROM trade_events"
         ).fetchall()
     finally:
         conn.close()
