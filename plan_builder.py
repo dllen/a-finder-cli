@@ -326,21 +326,21 @@ def _paper_trade(
                 )
             elif r.action == "exit" and r.status == "ok":
                 cur = conn.execute(
-                    "SELECT pos_id, entry_price FROM open_positions "
+                    "SELECT pos_id, entry_price, shares FROM open_positions "
                     "WHERE code=? AND status='open' ORDER BY entry_date LIMIT 1",
                     (r.code,),
                 )
                 row = cur.fetchone()
                 if row:
-                    pos_id, entry_price = row
-                    # Data-driven close_reason from row rationale (N3).
+                    pos_id, entry_price, shares = row
                     close_reason = (r.rationale or {}).get("trigger", "manual")
                     close_open_position(conn, pos_id, plan_date,
                                         r.plan_price, close_reason)
-                    pnl = round((r.plan_price / entry_price - 1) * 100, 4)
+                    pnl_amt = round((r.plan_price - entry_price) * (shares or 0), 2)
                     insert_trade_event(
                         conn, plan_date, r.code, "close",
-                        r.plan_price, None, pnl, note="paper_close",
+                        r.plan_price, None, shares=shares, pnl_amt=pnl_amt,
+                        note="paper_close",
                     )
     finally:
         conn.close()

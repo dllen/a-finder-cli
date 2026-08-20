@@ -143,3 +143,35 @@ def test_build_plan_sets_entry_date_on_open_position():
         assert entry_date == "2026-08-18"  # 非空 entry_date
     finally:
         conn.close()
+
+
+def test_close_records_amount_pnl():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    # 200 股 @ 100，止损价 105（现价 102 会触发 exit? 需现价 <= stop? 见下）
+    conn.execute(
+        """INSERT INTO open_positions
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+        VALUES ('000002','2026-08-10',100.0,0.1,105.0,115.0,'open',200)"""
+    )
+    conn.execute(
+        "INSERT INTO daily_prices (code, trade_date, close) VALUES ('000002','2026-08-18',102.0)"
+    )
+    conn.commit()
+    conn.close()
+    build_plan("2026-08-18", path, params={"regime": "BULL"})
+
+    conn = open_db(path)
+    try:
+        close = conn.execute(
+            "SELECT shares, pnl_amt FROM trade_events WHERE event_type='close'"
+        ).fetchone()
+        assert close[0] == 200
+        assert abs(close[1] - 400.0) < 0.01  # (102 - 100) * 200 = 400
+        still_open = conn.execute(
+            "SELECT COUNT(*) FROM open_positions WHERE code='000002' AND status='open'"
+        ).fetchone()[0]
+        assert still_open == 0
+    finally:
+        conn.close()
