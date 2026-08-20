@@ -364,16 +364,54 @@ def insert_open_position(
     size_pct: float,
     stop_price: float,
     tp_price: float,
+    shares: int = 200,
 ) -> int:
-    """Open a new paper position. Returns pos_id."""
+    """Open a new paper position with a fixed share count. Returns pos_id."""
     cur = conn.execute(
         """INSERT INTO open_positions
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
-        VALUES (?,?,?,?,?,?,'open')""",
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price),
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+        VALUES (?,?,?,?,?,?,'open',?)""",
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, shares),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def accumulate_open_position(
+    conn: sqlite3.Connection,
+    code: str,
+    fill_price: float,
+    size_pct: float,
+    stop_price: float,
+    tp_price: float,
+    shares_to_add: int = 200,
+) -> int:
+    """Add shares to an existing open position (weighted-average entry).
+
+    If no open position exists for `code`, opens a fresh one. Returns pos_id.
+    """
+    row = conn.execute(
+        "SELECT pos_id, shares, entry_price FROM open_positions "
+        "WHERE code=? AND status='open' LIMIT 1",
+        (code,),
+    ).fetchone()
+    if row is None:
+        return insert_open_position(
+            conn, code, "", fill_price, size_pct, stop_price, tp_price, shares_to_add
+        )
+    pos_id, old_shares, old_entry = row
+    old_shares = old_shares or 0
+    old_entry = old_entry or 0.0
+    new_shares = old_shares + shares_to_add
+    new_entry = round((old_shares * old_entry + shares_to_add * fill_price) / new_shares, 4)
+    conn.execute(
+        """UPDATE open_positions
+           SET shares=?, entry_price=?, stop_price=?, tp_price=?
+           WHERE pos_id=?""",
+        (new_shares, new_entry, stop_price, tp_price, pos_id),
+    )
+    conn.commit()
+    return pos_id
 
 
 def get_open_positions(conn: sqlite3.Connection) -> List[Dict]:
