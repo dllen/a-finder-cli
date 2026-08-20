@@ -71,11 +71,17 @@ def test_accumulate_open_position_creates_when_missing():
         conn.close()
 
 
+_SEED_RANK = {"n": 0}
+
+
 def _seed_pick(conn, date, code, buy=100.0, score=2.0):
+    # daily_picks PK is (date, rank, kind); vary rank so multiple codes can
+    # be seeded on the same date without a UNIQUE constraint collision.
+    _SEED_RANK["n"] += 1
     conn.execute(
         """INSERT INTO daily_picks (date, rank, kind, code, name, strategy, buy, stop, target, score)
-        VALUES (?, 1, '均线', ?, ?, 'test', ?, ?, ?, ?)""",
-        (date, code, code, buy, buy * 0.9, buy * 1.2, score),
+        VALUES (?, ?, '均线', ?, ?, 'test', ?, ?, ?, ?)""",
+        (date, _SEED_RANK["n"], code, code, buy, buy * 0.9, buy * 1.2, score),
     )
     conn.commit()
 
@@ -175,3 +181,21 @@ def test_close_records_amount_pnl():
         assert still_open == 0
     finally:
         conn.close()
+
+
+def test_sanity_gate_no_scaling_under_fixed_shares():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    for code in ["600000", "600001", "600002", "600003", "600004"]:
+        _seed_pick(conn, "2026-08-18", code, buy=100.0)
+    conn.close()
+    result = build_plan("2026-08-18", path, params={
+        "regime": "BULL", "max_single": 0.15, "max_total": 0.3,
+    })
+    buys = [r for r in result.rows if r.action == "buy"]
+    assert len(buys) == 5
+    # 固定股数下不得缩放、不得标 failed
+    assert all(r.status == "ok" for r in buys)
+    assert not any("scaled_to_fit" in r.reason for r in buys)
+    assert not any("size_exceed_max" in r.reason for r in buys)

@@ -236,50 +236,26 @@ def _apply_sanity_gate(
     max_single: float,
     max_total: float,
 ) -> List[str]:
-    """In-place mutation. Returns list of failure reasons.
+    """Fixed-share sanity gate.
 
-    Portfolio total cap (C2) now sums both buy rows AND held positions,
-    since held positions represent real outstanding exposure.
+    Fixed 200-share lots disable portfolio-weight scaling (you cannot scale
+    200 shares down to 190). `max_single` becomes a reference warning only;
+    the only hard failure left is a stop placed at/above entry.
     """
     reasons: List[str] = []
     buy_rows = [r for r in rows if r.action == "buy"]
-    held_rows = [r for r in rows if r.action == "hold"]
 
-    # Rule 1: per-row cap
+    # Rule 1 (downgraded): reference weight above max_single → warning only.
     for r in buy_rows:
         if r.size_pct > max_single:
-            r.status = "failed"
-            r.reason = "size_exceed_max"
-            reasons.append(f"{r.code}:size_exceed_max")
+            reasons.append(f"{r.code}:size_ref_warn")
 
-    # Rule 2: stop must be below entry (cannot be above/at entry).
-    # Spec: "stop_price not above plan_price * 1.1" — i.e. stop must be ≤ price*1.1.
-    # In practice this is a sanity check that the stop is at least break-even-or-below.
+    # Rule 2 (hard): stop must be below entry.
     for r in buy_rows:
         if r.plan_price > 0 and r.stop_price > r.plan_price:
             r.status = "failed"
             r.reason = "stop_above_entry"
             reasons.append(f"{r.code}:stop_above_entry")
-
-    # Rule 3: portfolio scaling (only ok buy rows, but total includes held)
-    ok_buys = [r for r in buy_rows if r.status == "ok"]
-    held_total = sum(r.size_pct for r in held_rows)
-    buy_total = sum(r.size_pct for r in ok_buys)
-    total = held_total + buy_total
-    if total > max_total and ok_buys:
-        # Room left for new buys = max_total - held_total; if non-positive,
-        # all buy rows are marked failed ('portfolio_overflow').
-        room = max_total - held_total
-        if room <= 0:
-            for r in ok_buys:
-                r.status = "failed"
-                r.reason = "portfolio_overflow"
-                reasons.append(f"{r.code}:portfolio_overflow")
-        else:
-            scale = room / buy_total if buy_total > 0 else 0.0
-            for r in ok_buys:
-                r.size_pct = round(r.size_pct * scale, 4)
-                r.reason = "scaled_to_fit"
 
     return reasons
 
