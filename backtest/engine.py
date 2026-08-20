@@ -48,6 +48,10 @@ class BacktestEngine:
 
             # 止损检查
             stop_orders = self._check_stop_loss(portfolio, prices, current_date)
+            # 止损/止盈优先: 该股票已整仓卖出时, 调仓不再重复卖出
+            stop_codes = {o.code for o in stop_orders}
+            rebalance_orders = [o for o in rebalance_orders
+                                if not (o.direction == OrderDirection.SELL and o.code in stop_codes)]
             all_orders = rebalance_orders + stop_orders
 
             # 执行
@@ -136,7 +140,13 @@ class BacktestEngine:
                 pos.buy_date = date
                 portfolio.cash -= trade.net_amount
             else:
-                pos.quantity -= trade.quantity
+                if pos.quantity <= 0:
+                    continue
+                sell_qty = min(trade.quantity, pos.quantity)
+                if sell_qty != trade.quantity:
+                    trade.net_amount = trade.net_amount * (sell_qty / trade.quantity)
+                    trade.quantity = sell_qty
+                pos.quantity -= sell_qty
                 if pos.quantity == 0:
                     pos.avg_cost = 0
                     pos.buy_date = None

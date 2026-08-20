@@ -48,7 +48,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages]
-find = { include = ["shared_lib*", "strategies*"] }
+find = { include = ["shared_lib*", "strategies*", "backtest*"] }
 
 [tool.setuptools.package-dir]
 "" = "."
