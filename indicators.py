@@ -17,6 +17,25 @@ def normalize(values: List[float], higher_is_better: bool) -> List[float]:
     return result
 
 
+def z_score_normalize(values: List[float], higher_is_better: bool = True) -> List[float]:
+    """Z-score标准化, 返回0-100范围便于组合"""
+    if len(values) < 2:
+        return [50.0] * len(values)
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    std = variance ** 0.5
+    if std < 1e-10:
+        return [50.0] * len(values)
+    z_scores = [(x - mean) / std for x in values]
+    min_z, max_z = min(z_scores), max(z_scores)
+    if max_z - min_z < 1e-10:
+        return [50.0] * len(values)
+    normalized = [(z - min_z) / (max_z - min_z) * 100 for z in z_scores]
+    if not higher_is_better:
+        normalized = [100 - n for n in normalized]
+    return normalized
+
+
 def moving_average(prices: List[float], window: int) -> float:
     return sum(prices[-window:]) / window
 
