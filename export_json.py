@@ -118,11 +118,14 @@ def export(db_path: str, out_dir: str) -> int:
             )
         json.dump(_dashboard_payload(conn), (data_dir / "dashboard.json").open("w"),
                   ensure_ascii=False, default=str)
+        json.dump(get_holdings_detail(conn), (data_dir / "holdings.json").open("w"),
+                  ensure_ascii=False, default=str)
     finally:
         conn.close()
 
     # 静态页默认日期 = 最新可用数据日期（fallback 到今天仅用于展示占位）
     # 注意：无需 fallback —— 只要有任意一天的 picks 数据就用它
+    today = _dt_class.now().strftime("%Y-%m-%d")
     picks_default = pick_dates[0] if pick_dates else today
     plan_default = plan_dates[0] if plan_dates else today
 

@@ -234,3 +234,15 @@ def test_api_holdings_returns_summary(plan_db):
     data = resp.get_json()
     assert set(data.keys()) == {"holdings", "summary"}
     assert "total_pnl" in data["summary"]
+
+
+def test_plan_page_has_holdings_container(plan_db):
+    app = create_app(db_path=plan_db)
+    resp = app.test_client().get("/plan")
+    assert b'id="holdings"' in resp.data
+
+
+def test_plan_page_has_dsFetchHoldings(plan_db):
+    app = create_app(db_path=plan_db)
+    resp = app.test_client().get("/plan")
+    assert b'dsFetchHoldings' in resp.data

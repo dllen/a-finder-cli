@@ -19,3 +19,15 @@ def test_strip_write_controls_removes_buttons_and_checkbox():
     assert 'id="dashboard"' in picks
     assert "交易计划" in plan
     assert 'id="board"' in plan
+
+
+def test_export_emits_holdings_json(tmp_path):
+    import os, tempfile
+    from db_repository import open_db
+    from export_json import export
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    open_db(db).close()
+    out = str(tmp_path / "site")
+    export(db, out)
+    assert os.path.exists(os.path.join(out, "data", "holdings.json"))
