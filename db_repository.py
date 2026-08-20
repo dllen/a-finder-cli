@@ -385,6 +385,7 @@ def accumulate_open_position(
     stop_price: float,
     tp_price: float,
     shares_to_add: int = 200,
+    entry_date: str = "",
 ) -> int:
     """Add shares to an existing open position (weighted-average entry).
 
@@ -397,7 +398,7 @@ def accumulate_open_position(
     ).fetchone()
     if row is None:
         return insert_open_position(
-            conn, code, "", fill_price, size_pct, stop_price, tp_price, shares_to_add
+            conn, code, entry_date, fill_price, size_pct, stop_price, tp_price, shares_to_add
         )
     pos_id, old_shares, old_entry = row
     old_shares = old_shares or 0

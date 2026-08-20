@@ -318,6 +318,7 @@ def _paper_trade(
                 accumulate_open_position(
                     conn, r.code, fill_price, r.size_pct,
                     r.stop_price, r.tp_price, r.shares,
+                    entry_date=plan_date,
                 )
                 insert_trade_event(
                     conn, plan_date, r.code, "open",

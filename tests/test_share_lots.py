@@ -126,3 +126,20 @@ def test_build_plan_same_day_rebuild_does_not_double_buy():
         assert shares == 200  # 未重复买
     finally:
         conn.close()
+
+
+def test_build_plan_sets_entry_date_on_open_position():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0)
+    conn.close()
+    build_plan("2026-08-18", path, params={"regime": "BULL"})
+    conn = open_db(path)
+    try:
+        entry_date = conn.execute(
+            "SELECT entry_date FROM open_positions WHERE code='600519' AND status='open'"
+        ).fetchone()[0]
+        assert entry_date == "2026-08-18"  # 非空 entry_date
+    finally:
+        conn.close()
