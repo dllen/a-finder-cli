@@ -22,12 +22,12 @@ def test_multi_factor_scoring():
     )
     stocks = [
         Stock(code="1", name="A", pe=10, pb=1, peg=1, revenue_growth=0.1, profit_growth=0.1, roe=0.10, cashflow=0.1, prices=[10]*120, volumes=[100]*120),
-        Stock(code="2", name="B", pe=20, pb=2, peg=2, revenue_growth=0.2, profit_growth=0.2, roe=0.20, cashflow=0.2, prices=[20]*120, volumes=[100]*120),
+        Stock(code="2", name="B", pe=10, pb=2, peg=2, revenue_growth=0.2, profit_growth=0.2, roe=0.20, cashflow=0.2, prices=[20]*120, volumes=[100]*120),
     ]
     strategy = MultiFactorBase(config)
     result = strategy.select(None, stocks)
     assert len(result.positions) == 2
-    assert result.positions[0].score >= result.positions[1].score
+    assert result.positions[0].score > result.positions[1].score
 
 
 def test_empty_candidates():
