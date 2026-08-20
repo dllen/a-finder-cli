@@ -145,7 +145,7 @@ def test_api_dashboard_returns_four_sections(plan_db, monkeypatch):
     resp = app.test_client().get("/api/dashboard")
     assert resp.status_code == 200
     data = resp.get_json()
-    assert set(data.keys()) == {"last_refresh", "today_plan", "open_positions", "pnl_5d"}
+    assert set(data.keys()) == {"last_refresh", "today_plan", "open_positions", "pnl_5d", "holdings_summary"}
     # last_refresh: 26h ago = warm (>24, <72)
     assert data["last_refresh"]["date"] == "2026-08-17"
     assert data["last_refresh"]["ago_hours"] == 26.0
@@ -224,3 +224,25 @@ def test_dashboard_js_served():
     resp = client.get("/static/dashboard.js")
     assert resp.status_code == 200
     assert b"startDashboard" in resp.data
+
+
+def test_api_holdings_returns_summary(plan_db):
+    app = create_app(db_path=plan_db)
+    app.config["TESTING"] = True
+    resp = app.test_client().get("/api/holdings")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert set(data.keys()) == {"holdings", "summary"}
+    assert "total_pnl" in data["summary"]
+
+
+def test_plan_page_has_holdings_container(plan_db):
+    app = create_app(db_path=plan_db)
+    resp = app.test_client().get("/plan")
+    assert b'id="holdings"' in resp.data
+
+
+def test_plan_page_has_dsFetchHoldings(plan_db):
+    app = create_app(db_path=plan_db)
+    resp = app.test_client().get("/plan")
+    assert b'dsFetchHoldings' in resp.data

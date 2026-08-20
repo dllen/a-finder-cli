@@ -225,11 +225,11 @@ def test_get_open_positions_with_unrealized_joins_daily_prices():
     try:
         # seed open_positions
         conn.executemany(
-            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             [
-                ("600519", "2026-08-10", 1500.0, 0.10, 1380.0, 1740.0, "open"),
-                ("000001", "2026-08-12", 10.0, 0.05, 9.0, 12.0, "open"),
+                ("600519", "2026-08-10", 1500.0, 0.10, 1380.0, 1740.0, "open", 200),
+                ("000001", "2026-08-12", 10.0, 0.05, 9.0, 12.0, "open", 200),
             ],
         )
         # seed daily_prices (latest close per code)
@@ -246,11 +246,17 @@ def test_get_open_positions_with_unrealized_joins_daily_prices():
         r = get_open_positions_with_unrealized(conn)
         assert r["count"] == 2
         assert abs(r["size_total"] - 0.15) < 1e-9
-        # unrealized_pct: 600519 (1530-1500)/1500*100 = 2.0; 000001 (11.5-10)/10*100 = 15.0
+        # avg_unrealized_pct stays pct-based: 600519 (1530-1500)/1500*100 = 2.0;
+        # 000001 (11.5-10)/10*100 = 15.0 → average 8.5
         assert abs(r["avg_unrealized_pct"] - 8.5) < 1e-9
         codes = [it["code"] for it in r["items"]]
         assert codes == ["600519", "000001"]
-        assert abs(r["items"][1]["unrealized_pct"] - 15.0) < 1e-9
+        # floating_pnl is share-weighted: 000001 (11.5-10)*200 = 300.0
+        assert abs(r["items"][1]["floating_pnl"] - 300.0) < 1e-9
+        assert r["items"][1]["shares"] == 200
+        # top-level share/amount aggregates
+        assert r["shares_total"] == 400
+        assert abs(r["floating_pnl"] - 6300.0) < 1e-9
     finally:
         conn.close()
 
@@ -263,14 +269,16 @@ def test_get_open_positions_no_prices_returns_null_unrealized():
     conn = open_db(path)
     try:
         conn.execute(
-            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status) "
-            "VALUES ('999999', '2026-08-10', 5.0, 0.10, 4.0, 7.0, 'open')"
+            "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares) "
+            "VALUES ('999999', '2026-08-10', 5.0, 0.10, 4.0, 7.0, 'open', 200)"
         )
         conn.commit()
         r = get_open_positions_with_unrealized(conn)
         assert r["count"] == 1
-        assert r["items"][0]["unrealized_pct"] is None
+        assert r["items"][0]["floating_pnl"] is None
+        assert r["items"][0]["shares"] == 200
         assert r["avg_unrealized_pct"] is None
+        assert r["shares_total"] == 200
     finally:
         conn.close()
 
@@ -292,18 +300,18 @@ def test_get_recent_pnl_realized_from_closed_positions():
         conn.executemany(
             """INSERT INTO open_positions
             (code, entry_date, entry_price, size_pct, stop_price, tp_price,
-             status, close_date, close_price)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+             status, close_date, close_price, shares)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             [
-                ("600519", "2026-08-13", 100.0, 0.5, 0, 0, "closed", "2026-08-14", 110.0),  # +5.0
-                ("000001", "2026-08-13", 10.0, 1.0, 0, 0, "closed", "2026-08-15", 9.7),    # -3.0
+                ("600519", "2026-08-13", 100.0, 0.5, 0, 0, "closed", "2026-08-14", 110.0, 200),  # (110-100)*200 = +2000
+                ("000001", "2026-08-13", 10.0, 1.0, 0, 0, "closed", "2026-08-15", 9.7, 200),    # (9.7-10)*200 = -60
             ],
         )
         conn.commit()
         pnl = get_recent_pnl(conn, days=5)
         assert pnl == [
-            {"date": "2026-08-15", "pnl_pct": -3.0},
-            {"date": "2026-08-14", "pnl_pct": 5.0},
+            {"date": "2026-08-15", "pnl_amt": -60.0},
+            {"date": "2026-08-14", "pnl_amt": 2000.0},
         ]
     finally:
         conn.close()

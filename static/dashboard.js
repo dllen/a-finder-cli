@@ -7,13 +7,13 @@ function freshnessCn(f) { return {fresh:'新鲜', warm:'滞后', stale:'过期'}
 function sparkline(pnl) {
   if (!pnl.length) return '<span class="text-muted small">无</span>';
   const xs = [...pnl].reverse();
-  const w = 80, h = 24, max = Math.max(...xs.map(p => Math.abs(p.pnl_pct)), 1);
+  const w = 80, h = 24, max = Math.max(...xs.map(p => Math.abs(p.pnl_amt)), 1);
   const step = w / Math.max(xs.length - 1, 1);
   const mid = h / 2;
-  const pts = xs.map((p, i) => `${i * step},${mid - (p.pnl_pct / max) * mid}`).join(' ');
-  const sum = xs.reduce((s, p) => s + p.pnl_pct, 0);
+  const pts = xs.map((p, i) => `${i * step},${mid - (p.pnl_amt / max) * mid}`).join(' ');
+  const sum = xs.reduce((s, p) => s + p.pnl_amt, 0);
   const color = sum >= 0 ? '#198754' : '#dc3545';
-  return `<svg width="${w}" height="${h}" style="vertical-align:middle"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg> <small class="${sum>=0?'text-success':'text-danger'}">${sum>=0?'+':''}${sum.toFixed(2)}%</small>`;
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg> <small class="${sum>=0?'text-success':'text-danger'}">${sum>=0?'+':''}${sum.toFixed(2)}元</small>`;
 }
 
 function renderDashboard(d) {
@@ -50,13 +50,11 @@ function renderDashboard(d) {
     <small class="text-muted">合计仓位 ${(tp.size_total*100).toFixed(1)}% · <a href="${dsPlanHref()}">查看 →</a></small>`;
 
   const opHtml = op.count
-    ? `<div><strong>${op.count}</strong> <small class="text-muted">只 · ${(op.size_total*100).toFixed(1)}%</small></div>
-       <small class="${op.avg_unrealized_pct>=0?'text-success':'text-danger'}">
-         ${op.avg_unrealized_pct==null?'—':(op.avg_unrealized_pct>=0?'+':'')+op.avg_unrealized_pct+'%'}
+    ? `<div><strong>${op.count}</strong> <small class="text-muted">只 · ${op.shares_total} 股</small></div>
+       <small class="${(op.floating_pnl||0)>=0?'text-success':'text-danger'}">
+         浮动 ${(op.floating_pnl||0)>=0?'+':''}${fmt(op.floating_pnl)} 元
        </small>
-       <table class="table table-sm mb-0 mt-1" style="font-size:.8rem">
-         ${op.items.map(it => `<tr><td><code>${it.code}</code></td><td class="text-end ${it.unrealized_pct>=0?'text-success':'text-danger'}">${it.unrealized_pct==null?'—':(it.unrealized_pct>=0?'+':'')+it.unrealized_pct+'%'}</td></tr>`).join('')}
-       </table>`
+       <small class="text-muted d-block">均价浮动 ${op.avg_unrealized_pct==null?'—':(op.avg_unrealized_pct>=0?'+':'')+op.avg_unrealized_pct+'%'}</small>`
     : '<span class="text-muted">无持仓</span>';
 
   const pnlHtml = pnl.length

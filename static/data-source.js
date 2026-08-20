@@ -24,6 +24,12 @@ function dsFetchDashboard() {
     : $.getJSON('/api/dashboard');
 }
 
+function dsFetchHoldings() {
+  return isStatic()
+    ? $.getJSON(dsPath('data/holdings.json'))
+    : $.getJSON('/api/holdings');
+}
+
 function dsPicksHref() { return isStatic() ? 'index.html' : '/'; }
 function dsPlanHref() { return isStatic() ? 'plan.html' : '/plan'; }
 

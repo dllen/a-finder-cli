@@ -8,17 +8,18 @@ All sizing / stop / tp decisions come from `risk_manager.RiskManager` (the
 single source of truth shared with `ma_backtest`). No strategy logic lives
 in this module — only orchestration + sanity gate + paper fills.
 
-Sanity gate rules (per spec):
-  1. single-row size cap (`max_single`) → status=failed, reason='size_exceed_max'
-  2. stop below price (stop >= price * 0.9) → status=failed, reason='stop_too_tight'
-  3. portfolio total cap (`max_total`) → scale all buy rows proportionally;
-     status stays 'ok', reason='scaled_to_fit'
+Sanity gate rules (fixed-share lots):
+  1. reference weight above `max_single` → warning only, reason='size_ref_warn';
+     status stays 'ok' (200-share lots cannot be scaled down)
+  2. stop at/above entry (`stop_price > plan_price`) → status=failed,
+     reason='stop_above_entry' (the only hard failure)
+  No portfolio scaling: `max_total` no longer shrinks buy rows.
 
 Paper trader (Task 12):
 - buy row, status=ok → fill at plan_price * (1 + slippage), insert into
   open_positions + trade_events('open')
 - exit row, status=ok → close the matching open position, insert
-  trade_events('close') with pnl_pct
+  trade_events('close') with shares + pnl_amt
 """
 from __future__ import annotations
 
@@ -26,9 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from db_repository import (
+    accumulate_open_position,
     close_open_position,
     get_open_positions,
-    insert_open_position,
     insert_trade_event,
     insert_trade_plan,
     open_db,
@@ -106,6 +107,7 @@ def _row_from_db(r: Dict[str, Any]) -> PlanRow:
         rationale=rationale,
         status=r["status"],
         reason=r.get("reason", "") or "",
+        shares=int(r.get("shares") or 0),
     )
 
 
@@ -167,6 +169,7 @@ def _build_buy_rows(
             stop_price=stop,
             tp_price=tp,
             rr_ratio=round(rr, 4),
+            shares=200,
             rationale={
                 "score": score,
                 "regime": regime.value,
@@ -208,6 +211,7 @@ def _build_carryover_rows(
                 plan_price=cur_px, size_pct=o["size_pct"],
                 stop_price=o["stop_price"], tp_price=o["tp_price"],
                 rr_ratio=0.0,
+                shares=int(o.get("shares") or 0),
                 rationale={"trigger": "hold", "current_price": cur_px},
                 status="ok", reason="",
             ))
@@ -217,6 +221,7 @@ def _build_carryover_rows(
                 plan_price=cur_px, size_pct=0.0,
                 stop_price=o["stop_price"], tp_price=o["tp_price"],
                 rr_ratio=0.0,
+                shares=int(o.get("shares") or 0),
                 rationale={"trigger": trigger, "current_price": cur_px},
                 status="ok", reason="",
             ))
@@ -232,50 +237,26 @@ def _apply_sanity_gate(
     max_single: float,
     max_total: float,
 ) -> List[str]:
-    """In-place mutation. Returns list of failure reasons.
+    """Fixed-share sanity gate.
 
-    Portfolio total cap (C2) now sums both buy rows AND held positions,
-    since held positions represent real outstanding exposure.
+    Fixed 200-share lots disable portfolio-weight scaling (you cannot scale
+    200 shares down to 190). `max_single` becomes a reference warning only;
+    the only hard failure left is a stop placed at/above entry.
     """
     reasons: List[str] = []
     buy_rows = [r for r in rows if r.action == "buy"]
-    held_rows = [r for r in rows if r.action == "hold"]
 
-    # Rule 1: per-row cap
+    # Rule 1 (downgraded): reference weight above max_single → warning only.
     for r in buy_rows:
         if r.size_pct > max_single:
-            r.status = "failed"
-            r.reason = "size_exceed_max"
-            reasons.append(f"{r.code}:size_exceed_max")
+            reasons.append(f"{r.code}:size_ref_warn")
 
-    # Rule 2: stop must be below entry (cannot be above/at entry).
-    # Spec: "stop_price not above plan_price * 1.1" — i.e. stop must be ≤ price*1.1.
-    # In practice this is a sanity check that the stop is at least break-even-or-below.
+    # Rule 2 (hard): stop must be below entry.
     for r in buy_rows:
         if r.plan_price > 0 and r.stop_price > r.plan_price:
             r.status = "failed"
             r.reason = "stop_above_entry"
             reasons.append(f"{r.code}:stop_above_entry")
-
-    # Rule 3: portfolio scaling (only ok buy rows, but total includes held)
-    ok_buys = [r for r in buy_rows if r.status == "ok"]
-    held_total = sum(r.size_pct for r in held_rows)
-    buy_total = sum(r.size_pct for r in ok_buys)
-    total = held_total + buy_total
-    if total > max_total and ok_buys:
-        # Room left for new buys = max_total - held_total; if non-positive,
-        # all buy rows are marked failed ('portfolio_overflow').
-        room = max_total - held_total
-        if room <= 0:
-            for r in ok_buys:
-                r.status = "failed"
-                r.reason = "portfolio_overflow"
-                reasons.append(f"{r.code}:portfolio_overflow")
-        else:
-            scale = room / buy_total if buy_total > 0 else 0.0
-            for r in ok_buys:
-                r.size_pct = round(r.size_pct * scale, 4)
-                r.reason = "scaled_to_fit"
 
     return reasons
 
@@ -292,50 +273,52 @@ def _paper_trade(
 ) -> None:
     """Persist paper fills: open for buy rows, close for exit rows.
 
-    Rerun-idempotent (C1): a buy-row fill is skipped when an open_positions
-    row already exists for (code, entry_date=plan_date, status='open').
-    Exit rows are always re-driven by current price vs stop/tp; a single
-    close per code is enforced by filtering on status='open' in the lookup.
+    Rerun-idempotent (C1): a buy-row fill is gated on an existing trade_events
+    row for (code, plan_date, 'open'); same-code re-buys on different days
+    ACCUMULATE (weighted-average entry) instead of being deduped. Exit rows
+    are re-driven by current price vs stop/tp; a single close per code is
+    enforced by filtering on status='open' in the lookup.
     """
     conn = open_db(db_path)
     try:
         for r in rows:
             if r.action == "buy" and r.status == "ok":
-                # Idempotency gate (C1): if a fill already exists for this
-                # code on this date, skip the fill entirely.
+                # C1 幂等（改）：以 trade_events 的 (code, plan_date, 'open') 为准，
+                # 允许同 code 跨日累积。
                 existing = conn.execute(
-                    "SELECT 1 FROM open_positions "
-                    "WHERE code=? AND entry_date=? AND status='open' LIMIT 1",
+                    "SELECT 1 FROM trade_events "
+                    "WHERE code=? AND plan_date=? AND event_type='open' LIMIT 1",
                     (r.code, plan_date),
                 ).fetchone()
                 if existing:
                     continue
                 fill_price = round(r.plan_price * (1 + slippage), 4)
-                insert_open_position(
-                    conn, r.code, plan_date, fill_price,
-                    r.size_pct, r.stop_price, r.tp_price,
+                accumulate_open_position(
+                    conn, r.code, fill_price, r.size_pct,
+                    r.stop_price, r.tp_price, r.shares,
+                    entry_date=plan_date,
                 )
                 insert_trade_event(
                     conn, plan_date, r.code, "open",
-                    fill_price, r.size_pct, note="paper_fill",
+                    fill_price, r.size_pct, shares=r.shares, note="paper_fill",
                 )
             elif r.action == "exit" and r.status == "ok":
                 cur = conn.execute(
-                    "SELECT pos_id, entry_price FROM open_positions "
+                    "SELECT pos_id, entry_price, shares FROM open_positions "
                     "WHERE code=? AND status='open' ORDER BY entry_date LIMIT 1",
                     (r.code,),
                 )
                 row = cur.fetchone()
                 if row:
-                    pos_id, entry_price = row
-                    # Data-driven close_reason from row rationale (N3).
+                    pos_id, entry_price, shares = row
                     close_reason = (r.rationale or {}).get("trigger", "manual")
                     close_open_position(conn, pos_id, plan_date,
                                         r.plan_price, close_reason)
-                    pnl = round((r.plan_price / entry_price - 1) * 100, 4)
+                    pnl_amt = round((r.plan_price - entry_price) * (shares or 0), 2)
                     insert_trade_event(
                         conn, plan_date, r.code, "close",
-                        r.plan_price, None, pnl, note="paper_close",
+                        r.plan_price, None, shares=shares, pnl_amt=pnl_amt,
+                        note="paper_close",
                     )
     finally:
         conn.close()
@@ -395,10 +378,7 @@ def build_plan(
         conn.close()
 
     rows: List[PlanRow] = []
-    # C2: skip buy rows for codes already held (avoid duplicate position).
-    held_codes = {o["code"] for o in opens}
-    buy_picks = [p for p in picks if str(p.get("code", "")) not in held_codes]
-    rows.extend(_build_buy_rows(buy_picks, regime, risk_manager))
+    rows.extend(_build_buy_rows(picks, regime, risk_manager))
     rows.extend(_build_carryover_rows(opens, current_prices))
 
     reasons = _apply_sanity_gate(rows, max_single, max_total)

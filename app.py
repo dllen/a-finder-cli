@@ -371,6 +371,9 @@ PLAN_BODY = """<main class="container py-4">
   <div id="prog" class="mb-3"></div>
   <div id="log" class="mb-3"></div>
   <div id="board"></div>
+
+  <h2 class="section-title mt-4">持仓跟踪</h2>
+  <div id="holdings"></div>
 </main>"""
 
 PLAN_SCRIPT = """var ACTION_META = {
@@ -383,6 +386,7 @@ function statusBadge(s){ return s==='ok' ? 'bg-success' : 'bg-danger'; }
 function row(r){
   var meta = actionMeta(r.action);
   var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
+  var shares = r.shares == null ? '—' : r.shares;
   var rationale;
   try {
     var obj = JSON.parse(r.rationale_json || '{}');
@@ -399,6 +403,7 @@ function row(r){
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
     '<td class="num">'+fmt(r.plan_price)+'</td>' +
     '<td class="num">'+sizePct+'</td>' +
+    '<td class="num">'+shares+'</td>' +
     '<td class="num">'+fmt(r.stop_price)+'</td>' +
     '<td class="num">'+fmt(r.tp_price)+'</td>' +
     '<td class="num">'+fmt(r.rr_ratio)+'</td>' +
@@ -417,10 +422,11 @@ function drawPlan(data){
     var rows = data.rows || [];
     if (!rows.length) { $('#board').html('<div class="empty-state">该日期暂无 plan</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
-    var buySize = 0, failed = 0;
+    var buySize = 0, buyShares = 0, failed = 0;
     rows.forEach(function(r){
       (groups[r.action] || (groups[r.action]=[])).push(r);
       if (r.action === 'buy' && r.status === 'ok' && r.size_pct != null) buySize += r.size_pct;
+      if (r.action === 'buy' && r.status === 'ok' && r.shares != null) buyShares += r.shares;
       if (r.status === 'failed') failed++;
     });
     var counts = Object.entries(groups).filter(function(e){return e[1].length}).map(function(e){return actionMeta(e[0]).label+' '+e[1].length;}).join(' · ');
@@ -428,7 +434,7 @@ function drawPlan(data){
       '<span class="me-3"><strong>'+data.plan_date+'</strong></span>' +
       '<span class="text-muted me-3">'+rows.length+' 行</span>' +
       '<span class="text-muted me-3">'+counts+'</span>' +
-      '<span class="text-muted me-3">买入合计仓位 '+ (buySize*100).toFixed(1) +'%</span>' +
+      '<span class="text-muted me-3">买入合计仓位 '+ (buySize*100).toFixed(1) +'% · '+ buyShares +' 股</span>' +
       '<span class="text-muted">失败 '+failed+'</span>' +
       '</div></div>';
     var html = summary;
@@ -438,7 +444,7 @@ function drawPlan(data){
       var meta = actionMeta(a);
       html += '<h2 class="section-title"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h2>';
       html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
-        '<th>代码</th><th>名称</th><th>方向</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
+        '<th>代码</th><th>名称</th><th>方向</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">股数</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
     });
     $('#board').html(html);
@@ -477,6 +483,7 @@ function pollBuild(jobId){
       $('#btn-build').prop('disabled', false);
       window.refreshDashboard && window.refreshDashboard();
       loadDates();
+      loadHoldings();
     } else {
       setStatus('任务失败：'+data.message, 'alert-danger');
       $('#btn-build').prop('disabled', false);
@@ -486,12 +493,40 @@ function pollBuild(jobId){
     $('#btn-build').prop('disabled', false);
   });
 }
+function drawHoldings(d){
+  var rows = d.holdings || [];
+  var s = d.summary || {};
+  var sumHtml = '<div class="card mb-3"><div class="card-body py-2">' +
+    '<span class="me-3"><strong>持仓 '+ s.open_count +'</strong></span>' +
+    '<span class="me-3">总股数 '+ (s.shares_total||0) +'</span>' +
+    '<span class="me-3">浮动 ' + (s.floating_pnl>=0?'+':'') + fmt(s.floating_pnl) + ' 元</span>' +
+    '<span class="me-3">已实现 ' + (s.realized_pnl>=0?'+':'') + fmt(s.realized_pnl) + ' 元</span>' +
+    '<span class="me-3"><strong>总收益 ' + (s.total_pnl>=0?'+':'') + fmt(s.total_pnl) + ' 元</strong></span>' +
+    '<span class="'+(s.return_pct>=0?'text-success':'text-danger')+'">'+(s.return_pct>=0?'+':'')+fmt(s.return_pct)+'%</span>' +
+    '</div></div>';
+  if (!rows.length) { $('#holdings').html(sumHtml + '<div class="empty-state">暂无持仓</div>'); return; }
+  var h = sumHtml + '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+    '<th>代码</th><th>名称</th><th class="num">股数</th><th class="num">加权均价</th><th class="num">现价</th>' +
+    '<th class="num">止损</th><th class="num">止盈</th><th class="num">浮动盈亏</th><th class="num">止损预期</th><th class="num">止盈预期</th>' +
+    '</tr></thead><tbody>' +
+    rows.map(function(r){
+      return '<tr><td class="code">'+r.code+'</td><td>'+(r.name||'—')+'</td>' +
+        '<td class="num">'+r.shares+'</td><td class="num">'+fmt(r.entry_price)+'</td><td class="num">'+fmt(r.current_price)+'</td>' +
+        '<td class="num">'+fmt(r.stop_price)+'</td><td class="num">'+fmt(r.tp_price)+'</td>' +
+        '<td class="num '+(r.floating_pnl>=0?'text-success':'text-danger')+'">'+(r.floating_pnl==null?'—':(r.floating_pnl>=0?'+':'')+fmt(r.floating_pnl))+'</td>' +
+        '<td class="num '+(r.stop_pnl>=0?'text-success':'text-danger')+'">'+(r.stop_pnl==null?'—':(r.stop_pnl>=0?'+':'')+fmt(r.stop_pnl))+'</td>' +
+        '<td class="num '+(r.tp_pnl>=0?'text-success':'text-danger')+'">'+(r.tp_pnl==null?'—':(r.tp_pnl>=0?'+':'')+fmt(r.tp_pnl))+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  $('#holdings').html(h);
+}
+function loadHoldings(){ dsFetchHoldings().done(drawHoldings).fail(function(){ $('#holdings').html('<div class="text-muted small">持仓加载失败</div>'); }); }
 $(function(){
   $('#d').on('change', function(){ render($(this).val()); });
   $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
   $('#btn-build').on('click', buildPlan);
   startDashboard();
   render($('#d').val());
+  loadHoldings();
 });"""
 
 
@@ -721,6 +756,15 @@ def create_app(db_path="hs300.db", top=10):
         conn.close()
         return jsonify({"plan_date": plan_date, "rows": rows})
 
+    @app.get("/api/holdings")
+    def holdings():
+        from db_repository import get_holdings_detail
+        conn = open_conn(db_path)
+        try:
+            return jsonify(get_holdings_detail(conn))
+        finally:
+            conn.close()
+
     @app.get("/api/dashboard")
     def dashboard():
         from datetime import date as _date
@@ -729,6 +773,7 @@ def create_app(db_path="hs300.db", top=10):
             get_today_plan_summary,
             get_open_positions_with_unrealized,
             get_recent_pnl,
+            get_holdings_detail,
         )
         conn = open_conn(db_path)
         try:
@@ -736,6 +781,7 @@ def create_app(db_path="hs300.db", top=10):
             today = get_today_plan_summary(conn, _date.today().isoformat())
             opens = get_open_positions_with_unrealized(conn)
             pnl = get_recent_pnl(conn, days=5)
+            hd = get_holdings_detail(conn)
         finally:
             conn.close()
         if last:
@@ -751,6 +797,7 @@ def create_app(db_path="hs300.db", top=10):
             "today_plan": today,
             "open_positions": opens,
             "pnl_5d": pnl,
+            "holdings_summary": hd["summary"],
         })
 
     return app

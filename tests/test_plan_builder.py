@@ -162,11 +162,15 @@ def test_build_plan_emits_exit_when_stop_hit():
 # Task 11: sanity gate + write trade_plan
 # ---------------------------------------------------------------------------
 
-def test_sanity_gate_fails_size_exceed_max():
-    """If a buy row's size_pct exceeds max_single, it's marked failed."""
+def test_sanity_gate_warns_size_ref():
+    """A buy row's size_pct above max_single is only a reference warning.
+
+    Fixed 200-share lots disable scaling, so `max_single` no longer fails the
+    row — it only emits a `size_ref_warn` sanity reason while status stays ok.
+    """
     path, conn = _fresh_db()
     try:
-        # High score saturates position_size; stop=92/traget=120 are wide
+        # High score saturates position_size; stop=92/target=120 are wide
         # enough that the BULL -8% recomputed stop won't trip rule 2.
         _seed_pick(conn, date="2026-08-18", code="600519", score=10.0,
                    buy=100.0, stop=80.0, target=130.0)
@@ -176,13 +180,13 @@ def test_sanity_gate_fails_size_exceed_max():
     from plan_builder import build_plan
     result = build_plan("2026-08-18", path, params={
         "regime": "BULL",
-        "max_single": 0.05,  # tiny cap — guaranteed to fail
+        "max_single": 0.05,  # tiny reference cap — warning only, not a fail
         "max_total": 0.95,
     })
     buys = [r for r in result.rows if r.action == "buy"]
     assert len(buys) == 1
-    assert buys[0].status == "failed"
-    assert "size_exceed_max" in buys[0].reason
+    assert buys[0].status == "ok"
+    assert any("size_ref_warn" in reason for reason in result.sanity_reasons)
 
 
 def test_sanity_gate_scales_total_overflow():
@@ -202,10 +206,9 @@ def test_sanity_gate_scales_total_overflow():
     })
     buys = [r for r in result.rows if r.action == "buy"]
     assert len(buys) == 5
-    total = sum(r.size_pct for r in buys)
-    assert total <= 0.5 + 0.001
+    # Fixed-share lots: no portfolio scaling → all rows stay ok at full size.
     assert all(r.status == "ok" for r in buys)
-    assert any("scaled_to_fit" in r.reason for r in buys)
+    assert all("scaled_to_fit" not in r.reason for r in buys)
 
 
 def test_sanity_gate_invalid_stop():
@@ -325,9 +328,9 @@ def test_exit_closes_position_and_records_event():
     try:
         conn.execute(
             """INSERT INTO open_positions
-               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'open')""",
-            ("000002", "2026-08-10", 100.0, 0.1, 105.0, 115.0),
+               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+               VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+            ("000002", "2026-08-10", 100.0, 0.1, 105.0, 115.0, 200),
         )
         _seed_price(conn, code="000002", close=102.0, trade_date="2026-08-18")
     finally:
@@ -341,7 +344,7 @@ def test_exit_closes_position_and_records_event():
     try:
         opens = get_open_positions(conn2)
         closes = conn2.execute(
-            "SELECT code, event_type, pnl_pct FROM trade_events WHERE event_type='close'"
+            "SELECT code, event_type, pnl_amt FROM trade_events WHERE event_type='close'"
         ).fetchall()
     finally:
         conn2.close()
@@ -349,5 +352,5 @@ def test_exit_closes_position_and_records_event():
     assert opens == []  # the only open position got closed
     assert len(closes) == 1
     assert closes[0][0] == "000002"
-    # pnl_pct = (close/entry - 1) * 100 = (102/100 - 1) * 100 = 2.0
-    assert abs(closes[0][2] - 2.0) < 0.01
+    # pnl_amt = (close - entry) * shares = (102 - 100) * 200 = 400.0
+    assert abs(closes[0][2] - 400.0) < 0.01

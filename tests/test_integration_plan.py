@@ -162,21 +162,23 @@ def test_ma_backtest_importable_after_refactor():
 # Final-fix wave: C2 + C3 coverage
 # ---------------------------------------------------------------------------
 
-def test_held_code_not_rebought():
-    """C2: a code held from yesterday that appears again in today's picks
-    must NOT yield a new buy row, NOT yield a duplicate open_positions row,
-    and the held size_pct must be counted toward max_total.
+def test_held_code_rebought_accumulates_shares():
+    """C2 removed: a held code re-appearing in today's picks IS re-bought.
+
+    Same-code cross-day re-buy ACCUMULATES into the existing open position
+    (weighted-average entry) instead of being deduped, so a buy row IS
+    produced AND the existing open_positions row is reused, not duplicated.
     """
     path, conn = _fresh_db()
     try:
-        # Open position from prior day for 600519, size 0.10
+        # Open position from prior day for 600519, size 0.10, 200 shares
         conn.execute(
             """INSERT INTO open_positions
-               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'open')""",
-            ("600519", "2026-08-10", 100.0, 0.10, 92.0, 120.0),
+               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+               VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+            ("600519", "2026-08-10", 100.0, 0.10, 92.0, 120.0, 200),
         )
-        # Today's pick for the SAME code — should be skipped
+        # Today's pick for the SAME code — re-bought (accumulates)
         _seed_pick(conn, date="2026-08-18", code="600519", score=2.0)
         # A second held-eligible pick for 000001 to verify it CAN buy
         _seed_pick(conn, date="2026-08-18", code="000001", score=2.0)
@@ -191,29 +193,27 @@ def test_held_code_not_rebought():
         params={"regime": "BULL", "max_total": 0.95},
     )
 
-    # 600519: hold row only, NO buy row
+    # 600519: hold row (carryover) AND buy row (re-bought)
     actions_600519 = [r.action for r in result.rows if r.code == "600519"]
-    assert "buy" not in actions_600519
+    assert "buy" in actions_600519
     assert "hold" in actions_600519
 
     # 000001: buy row only
     actions_000001 = [r.action for r in result.rows if r.code == "000001"]
     assert "buy" in actions_000001
 
-    # Only one open position for 600519 (the original carryover)
+    # 600519 keeps a single open position row (accumulated, not duplicated)
     conn = open_db(path)
     try:
         opens = conn.execute(
-            "SELECT code, status FROM open_positions WHERE code='600519'"
+            "SELECT code, status, shares FROM open_positions WHERE code='600519'"
         ).fetchall()
     finally:
         conn.close()
     open_rows = [o for o in opens if o[1] == "open"]
     assert len(open_rows) == 1
-
-    # Total exposure (held 0.10 + buy 0.15 = 0.25) is within max_total=0.95
-    total = sum(r.size_pct for r in result.rows if r.action in ("buy", "hold"))
-    assert total <= 0.95 + 0.001
+    # Accumulated: original 200 + re-buy 200 = 400 shares
+    assert open_rows[0][2] == 400
 
 
 def test_tp_exit_fires_when_price_above_tp():
@@ -223,9 +223,9 @@ def test_tp_exit_fires_when_price_above_tp():
         # Open position with tp_price=110; current price above tp → tp_hit
         conn.execute(
             """INSERT INTO open_positions
-               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'open')""",
-            ("000002", "2026-08-10", 100.0, 0.10, 92.0, 110.0),
+               (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+               VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+            ("000002", "2026-08-10", 100.0, 0.10, 92.0, 110.0, 200),
         )
         _seed_price(conn, code="000002", close=115.0, trade_date="2026-08-18")
     finally:
@@ -243,7 +243,7 @@ def test_tp_exit_fires_when_price_above_tp():
     try:
         opens = get_open_positions(conn)
         events = conn.execute(
-            "SELECT event_type, pnl_pct FROM trade_events"
+            "SELECT event_type, pnl_amt FROM trade_events"
         ).fetchall()
     finally:
         conn.close()
@@ -253,5 +253,5 @@ def test_tp_exit_fires_when_price_above_tp():
     # Close event recorded with positive pnl
     close_events = [e for e in events if e[0] == "close"]
     assert len(close_events) == 1
-    # pnl = (115/100 - 1) * 100 = 15.0
-    assert abs(close_events[0][1] - 15.0) < 0.01
+    # pnl_amt = (115 - 100) * 200 = 3000.0
+    assert abs(close_events[0][1] - 3000.0) < 0.01

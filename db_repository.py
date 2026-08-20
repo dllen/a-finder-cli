@@ -303,13 +303,14 @@ def insert_trade_plan(
     cur = conn.execute(
         """INSERT OR IGNORE INTO trade_plan
         (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
-         rr_ratio, status, reason, rationale_json, params_hash, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         rr_ratio, status, reason, rationale_json, params_hash, created_at, shares)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             plan_date, row.code, row.action, row.plan_price, row.size_pct,
             row.stop_price, row.tp_price, row.rr_ratio, row.status, row.reason,
             json.dumps(row.rationale), params_hash,
             dt.datetime.utcnow().isoformat(timespec="seconds"),
+            row.shares,
         ),
     )
     conn.commit()
@@ -363,16 +364,55 @@ def insert_open_position(
     size_pct: float,
     stop_price: float,
     tp_price: float,
+    shares: int = 200,
 ) -> int:
-    """Open a new paper position. Returns pos_id."""
+    """Open a new paper position with a fixed share count. Returns pos_id."""
     cur = conn.execute(
         """INSERT INTO open_positions
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status)
-        VALUES (?,?,?,?,?,?,'open')""",
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price),
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
+        VALUES (?,?,?,?,?,?,'open',?)""",
+        (code, entry_date, entry_price, size_pct, stop_price, tp_price, shares),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def accumulate_open_position(
+    conn: sqlite3.Connection,
+    code: str,
+    fill_price: float,
+    size_pct: float,
+    stop_price: float,
+    tp_price: float,
+    shares_to_add: int = 200,
+    entry_date: str = "",
+) -> int:
+    """Add shares to an existing open position (weighted-average entry).
+
+    If no open position exists for `code`, opens a fresh one. Returns pos_id.
+    """
+    row = conn.execute(
+        "SELECT pos_id, shares, entry_price FROM open_positions "
+        "WHERE code=? AND status='open' LIMIT 1",
+        (code,),
+    ).fetchone()
+    if row is None:
+        return insert_open_position(
+            conn, code, entry_date, fill_price, size_pct, stop_price, tp_price, shares_to_add
+        )
+    pos_id, old_shares, old_entry = row
+    old_shares = old_shares or 0
+    old_entry = old_entry or 0.0
+    new_shares = old_shares + shares_to_add
+    new_entry = round((old_shares * old_entry + shares_to_add * fill_price) / new_shares, 4)
+    conn.execute(
+        """UPDATE open_positions
+           SET shares=?, entry_price=?, stop_price=?, tp_price=?
+           WHERE pos_id=?""",
+        (new_shares, new_entry, stop_price, tp_price, pos_id),
+    )
+    conn.commit()
+    return pos_id
 
 
 def get_open_positions(conn: sqlite3.Connection) -> List[Dict]:
@@ -411,16 +451,16 @@ def insert_trade_event(
     size_pct: Optional[float] = None,
     pnl_pct: Optional[float] = None,
     note: Optional[str] = None,
+    shares: Optional[int] = None,
+    pnl_amt: Optional[float] = None,
 ) -> int:
     """Record a trade event (open/close). Returns event_id."""
     cur = conn.execute(
         """INSERT INTO trade_events
-        (plan_date, code, event_type, price, size_pct, pnl_pct, note, created_at)
-        VALUES (?,?,?,?,?,?,?,?)""",
-        (
-            plan_date, code, event_type, price, size_pct, pnl_pct, note,
-            dt.datetime.utcnow().isoformat(timespec="seconds"),
-        ),
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt,
+         dt.datetime.utcnow().isoformat(timespec="seconds")),
     )
     conn.commit()
     return cur.lastrowid
@@ -473,10 +513,9 @@ def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
 
 
 def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
-    """Open positions with latest close price; computes unrealized_pct per row."""
     cur = conn.execute(
         """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
-                  op.stop_price, op.tp_price,
+                  op.stop_price, op.tp_price, op.shares,
                   dp.close AS close_price
            FROM open_positions op
            LEFT JOIN (
@@ -485,61 +524,61 @@ def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
                                    WHERE dp2.code = dp1.code)
            ) dp ON dp.code = op.code
            WHERE op.status = 'open'
-           ORDER BY op.entry_date, op.code"""
+           ORDER BY op.entry_date, op.code""",
     )
     items = []
-    total_size = 0.0
+    shares_total = 0
+    floating_total = 0.0
     pct_sum = 0.0
     pct_count = 0
-    for code, ed, ep, sz, sp, tp, close in cur.fetchall():
-        unrealized = None
+    for code, ed, ep, sz, sp, tp, shares, close in cur.fetchall():
+        shares = shares or 0
+        floating = None
         if close is not None and ep:
-            unrealized = round((close - ep) / ep * 100, 2)
-            pct_sum += unrealized
+            floating = round((close - ep) * shares, 2)
+            floating_total += floating
+            unrealized_pct = (close - ep) / ep * 100
+            pct_sum += unrealized_pct
             pct_count += 1
+        shares_total += shares
         items.append({
             "code": code, "entry_date": ed, "entry_price": ep,
             "size_pct": sz, "stop_price": sp, "tp_price": tp,
-            "unrealized_pct": unrealized,
+            "shares": shares, "current_price": close,
+            "floating_pnl": floating,
+            "stop_pnl": round((sp - ep) * shares, 2) if (sp is not None and ep) else None,
+            "tp_pnl": round((tp - ep) * shares, 2) if (tp is not None and ep) else None,
         })
-        total_size += sz
     avg = round(pct_sum / pct_count, 2) if pct_count else None
-    return {"count": len(items), "size_total": round(total_size, 4),
-            "avg_unrealized_pct": avg, "items": items[:3]}
+    return {
+        "count": len(items), "size_total": round(sum(i["size_pct"] for i in items), 4),
+        "shares_total": shares_total, "floating_pnl": round(floating_total, 2),
+        "avg_unrealized_pct": avg, "items": items[:3],
+    }
 
 
 def get_recent_pnl(conn: sqlite3.Connection, days: int = 5) -> List[Dict]:
-    """Last `days` distinct trade dates' portfolio return, newest first.
+    """Last `days` distinct trade dates' portfolio return in yuan, newest first.
 
-    Portfolio return (%) per day is size-weighted and combines:
-      - realized: positions closed that day  → (close_price/entry_price - 1) * 100 * size_pct
-      - unrealized: positions still open, marked to that day's close
-                   → (close/entry_price - 1) * 100 * size_pct (skips dates before entry)
-
-    Returns [{date, pnl_pct}]; [] when there is no price data at all.
+    Per day: realized (closed that day) + unrealized (open positions marked
+    to that day's close, skipping dates before entry). Return [] with no prices.
     """
     dates = [
-        r[0]
-        for r in conn.execute(
-            """SELECT DISTINCT trade_date FROM daily_prices
-               ORDER BY trade_date DESC LIMIT ?""",
-            (days,),
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_prices "
+            "ORDER BY trade_date DESC LIMIT ?", (days,),
         ).fetchall()
     ]
     if not dates:
         return []
-
     closed = conn.execute(
-        """SELECT close_date, entry_price, close_price, size_pct
-           FROM open_positions
-           WHERE status = 'closed' AND close_date IS NOT NULL""",
+        "SELECT close_date, entry_price, close_price, shares "
+        "FROM open_positions WHERE status='closed' AND close_date IS NOT NULL",
     ).fetchall()
     opens = conn.execute(
-        """SELECT code, entry_date, entry_price, size_pct
-           FROM open_positions WHERE status = 'open'""",
+        "SELECT code, entry_date, entry_price, shares "
+        "FROM open_positions WHERE status='open'",
     ).fetchall()
-
-    # Close price per (code, trade_date) for open codes across the window.
     open_codes = [r[0] for r in opens]
     prices: Dict[Tuple[str, str], float] = {}
     if open_codes:
@@ -547,27 +586,86 @@ def get_recent_pnl(conn: sqlite3.Connection, days: int = 5) -> List[Dict]:
         prices = {
             (code, tdate): close
             for code, tdate, close in conn.execute(
-                f"""SELECT code, trade_date, close FROM daily_prices
-                    WHERE code IN ({ph}) AND trade_date BETWEEN ? AND ?""",
+                f"SELECT code, trade_date, close FROM daily_prices "
+                f"WHERE code IN ({ph}) AND trade_date BETWEEN ? AND ?",
                 (*open_codes, dates[-1], dates[0]),
             )
         }
-
     out: List[Dict] = []
     for d in dates:
-        pnl = 0.0
+        amt = 0.0
         contributed = False
-        for close_date, entry, close, size in closed:
+        for close_date, entry, close, shares in closed:
             if close_date == d and entry:
-                pnl += (close / entry - 1) * 100 * (size or 0)
+                amt += (close - entry) * (shares or 0)
                 contributed = True
-        for code, entry_date, entry, size in opens:
+        for code, entry_date, entry, shares in opens:
             if entry_date > d or not entry:
                 continue
             close = prices.get((code, d))
             if close is not None:
-                pnl += (close / entry - 1) * 100 * (size or 0)
+                amt += (close - entry) * (shares or 0)
                 contributed = True
         if contributed:
-            out.append({"date": d, "pnl_pct": round(pnl, 2)})
+            out.append({"date": d, "pnl_amt": round(amt, 2)})
     return out
+
+
+def get_holdings_detail(conn: sqlite3.Connection) -> Dict:
+    """Full per-position tracking + portfolio summary (yuan)."""
+    opens = conn.execute(
+        """SELECT op.code, m.name, op.entry_price, op.shares, op.stop_price, op.tp_price,
+                  dp.close AS current_price
+           FROM open_positions op
+           LEFT JOIN hs300_metadata m ON m.code = op.code
+           LEFT JOIN (
+               SELECT code, close FROM daily_prices dp1
+               WHERE trade_date = (SELECT MAX(trade_date) FROM daily_prices dp2
+                                   WHERE dp2.code = dp1.code)
+           ) dp ON dp.code = op.code
+           WHERE op.status = 'open'
+           ORDER BY op.entry_date, op.code""",
+    ).fetchall()
+    holdings = []
+    floating_total = 0.0
+    shares_total = 0
+    cost_open = 0.0
+    for code, name, entry, shares, stop, tp, cur in opens:
+        entry = entry or 0.0
+        shares = shares or 0
+        cost_open += entry * shares
+        shares_total += shares
+        floating = round((cur - entry) * shares, 2) if cur is not None else None
+        if floating is not None:
+            floating_total += floating
+        holdings.append({
+            "code": code, "name": name, "shares": shares,
+            "entry_price": entry, "current_price": cur,
+            "stop_price": stop, "tp_price": tp,
+            "floating_pnl": floating,
+            "stop_pnl": round((stop - entry) * shares, 2) if stop is not None else None,
+            "tp_pnl": round((tp - entry) * shares, 2) if tp is not None else None,
+        })
+    realized = conn.execute(
+        "SELECT COALESCE(SUM((close_price - entry_price) * shares), 0) "
+        "FROM open_positions WHERE status='closed'",
+    ).fetchone()[0]
+    closed_cost = conn.execute(
+        "SELECT COALESCE(SUM(entry_price * shares), 0) "
+        "FROM open_positions WHERE status='closed'",
+    ).fetchone()[0]
+    total_cost = cost_open + closed_cost
+    total_pnl = round(floating_total + realized, 2)
+    return_pct = round(total_pnl / total_cost * 100, 2) if total_cost else 0.0
+    return {
+        "holdings": holdings,
+        "summary": {
+            "open_count": len(holdings),
+            "shares_total": shares_total,
+            "floating_pnl": round(floating_total, 2),
+            "realized_pnl": round(realized, 2),
+            "total_cost": round(total_cost, 2),
+            "total_pnl": total_pnl,
+            "return_pct": return_pct,
+        },
+    }
