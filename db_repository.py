@@ -303,13 +303,14 @@ def insert_trade_plan(
     cur = conn.execute(
         """INSERT OR IGNORE INTO trade_plan
         (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
-         rr_ratio, status, reason, rationale_json, params_hash, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         rr_ratio, status, reason, rationale_json, params_hash, created_at, shares)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             plan_date, row.code, row.action, row.plan_price, row.size_pct,
             row.stop_price, row.tp_price, row.rr_ratio, row.status, row.reason,
             json.dumps(row.rationale), params_hash,
             dt.datetime.utcnow().isoformat(timespec="seconds"),
+            row.shares,
         ),
     )
     conn.commit()

@@ -26,6 +26,7 @@ class PlanRow:
     rationale: dict = field(default_factory=dict)
     status: Literal["ok", "failed"] = "ok"
     reason: str = ""
+    shares: int = 200
 
 
 def params_hash(d: dict) -> str:

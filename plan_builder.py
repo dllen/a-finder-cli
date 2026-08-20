@@ -106,6 +106,7 @@ def _row_from_db(r: Dict[str, Any]) -> PlanRow:
         rationale=rationale,
         status=r["status"],
         reason=r.get("reason", "") or "",
+        shares=int(r.get("shares") or 200),
     )
 
 

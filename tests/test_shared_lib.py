@@ -32,6 +32,13 @@ def test_params_hash_changes_with_value():
     assert params_hash({"x": 1}) != params_hash({"x": 2})
 
 
+def test_plan_row_default_shares():
+    from shared_lib.strategy import PlanRow
+    r = PlanRow(code="600519", action="buy", plan_price=100.0, size_pct=0.1,
+                stop_price=92.0, tp_price=120.0, rr_ratio=2.0)
+    assert r.shares == 200
+
+
 # --- Task 3: risk_manager facade + compute_plan_prices ----------------------
 
 def test_risk_manager_re_exported():
