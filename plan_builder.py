@@ -8,17 +8,18 @@ All sizing / stop / tp decisions come from `risk_manager.RiskManager` (the
 single source of truth shared with `ma_backtest`). No strategy logic lives
 in this module — only orchestration + sanity gate + paper fills.
 
-Sanity gate rules (per spec):
-  1. single-row size cap (`max_single`) → status=failed, reason='size_exceed_max'
-  2. stop below price (stop >= price * 0.9) → status=failed, reason='stop_too_tight'
-  3. portfolio total cap (`max_total`) → scale all buy rows proportionally;
-     status stays 'ok', reason='scaled_to_fit'
+Sanity gate rules (fixed-share lots):
+  1. reference weight above `max_single` → warning only, reason='size_ref_warn';
+     status stays 'ok' (200-share lots cannot be scaled down)
+  2. stop at/above entry (`stop_price > plan_price`) → status=failed,
+     reason='stop_above_entry' (the only hard failure)
+  No portfolio scaling: `max_total` no longer shrinks buy rows.
 
 Paper trader (Task 12):
 - buy row, status=ok → fill at plan_price * (1 + slippage), insert into
   open_positions + trade_events('open')
 - exit row, status=ok → close the matching open position, insert
-  trade_events('close') with pnl_pct
+  trade_events('close') with shares + pnl_amt
 """
 from __future__ import annotations
 
@@ -272,10 +273,11 @@ def _paper_trade(
 ) -> None:
     """Persist paper fills: open for buy rows, close for exit rows.
 
-    Rerun-idempotent (C1): a buy-row fill is skipped when an open_positions
-    row already exists for (code, entry_date=plan_date, status='open').
-    Exit rows are always re-driven by current price vs stop/tp; a single
-    close per code is enforced by filtering on status='open' in the lookup.
+    Rerun-idempotent (C1): a buy-row fill is gated on an existing trade_events
+    row for (code, plan_date, 'open'); same-code re-buys on different days
+    ACCUMULATE (weighted-average entry) instead of being deduped. Exit rows
+    are re-driven by current price vs stop/tp; a single close per code is
+    enforced by filtering on status='open' in the lookup.
     """
     conn = open_db(db_path)
     try:
