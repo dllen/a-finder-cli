@@ -236,6 +236,15 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
         else:
             sync_hs300(db_path, "incremental", None, _sync_progress)
         report(85, "行情同步完成")
+
+        conn0 = open_db(db_path)
+        with conn0:
+            from db_repository import fundamentals_stale
+            stale = fundamentals_stale(conn0)
+        if stale:
+            from sync_service import sync_fundamentals
+            report(86, "基本面数据陈旧，开始同步（首次约需几十分钟）…")
+            sync_fundamentals(db_path, progress=lambda p, m: report(86 + int(p * 0.02), m))
     else:
         report(5, "跳过行情同步")
 

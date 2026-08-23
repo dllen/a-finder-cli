@@ -73,6 +73,82 @@ class StockMeta:
     region: str
 
 
+@dataclass
+class FundamentalsRow:
+    code: str
+    pe: float = 0.0
+    pb: float = 0.0
+    roe: float = 0.0
+    debt_ratio: float = 0.0
+    gross_margin: float = 0.0
+    gross_margin_std: float = 0.0
+    revenue_growth: float = 0.0
+    profit_growth: float = 0.0
+    revenue_cagr_3y: float = 0.0
+    profit_cagr_3y: float = 0.0
+    cashflow: float = 0.0
+    dividend_yield: float = 0.0
+    dividend_stability: float = 0.0
+    sector: str = ""
+
+
+def upsert_fundamentals(conn: sqlite3.Connection, rows: Iterable[FundamentalsRow]) -> int:
+    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data = [
+        (
+            r.code, r.pe, r.pb, r.roe, r.debt_ratio, r.gross_margin, r.gross_margin_std,
+            r.revenue_growth, r.profit_growth, r.revenue_cagr_3y, r.profit_cagr_3y,
+            r.cashflow, r.dividend_yield, r.dividend_stability, r.sector, now,
+        )
+        for r in rows
+    ]
+    if not data:
+        return 0
+    conn.executemany(
+        """
+        INSERT INTO fundamentals (code, pe, pb, roe, debt_ratio, gross_margin, gross_margin_std,
+            revenue_growth, profit_growth, revenue_cagr_3y, profit_cagr_3y,
+            cashflow, dividend_yield, dividend_stability, sector, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+            pe=excluded.pe, pb=excluded.pb, roe=excluded.roe, debt_ratio=excluded.debt_ratio,
+            gross_margin=excluded.gross_margin, gross_margin_std=excluded.gross_margin_std,
+            revenue_growth=excluded.revenue_growth, profit_growth=excluded.profit_growth,
+            revenue_cagr_3y=excluded.revenue_cagr_3y, profit_cagr_3y=excluded.profit_cagr_3y,
+            cashflow=excluded.cashflow, dividend_yield=excluded.dividend_yield,
+            dividend_stability=excluded.dividend_stability, sector=excluded.sector,
+            updated_at=excluded.updated_at
+        """,
+        data,
+    )
+    return len(data)
+
+
+_FUNDAMENTALS_COLS = (
+    "code, pe, pb, roe, debt_ratio, gross_margin, gross_margin_std, revenue_growth,"
+    " profit_growth, revenue_cagr_3y, profit_cagr_3y, cashflow, dividend_yield,"
+    " dividend_stability, sector"
+)
+
+
+def get_fundamentals(conn: sqlite3.Connection) -> Dict[str, FundamentalsRow]:
+    result: Dict[str, FundamentalsRow] = {}
+    for row in conn.execute(f"SELECT {_FUNDAMENTALS_COLS} FROM fundamentals").fetchall():
+        result[row[0]] = FundamentalsRow(*row)
+    return result
+
+
+def fundamentals_stale(conn: sqlite3.Connection, max_age_days: int = 7) -> bool:
+    row = conn.execute("SELECT COUNT(*), MAX(updated_at) FROM fundamentals").fetchone()
+    if not row or not row[0] or not row[1]:
+        return True
+    try:
+        updated = dt.datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return True
+    return dt.datetime.now() - updated > dt.timedelta(days=max_age_days)
+
+
 def open_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     ensure_schema(conn)

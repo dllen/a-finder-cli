@@ -91,6 +91,12 @@ class MultiFactorBase:
         for factor in self.config.factors:
             values = [factor.get_value(s) for s in stocks]
             higher = factor.direction == FactorDirection.HIGHER_IS_BETTER
+            if not higher:
+                # 缺失数据(<=0)在 lower-is-better 里会被当成最优，替换为最差正值
+                positives = [v for v in values if v > 0]
+                if positives:
+                    worst = max(positives)
+                    values = [v if v > 0 else worst for v in values]
             result[factor.name] = z_score_normalize(values, higher)
         return result
 

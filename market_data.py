@@ -2,9 +2,40 @@ import random
 from typing import Dict, List
 
 from data_providers import fetch_hs300_constituents
-from db_repository import open_db, upsert_constituents
+from db_repository import get_fundamentals, open_db, upsert_constituents
 
 from domain_models import Stock
+
+
+def _volatility(prices: List[float], window: int = 120) -> float:
+    seg = prices[-(window + 1):]
+    if len(seg) < 3:
+        return 0.0
+    rets = [seg[i] / seg[i - 1] - 1 for i in range(1, len(seg)) if seg[i - 1] > 0]
+    if len(rets) < 2:
+        return 0.0
+    mean = sum(rets) / len(rets)
+    return (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+
+
+def _max_drawdown(prices: List[float], window: int = 250) -> float:
+    seg = prices[-window:]
+    peak = 0.0
+    mdd = 0.0
+    for p in seg:
+        peak = max(peak, p)
+        if peak > 0:
+            mdd = max(mdd, (peak - p) / peak)
+    return mdd
+
+
+def _momentum_12m_1m(prices: List[float]) -> float:
+    # 12m-1m 动量：剔除最近 22 个交易日；数据不足时用可用窗口
+    if len(prices) < 45:
+        return 0.0
+    end = prices[-22]
+    start = prices[-250] if len(prices) >= 250 else prices[0]
+    return end / start - 1 if start > 0 else 0.0
 
 
 def generate_series(seed: int, start: float, trend: float, volatility: float, days: int) -> List[float]:
@@ -102,6 +133,7 @@ def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) 
                 codes = [row[0] for row in cur.fetchall()]
                 names = {code: code for code in codes}
         market: List[Stock] = []
+        fundamentals = get_fundamentals(conn)
         for code in codes:
             cur = conn.execute(
                 "SELECT close, volume, turnover, amount, pct_change FROM daily_prices "
@@ -119,22 +151,39 @@ def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) 
             amount = [float(item[3]) if item[3] is not None else 0.0 for item in series]
             pct_change = [float(item[4]) if item[4] is not None else 0.0 for item in series]
             name = names.get(code) or code
+            f = fundamentals.get(code)
             market.append(
                 Stock(
                     code=code,
                     name=name,
-                    pe=1.0,
-                    pb=1.0,
+                    pe=f.pe if f else 0.0,
+                    pb=f.pb if f else 0.0,
                     peg=1.0,
-                    revenue_growth=1.0,
-                    profit_growth=1.0,
-                    roe=1.0,
-                    cashflow=1.0,
+                    revenue_growth=f.revenue_growth if f else 0.0,
+                    profit_growth=f.profit_growth if f else 0.0,
+                    roe=f.roe if f else 0.0,
+                    cashflow=f.cashflow if f else 0.0,
                     prices=prices,
                     volumes=volumes,
                     turnover=turnover,
                     amount=amount,
                     pct_change=pct_change,
+                    sector=f.sector if f else "",
+                    debt_ratio=f.debt_ratio if f else 0.0,
+                    gross_margin=f.gross_margin if f else 0.0,
+                    gross_margin_std=f.gross_margin_std if f else 0.0,
+                    revenue_cagr_3y=f.revenue_cagr_3y if f else 0.0,
+                    profit_cagr_3y=f.profit_cagr_3y if f else 0.0,
+                    dividend_yield=f.dividend_yield if f else 0.0,
+                    dividend_stability=f.dividend_stability if f else 0.0,
+                    volatility_120d=_volatility(prices),
+                    max_drawdown_1y=_max_drawdown(prices),
+                    momentum_12m_1m=_momentum_12m_1m(prices),
                 )
             )
+        # 超额动量 = 个股动量 - 全市场均值
+        if market:
+            avg_mom = sum(s.momentum_12m_1m for s in market) / len(market)
+            for s in market:
+                s.excess_momentum = s.momentum_12m_1m - avg_mom
         return market

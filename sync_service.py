@@ -20,6 +20,7 @@ from db_repository import (
     upsert_checkpoint,
     upsert_constituents,
     upsert_fetch_offsets,
+    upsert_fundamentals,
     upsert_metadata,
 )
 from data_providers import fetch_daily_kline_with_name, fetch_hs300_constituents, fetch_stock_meta
@@ -382,3 +383,72 @@ def sync_hs300_metadata(
         inserted = upsert_metadata(conn, metas)
     logger.info("元数据同步完成: symbols=%s rows=%s", len(mapping), inserted)
     return {"symbols": len(mapping), "rows": inserted}
+
+
+def sync_fundamentals(
+    db_path: str,
+    concurrency: int = 4,
+    rate_limit: float = 3.0,
+    retries: int = 2,
+    backoff: float = 1.0,
+    progress: Optional[Callable[[int, str], None]] = None,
+) -> Dict[str, int]:
+    """同步基本面快照到 fundamentals 表。sector 目前只标注申万医药生物（其他策略未用）。"""
+    from akshare_data_provider import fetch_fundamentals_akshare, fetch_sw_sector_codes
+    from data_providers import fetch_dividends_5y
+
+    logger = get_logger()
+    conn = open_db(db_path)
+    with conn:
+        codes = get_all_codes(conn)
+        closes = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT code, close FROM daily_prices "
+                "WHERE (code, trade_date) IN (SELECT code, MAX(trade_date) FROM daily_prices GROUP BY code)"
+            ).fetchall()
+        }
+    if not codes:
+        raise FetchError("无本地股票代码，无法同步基本面")
+
+    try:
+        pharma_codes = fetch_sw_sector_codes("801150.SI")
+    except Exception as exc:  # noqa: BLE001
+        pharma_codes = set()
+        logger.warning("申万医药生物成分获取失败: %s", exc)
+
+    try:
+        dividends_map = fetch_dividends_5y()
+    except Exception as exc:  # noqa: BLE001
+        dividends_map = {}
+        logger.warning("分红数据获取失败: %s", exc)
+
+    limiter = RateLimiter(rate_limit)
+
+    def _fetch(code: str):
+        limiter.wait()
+        row = fetch_fundamentals_akshare(
+            code, float(closes.get(code) or 0.0), dividends_map.get(code, [])
+        )
+        if code in pharma_codes:
+            row.sector = "医药生物"
+        return row
+
+    rows = []
+    done = 0
+    total = len(codes)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {executor.submit(_fetch, code): code for code in sorted(codes)}
+        for future in as_completed(futures):
+            code = futures[future]
+            try:
+                rows.append(future.result())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("基本面同步失败: code=%s error=%s", code, exc)
+            done += 1
+            if progress:
+                progress(int(done * 100 / total), f"基本面 {code}（{done}/{total}）")
+    with conn:
+        inserted = upsert_fundamentals(conn, rows)
+    logger.info("基本面同步完成: symbols=%s rows=%s pharma=%s", total, inserted, len(pharma_codes))
+    return {"symbols": total, "rows": inserted}

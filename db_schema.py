@@ -82,3 +82,25 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fundamentals (
+            code TEXT PRIMARY KEY,
+            pe REAL,
+            pb REAL,
+            roe REAL,
+            debt_ratio REAL,
+            gross_margin REAL,
+            gross_margin_std REAL,
+            revenue_growth REAL,
+            profit_growth REAL,
+            revenue_cagr_3y REAL,
+            profit_cagr_3y REAL,
+            cashflow REAL,
+            dividend_yield REAL,
+            dividend_stability REAL,
+            sector TEXT DEFAULT '',
+            updated_at TEXT
+        )
+        """
+    )

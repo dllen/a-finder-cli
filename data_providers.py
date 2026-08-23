@@ -178,6 +178,43 @@ def fetch_stock_meta(code: str) -> Optional[StockMeta]:
     return StockMeta(code=code, name=name or code, industry="", region=province)
 
 
+def fetch_dividends_5y() -> Dict[str, List[tuple]]:
+    """东财分红送配明细，返回 {code: [(除权除息日, 每10股税前派息), ...]}，覆盖近 5 年"""
+    import datetime as dt
+
+    end = dt.date.today()
+    start = end - dt.timedelta(days=365 * 5)
+    url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    params = {
+        "reportName": "RPT_SHAREBONUS_DET",
+        "columns": "SECURITY_CODE,EX_DIVIDEND_DATE,PRETAX_BONUS_RMB",
+        "filter": f"(EX_DIVIDEND_DATE>='{start}')(EX_DIVIDEND_DATE<='{end}')",
+        "sortColumns": "EX_DIVIDEND_DATE",
+        "sortTypes": "-1",
+        "pageSize": "500",
+    }
+    result: Dict[str, List[tuple]] = {}
+    page = 1
+    while True:
+        params["pageNumber"] = str(page)
+        data = fetch_url_json(url, params)
+        payload = data.get("result") if isinstance(data, dict) else None
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not rows:
+            break
+        for row in rows:
+            code = str(row.get("SECURITY_CODE") or "")
+            date = str(row.get("EX_DIVIDEND_DATE") or "")[:10]
+            bonus = row.get("PRETAX_BONUS_RMB")
+            if code and date and bonus:
+                result.setdefault(code, []).append((date, float(bonus)))
+        pages = payload.get("pages") or 1
+        if page >= pages:
+            break
+        page += 1
+    return result
+
+
 def _fetch_name_from_sina(code: str) -> str:
     try:
         prefix = "sh" if code.startswith(("60", "688")) else "sz"

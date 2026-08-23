@@ -5,8 +5,14 @@ from indicators import normalize
 
 
 def score_stocks(stocks: List[Stock]) -> Dict[str, float]:
-    pe_scores = normalize([s.pe for s in stocks], higher_is_better=False)
-    pb_scores = normalize([s.pb for s in stocks], higher_is_better=False)
+    def _fill_missing(values: List[float]) -> List[float]:
+        # 基本面缺失(pe<=0)在 lower-is-better 里会被当成最优，补齐为最差值
+        positives = [v for v in values if v > 0]
+        worst = max(positives) if positives else 1.0
+        return [v if v > 0 else worst for v in values]
+
+    pe_scores = normalize(_fill_missing([s.pe for s in stocks]), higher_is_better=False)
+    pb_scores = normalize(_fill_missing([s.pb for s in stocks]), higher_is_better=False)
     peg_scores = normalize([s.peg for s in stocks], higher_is_better=False)
     value_scores = [(a + b + c) / 3 for a, b, c in zip(pe_scores, pb_scores, peg_scores)]
     revenue_scores = normalize([s.revenue_growth for s in stocks], higher_is_better=True)
