@@ -181,6 +181,54 @@ def build_multi_factor_picks(stocks, trade_date: str, top: int) -> List[Dict]:
     return [{"rank": i + 1, **p} for i, p in enumerate(picks[:top])]
 
 
+def build_top_winrate_picks(stocks, boards: List[List[Dict]], top: int = 3,
+                            max_hold: int = 10, lookback: int = 250,
+                            min_trades: int = 3) -> List[Dict]:
+    """从各榜单候选中，按「该策略在该股近一年历史信号的胜率」选 top N。
+
+    只覆盖 STRATEGIES 里有 detect 函数的策略（信号策略板）；均线/多因子无回测信号源，跳过。
+    """
+    from strategies import STRATEGIES
+    from strategies.backtest import _simulate, _snapshot
+
+    stock_map = {s.code: s for s in stocks}
+    seen = set()
+    scored = []
+    for board in boards:
+        for pick in board:
+            code, strategy = pick["code"], pick["strategy"]
+            if code in seen or strategy not in STRATEGIES:
+                continue
+            seen.add(code)
+            stock = stock_map.get(code)
+            if not stock or len(stock.prices) < 62:
+                continue
+            detect = STRATEGIES[strategy]
+            n = len(stock.prices)
+            returns = []
+            for idx in range(max(60, n - lookback), n - 1):
+                for sig in detect(_snapshot(stock, idx), RegimeType.SIDEWAYS):
+                    returns.append(_simulate(stock, idx, sig, max_hold))
+            if len(returns) < min_trades:
+                continue
+            win_rate = sum(1 for r in returns if r > 0) / len(returns)
+            scored.append((win_rate, len(returns), pick))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    picks = []
+    for rank, (win_rate, trades, pick) in enumerate(scored[:top], start=1):
+        picks.append({
+            "rank": rank,
+            "code": pick["code"],
+            "name": pick["name"],
+            "strategy": f'{pick["strategy"]}（{trades}次）',
+            "buy": pick["buy"],
+            "stop": pick["stop"],
+            "target": pick["target"],
+            "score": round(win_rate * 100, 1),
+        })
+    return picks
+
+
 def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = [
@@ -270,13 +318,19 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
             if not date:
                 report(100, "无交易日期")
                 return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
-        ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top, passed_strategies))
-        buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
+        ma_board = build_ma_picks(stocks, top, passed_strategies)
+        buy_board = build_buy_picks(stocks, top)
         regime = _detect_market_regime(stocks)
-        signal_count = upsert_picks(conn, date, "信号策略", build_signal_strategy_picks(stocks, regime, top))
-        multi_count = upsert_picks(conn, date, "多因子", build_multi_factor_picks(stocks, date, top))
-    report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条 / 信号策略 {signal_count} 条 / 多因子 {multi_count} 条")
-    return {"date": date, "ma": ma_count, "buy": buy_count, "signal": signal_count, "multi": multi_count}
+        signal_board = build_signal_strategy_picks(stocks, regime, top)
+        multi_board = build_multi_factor_picks(stocks, date, top)
+        winrate_board = build_top_winrate_picks(stocks, [signal_board, ma_board, buy_board])
+        winrate_count = upsert_picks(conn, date, "高胜率", winrate_board)
+        ma_count = upsert_picks(conn, date, "均线", ma_board)
+        buy_count = upsert_picks(conn, date, "买入信号", buy_board)
+        signal_count = upsert_picks(conn, date, "信号策略", signal_board)
+        multi_count = upsert_picks(conn, date, "多因子", multi_board)
+    report(100, f"完成：高胜率 {winrate_count} 条 / 均线 {ma_count} 条 / 买入信号 {buy_count} 条 / 信号策略 {signal_count} 条 / 多因子 {multi_count} 条")
+    return {"date": date, "winrate": winrate_count, "ma": ma_count, "buy": buy_count, "signal": signal_count, "multi": multi_count}
 
 
 def main() -> None:

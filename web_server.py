@@ -60,10 +60,11 @@ function render(date){
   const groups={};
   for(const r of rows)(groups[r.kind]=groups[r.kind]||[]).push(r);
   let html='';
-  for(const kind of ['均线','买入信号','信号策略','多因子']){
+  for(const kind of ['高胜率','均线','买入信号','信号策略','多因子']){
     const rs=groups[kind]||[];
+    const scoreHead=kind==='高胜率'?'胜率%':'评分';
     html+='<h2>'+kind+' Top'+rs.length+'</h2>';
-    html+='<table><thead><tr><th>排名</th><th>代码</th><th>名称</th><th>策略</th><th>买入</th><th>止损</th><th>目标</th><th>评分</th></tr></thead><tbody>';
+    html+='<table><thead><tr><th>排名</th><th>代码</th><th>名称</th><th>策略</th><th>买入</th><th>止损</th><th>目标</th><th>'+scoreHead+'</th></tr></thead><tbody>';
     for(const r of rs){
       html+='<tr><td>'+r.rank+'</td><td>'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'
         +'<td>'+fmt(r.buy)+'</td><td>'+fmt(r.stop)+'</td><td>'+fmt(r.target)+'</td><td>'+(r.score==null?'-':r.score)+'</td></tr>';
