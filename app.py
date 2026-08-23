@@ -243,7 +243,7 @@ function drawBoard(){
   var groups = (PICKS_STATE.data && PICKS_STATE.data.groups) || {};
   var html = '';
   var anyGroup = false;
-  ['均线','买入信号'].forEach(function(kind){
+  ['均线','买入信号','信号策略','多因子'].forEach(function(kind){
     var rs = groups[kind] || [];
     if (!rs.length) return;
     var hasScore = rs.some(function(r){ return r.score != null; });
@@ -613,7 +613,7 @@ def _start_job(db_path, top, do_sync):
             JOBS[job_id]["status"] = "running"
         try:
             result = run_picks(db_path, top, do_sync, on_progress)
-            msg = f"日期 {result.get('date') or '-'}：均线 {result.get('ma') or 0} 条 / 买入信号 {result.get('buy') or 0} 条"
+            msg = f"日期 {result.get('date') or '-'}：均线 {result.get('ma') or 0} 条 / 买入信号 {result.get('buy') or 0} 条 / 信号策略 {result.get('signal') or 0} 条 / 多因子 {result.get('multi') or 0} 条"
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
                 if job is not None:

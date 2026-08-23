@@ -8,7 +8,10 @@ from db_repository import open_db
 from market_data import build_market_from_db
 from market_regime import RegimeType, detect_regime
 from signal_rules import detect_signals
+from strategies import STRATEGIES
 from strategies.adapter import load_passed_strategies, merge_candidates, merged_strategy_ratios
+from strategies.dividend_multi_factor import DividendMultiFactorStrategy
+from strategies.pharma_multi_factor import PharmaMultiFactorStrategy
 from view_models import BUY_STRATEGY_PRIORITY
 
 DEFAULT_TOP = 10
@@ -134,6 +137,50 @@ def build_buy_picks(stocks, top: int) -> List[Dict]:
     return picks
 
 
+def build_signal_strategy_picks(stocks, regime: RegimeType, top: int) -> List[Dict]:
+    picks = []
+    for name, detect in STRATEGIES.items():
+        for stock in stocks:
+            signals = detect(stock, regime)
+            for sig in signals:
+                picks.append({
+                    "code": sig.code,
+                    "name": stock.name,
+                    "strategy": sig.strategy,
+                    "buy": round(sig.entry, 2),
+                    "stop": round(sig.stop, 2),
+                    "target": round(sig.tp, 2),
+                    "score": round(sig.score, 4),
+                })
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    return [{"rank": i + 1, **p} for i, p in enumerate(picks[:top])]
+
+
+def build_multi_factor_picks(stocks, trade_date: str, top: int) -> List[Dict]:
+    stock_map = {s.code: s for s in stocks}
+    d = dt.date.fromisoformat(trade_date)
+    strategies = [DividendMultiFactorStrategy(), PharmaMultiFactorStrategy()]
+    picks = []
+    for strategy in strategies:
+        result = strategy.select(d, stocks)
+        for pos in result.positions:
+            stock = stock_map.get(pos.code)
+            price = stock.prices[-1] if stock and stock.prices else 0.0
+            stop = round(price * 0.95, 2) if price else 0.0
+            target = round(price + 2 * (price - stop), 2) if price else 0.0
+            picks.append({
+                "code": pos.code,
+                "name": pos.name,
+                "strategy": strategy.config.name,
+                "buy": round(price, 2),
+                "stop": stop,
+                "target": target,
+                "score": round(pos.score, 4),
+            })
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    return [{"rank": i + 1, **p} for i, p in enumerate(picks[:top])]
+
+
 def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = [
@@ -196,7 +243,7 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
     stocks = build_market_from_db(db_path, min_days=221, max_days=520)
     if not stocks:
         report(100, "无可用行情数据")
-        return {"date": "", "ma": 0, "buy": 0}
+        return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
 
     report(94, "计算榜单…")
     passed_strategies = load_passed_strategies()
@@ -207,17 +254,20 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
             row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (trade_date,)).fetchone()
             if not row:
                 report(100, f"指定日期 {trade_date} 无行情数据")
-                return {"date": "", "ma": 0, "buy": 0}
+                return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
             date = trade_date
         else:
             date = latest_trade_date(conn)
             if not date:
                 report(100, "无交易日期")
-                return {"date": "", "ma": 0, "buy": 0}
+                return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
         ma_count = upsert_picks(conn, date, "均线", build_ma_picks(stocks, top, passed_strategies))
         buy_count = upsert_picks(conn, date, "买入信号", build_buy_picks(stocks, top))
-    report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条")
-    return {"date": date, "ma": ma_count, "buy": buy_count}
+        regime = _detect_market_regime(stocks)
+        signal_count = upsert_picks(conn, date, "信号策略", build_signal_strategy_picks(stocks, regime, top))
+        multi_count = upsert_picks(conn, date, "多因子", build_multi_factor_picks(stocks, date, top))
+    report(100, f"完成：均线 {ma_count} 条 / 买入信号 {buy_count} 条 / 信号策略 {signal_count} 条 / 多因子 {multi_count} 条")
+    return {"date": date, "ma": ma_count, "buy": buy_count, "signal": signal_count, "multi": multi_count}
 
 
 def main() -> None:
@@ -260,7 +310,10 @@ def main() -> None:
                 continue
             ma_count = upsert_picks(conn, td, "均线", build_ma_picks(stocks, args.top, passed_strategies))
             buy_count = upsert_picks(conn, td, "买入信号", build_buy_picks(stocks, args.top))
-            print(f"  {td}: 均线 {ma_count} 条 / 买入信号 {buy_count} 条")
+            regime = _detect_market_regime(stocks)
+            signal_count = upsert_picks(conn, td, "信号策略", build_signal_strategy_picks(stocks, regime, args.top))
+            multi_count = upsert_picks(conn, td, "多因子", build_multi_factor_picks(stocks, td, args.top))
+            print(f"  {td}: 均线 {ma_count} 条 / 买入信号 {buy_count} 条 / 信号策略 {signal_count} 条 / 多因子 {multi_count} 条")
         conn.close()
         return
 
@@ -268,6 +321,8 @@ def main() -> None:
     print(f"日期: {result['date'] or '无数据'}")
     print(f"均线榜单: {result['ma']} 条")
     print(f"买入信号榜单: {result['buy']} 条")
+    print(f"信号策略榜单: {result['signal']} 条")
+    print(f"多因子榜单: {result['multi']} 条")
 
 
 if __name__ == "__main__":
