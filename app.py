@@ -445,8 +445,8 @@ function row(r){
   } catch(e) {
     rationale = '<small class="text-muted font-monospace">'+(r.rationale_json||'—')+'</small>';
   }
-  return '<tr><td class="code">'+r.code+'</td>' +
-    '<td>'+(r.name||'<span class="text-muted">—</span>')+'</td>' +
+  return '<tr><td class="code">'+esc(r.code)+'</td>' +
+    '<td>'+(r.name?esc(r.name):'<span class="text-muted">—</span>')+'</td>' +
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
     '<td class="num">'+fmt(r.plan_price)+'</td>' +
     '<td class="num">'+sizePct+'</td>' +
@@ -455,7 +455,7 @@ function row(r){
     '<td class="num">'+fmt(r.tp_price)+'</td>' +
     '<td class="num">'+fmt(r.rr_ratio)+'</td>' +
     '<td><span class="badge '+statusBadge(r.status)+'">'+r.status+'</span>' +
-      (r.reason? ' <small class="text-muted">'+r.reason+'</small>':'')+'</td>' +
+      (r.reason? ' <small class="text-muted">'+esc(r.reason)+'</small>':'')+'</td>' +
     '<td>'+rationale+'</td></tr>';
 }
 function render(date){
@@ -499,14 +499,14 @@ function drawPlan(data){
         var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
         html += '<div class="plan-card">'+
           '<div class="d-flex align-items-center gap-2 mb-1">'+
-            '<span class="code fw-semibold">'+r.code+'</span> <span>'+(r.name||'')+'</span>'+
-            '<span class="ms-auto badge '+statusBadge(r.status)+'">'+r.status+'</span>'+
+            '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name||'')+'</span>'+
+            '<span class="ms-auto badge '+statusBadge(r.status)+'">'+esc(r.status)+'</span>'+
           '</div>'+
           '<div class="kv"><span class="k">计划价</span><span class="num">'+fmt(r.plan_price)+'</span></div>'+
           '<div class="kv"><span class="k">仓位 / 股数</span><span class="num">'+sizePct+' / '+(r.shares==null?'—':r.shares)+'</span></div>'+
           '<div class="kv"><span class="k">止损 / 止盈</span><span class="num">'+fmt(r.stop_price)+' / '+fmt(r.tp_price)+'</span></div>'+
           '<div class="kv"><span class="k">RR</span><span class="num">'+fmt(r.rr_ratio)+'</span></div>'+
-          (r.reason? '<div class="small text-muted mt-1">'+r.reason+'</div>':'')+
+          (r.reason? '<div class="small text-muted mt-1">'+esc(r.reason)+'</div>':'')+
         '</div>';
       });
       html += '</div>';
@@ -569,18 +569,32 @@ function drawHoldings(d){
     '<span class="'+(s.return_pct>=0?'text-success':'text-danger')+'">'+(s.return_pct>=0?'+':'')+fmt(s.return_pct)+'%</span>' +
     '</div></div>';
   if (!rows.length) { $('#holdings').html(sumHtml + '<div class="empty-state">暂无持仓</div>'); return; }
-  var h = sumHtml + '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+  var h = sumHtml + '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
     '<th>代码</th><th>名称</th><th class="num">股数</th><th class="num">加权均价</th><th class="num">现价</th>' +
     '<th class="num">止损</th><th class="num">止盈</th><th class="num">浮动盈亏</th><th class="num">止损预期</th><th class="num">止盈预期</th>' +
     '</tr></thead><tbody>' +
     rows.map(function(r){
-      return '<tr><td class="code">'+r.code+'</td><td>'+(r.name||'—')+'</td>' +
+      return '<tr><td class="code">'+esc(r.code)+'</td><td>'+esc(r.name||'—')+'</td>' +
         '<td class="num">'+r.shares+'</td><td class="num">'+fmt(r.entry_price)+'</td><td class="num">'+fmt(r.current_price)+'</td>' +
         '<td class="num">'+fmt(r.stop_price)+'</td><td class="num">'+fmt(r.tp_price)+'</td>' +
         '<td class="num '+(r.floating_pnl>=0?'text-success':'text-danger')+'">'+(r.floating_pnl==null?'—':(r.floating_pnl>=0?'+':'')+fmt(r.floating_pnl))+'</td>' +
         '<td class="num '+(r.stop_pnl>=0?'text-success':'text-danger')+'">'+(r.stop_pnl==null?'—':(r.stop_pnl>=0?'+':'')+fmt(r.stop_pnl))+'</td>' +
         '<td class="num '+(r.tp_pnl>=0?'text-success':'text-danger')+'">'+(r.tp_pnl==null?'—':(r.tp_pnl>=0?'+':'')+fmt(r.tp_pnl))+'</td></tr>';
     }).join('') + '</tbody></table></div>';
+  // 移动端：卡片
+  h += '<div class="app-card d-md-none mb-3">';
+  rows.forEach(function(r){
+    h += '<div class="plan-card">'+
+      '<div class="d-flex align-items-center gap-2 mb-1">'+
+        '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name||'')+'</span>'+
+        '<span class="ms-auto num '+(r.floating_pnl>=0?'text-success':'text-danger')+'">'+(r.floating_pnl==null?'—':(r.floating_pnl>=0?'+':'')+fmt(r.floating_pnl))+'</span>'+
+      '</div>'+
+      '<div class="kv"><span class="k">股数 / 均价</span><span class="num">'+r.shares+' / '+fmt(r.entry_price)+'</span></div>'+
+      '<div class="kv"><span class="k">现价</span><span class="num">'+fmt(r.current_price)+'</span></div>'+
+      '<div class="kv"><span class="k">止损 / 止盈</span><span class="num">'+fmt(r.stop_price)+' / '+fmt(r.tp_price)+'</span></div>'+
+    '</div>';
+  });
+  h += '</div>';
   $('#holdings').html(h);
 }
 function loadHoldings(){ dsFetchHoldings().done(drawHoldings).fail(function(){ $('#holdings').html('<div class="text-muted small">持仓加载失败</div>'); }); }

@@ -142,6 +142,9 @@ def export(db_path: str, out_dir: str) -> int:
         encoding="utf-8",
     )
 
+    # 404 回退到首页（Pages SPA 惯例），避免陈旧副本
+    shutil.copy(out / "index.html", out / "404.html")
+
     # Static assets
     src_static = Path(__file__).parent / "static"
     for f in ("common.js", "data-source.js", "dashboard.js"):
