@@ -20,6 +20,10 @@ def test_strip_write_controls_removes_buttons_and_checkbox():
     assert "交易计划" in plan
     assert 'id="board"' in plan
 
+    # 快速筛选输入框不被 strip 误删
+    assert 'id="q"' in picks
+    assert 'id="q"' in plan
+
 
 def test_export_emits_holdings_json(tmp_path):
     import os, tempfile

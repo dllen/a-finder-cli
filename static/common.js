@@ -2,6 +2,13 @@
 // 依赖：jQuery（在页面底部先于本文件加载）。
 function fmt(v) { return v == null ? '—' : Number(v).toFixed(2); }
 
+// HTML 转义，用于把数据字段插入拼接的 HTML 字符串
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
 function setStatus(html, cls) {
   $('#status').html(html ? '<div class="alert ' + cls + '" role="status">' + html + '</div>' : '');
 }

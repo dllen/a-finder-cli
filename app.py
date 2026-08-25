@@ -94,6 +94,15 @@ main{flex:1 0 auto;width:100%}
   display:inline-flex;min-width:1.7rem;height:1.7rem;align-items:center;justify-content:center;
   border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
 }
+.band-hot{background:#fdecea}
+.band-warm{background:#fff4e0}
+.band-mild{background:#f7faf7}
+.band-neutral{background:#ffffff}
+.pick-card,.plan-card{padding:.65rem .75rem;border-bottom:1px solid #eef1f4}
+.pick-card:last-child,.plan-card:last-child{border-bottom:none}
+.pick-card .kv,.plan-card .kv{display:flex;justify-content:space-between;gap:.5rem;font-size:.9rem}
+.pick-card .kv .k,.plan-card .kv .k{color:var(--muted)}
+.pick-card .code,.plan-card .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem}
 .empty-state{text-align:center;color:var(--muted);padding:2.5rem 1rem}
 .skeleton{position:relative;overflow:hidden;background:#eef1f4;border-radius:.35rem}
 .skeleton::after{
@@ -195,6 +204,7 @@ PAGE_BODY = """<main class="container py-4">
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
+    <div class="col-auto flex-grow-1"><input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选"></div>
     <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button></div>
     <div class="col-auto"><button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button></div>
   </div>
@@ -204,7 +214,15 @@ PAGE_BODY = """<main class="container py-4">
   <div id="board"></div>
 </main>"""
 
-PAGE_SCRIPT = """var PICKS_STATE = { data: null, sort: { key: 'score', dir: -1 } };
+PAGE_SCRIPT = """var PICKS_STATE = { data: null, sort: { key: 'score', dir: -1 }, filter: '' };
+
+function matchFilter(r, q){
+  if (!q) return true;
+  q = q.toLowerCase();
+  return String(r.code).toLowerCase().indexOf(q) >= 0 ||
+         String(r.name).toLowerCase().indexOf(q) >= 0 ||
+         String(r.strategy).toLowerCase().indexOf(q) >= 0;
+}
 
 var PICKS_COLS = [
   { key: 'code',     label: '代码', type: 'str',  cls: '' },
@@ -242,7 +260,8 @@ function sortRows(rs, key, dir) {
 function drawBoard(){
   var groups = (PICKS_STATE.data && PICKS_STATE.data.groups) || {};
   var html = '';
-  var anyGroup = false;
+  var anyGroup = false;   // 过滤前有可见组
+  var anyVisible = false; // 过滤后有可见行
   ['均线','买入信号','信号策略','多因子'].forEach(function(kind){
     var rs = groups[kind] || [];
     if (!rs.length) return;
@@ -250,10 +269,13 @@ function drawBoard(){
     if (!hasScore) return;  // 评分列为空 → 完全隐藏该组
     anyGroup = true;
     var s = PICKS_STATE.sort;
-    var rows = sortRows(rs, s.key, s.dir);
-    var maxScore = rows.reduce(function(m,r){ return r.score!=null && r.score>m ? r.score : m; }, 0);
-    html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">Top '+rows.length+'</span></h2>';
-    html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr><th>排名</th>';
+    var maxScore = rs.reduce(function(m,r){ return r.score!=null && r.score>m ? r.score : m; }, 0);
+    var rows = sortRows(rs.filter(function(r){ return matchFilter(r, PICKS_STATE.filter); }), s.key, s.dir);
+    if (!rows.length) return;
+    anyVisible = true;
+    var badge = (PICKS_STATE.filter && rows.length !== rs.length) ? (rows.length + ' / ' + rs.length) : ('Top ' + rows.length);
+    html += '<h2 class="section-title">'+kind+' <span class="badge bg-light text-muted">'+badge+'</span></h2>';
+    html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr><th>排名</th>';
     PICKS_COLS.forEach(function(c){
       var active = s.key === c.key;
       var arrow = active ? (s.dir === -1 ? ' \u25BC' : ' \u25B2') : '';
@@ -262,11 +284,27 @@ function drawBoard(){
     html += '</tr></thead><tbody>';
     rows.forEach(function(r, i){
       html += '<tr class="'+scoreBand(r.score, maxScore)+'"><td><span class="rank-badge">'+(i+1)+'</span></td>'+
-        '<td class="code">'+r.code+'</td><td>'+r.name+'</td><td>'+r.strategy+'</td>'+
+        '<td class="code">'+esc(r.code)+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.strategy)+'</td>'+
         '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td><td class="num"><span class="score-chip">'+
         (r.score==null?'—':r.score)+'</span></td></tr>';
     });
     html += '</tbody></table></div>';
+    // 移动端：grid 卡片，每行数据一张卡片
+    html += '<div class="app-card d-md-none mb-3">';
+    rows.forEach(function(r, i){
+      html += '<div class="pick-card '+scoreBand(r.score, maxScore).replace('row-','band-')+'">'+
+        '<div class="d-flex align-items-center gap-2 mb-1">'+
+          '<span class="rank-badge">'+(i+1)+'</span>'+
+          '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name)+'</span>'+
+          '<span class="ms-auto score-chip fw-semibold">'+(r.score==null?'—':r.score)+'</span>'+
+        '</div>'+
+        '<div class="kv"><span class="k">策略</span><span>'+esc(r.strategy)+'</span></div>'+
+        '<div class="kv"><span class="k">买入</span><span class="num">'+fmt(r.buy)+'</span></div>'+
+        '<div class="kv"><span class="k">止损</span><span class="num">'+fmt(r.stop)+'</span></div>'+
+        '<div class="kv"><span class="k">目标</span><span class="num">'+fmt(r.target)+'</span></div>'+
+      '</div>';
+    });
+    html += '</div>';
   });
   if (anyGroup) {
     html = '<div class="legend d-flex flex-wrap align-items-center gap-3 mb-2">' +
@@ -278,7 +316,7 @@ function drawBoard(){
       '<span class="text-muted small ms-auto">点击表头排序</span>' +
       '</div>' + html;
   }
-  $('#board').html(html || '<div class="empty-state">该日期暂无选股数据</div>');
+  $('#board').html(anyVisible ? html : '<div class="empty-state">' + (anyGroup ? '无匹配筛选结果' : '该日期暂无选股数据') + '</div>');
 }
 
 function render(date){
@@ -335,6 +373,7 @@ function poll(jobId){
 }
 $(function(){
   $('#d').on('change', function(){ render($(this).val()); });
+  $('#q').on('input', function(){ PICKS_STATE.filter = $(this).val().trim(); drawBoard(); });
   $('#btn-recalc').on('click', function(){ refresh(false); });
   $('#btn-sync').on('click', function(){ refresh(true); });
   $('#board').on('click', 'th.sortable', function(){
@@ -361,6 +400,7 @@ PLAN_BODY = """<main class="container py-4">
   <div class="row g-2 align-items-center mb-3">
     <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
     <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
+    <div class="col-auto flex-grow-1"><input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选"></div>
     <div class="col-auto"><button id="btn-build" class="btn btn-primary write-control">生成 plan</button></div>
     <div class="col-auto">
       <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
@@ -376,7 +416,14 @@ PLAN_BODY = """<main class="container py-4">
   <div id="holdings"></div>
 </main>"""
 
-PLAN_SCRIPT = """var ACTION_META = {
+PLAN_SCRIPT = """var PLAN_STATE = { data: null, filter: '' };
+function matchFilter(r, q){
+  if (!q) return true;
+  q = q.toLowerCase();
+  return String(r.code).toLowerCase().indexOf(q) >= 0 ||
+         String(r.name||'').toLowerCase().indexOf(q) >= 0;
+}
+var ACTION_META = {
   buy:  {label: '买入', cls: 'bg-success'},
   hold: {label: '持有', cls: 'bg-secondary'},
   exit: {label: '退出', cls: 'bg-warning text-dark'}
@@ -415,12 +462,12 @@ function render(date){
   showBoardLoading();
   var includeFailed = $('#include-failed').is(':checked') ? '1' : '0';
   dsFetchPlan(date, includeFailed === '1').done(function(data){
-    whenBoardReady(function(){ drawPlan(data); });
+    whenBoardReady(function(){ PLAN_STATE.data = data; drawPlan(data); });
   }).fail(function(){ setStatus('加载失败','alert-danger'); });
 }
 function drawPlan(data){
-    var rows = data.rows || [];
-    if (!rows.length) { $('#board').html('<div class="empty-state">该日期暂无 plan</div>'); return; }
+    var rows = (data.rows || []).filter(function(r){ return matchFilter(r, PLAN_STATE.filter); });
+    if (!rows.length) { $('#board').html('<div class="empty-state">' + ((data.rows || []).length ? '无匹配筛选结果' : '该日期暂无 plan') + '</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
     var buySize = 0, buyShares = 0, failed = 0;
     rows.forEach(function(r){
@@ -443,9 +490,26 @@ function drawPlan(data){
       if (!rs.length) return;
       var meta = actionMeta(a);
       html += '<h2 class="section-title"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h2>';
-      html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+      html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
         '<th>代码</th><th>名称</th><th>方向</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">股数</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
+      // 移动端：grid 卡片，每行数据一张卡片
+      html += '<div class="app-card d-md-none mb-3">';
+      rs.forEach(function(r){
+        var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
+        html += '<div class="plan-card">'+
+          '<div class="d-flex align-items-center gap-2 mb-1">'+
+            '<span class="code fw-semibold">'+r.code+'</span> <span>'+(r.name||'')+'</span>'+
+            '<span class="ms-auto badge '+statusBadge(r.status)+'">'+r.status+'</span>'+
+          '</div>'+
+          '<div class="kv"><span class="k">计划价</span><span class="num">'+fmt(r.plan_price)+'</span></div>'+
+          '<div class="kv"><span class="k">仓位 / 股数</span><span class="num">'+sizePct+' / '+(r.shares==null?'—':r.shares)+'</span></div>'+
+          '<div class="kv"><span class="k">止损 / 止盈</span><span class="num">'+fmt(r.stop_price)+' / '+fmt(r.tp_price)+'</span></div>'+
+          '<div class="kv"><span class="k">RR</span><span class="num">'+fmt(r.rr_ratio)+'</span></div>'+
+          (r.reason? '<div class="small text-muted mt-1">'+r.reason+'</div>':'')+
+        '</div>';
+      });
+      html += '</div>';
     });
     $('#board').html(html);
 }
@@ -523,6 +587,7 @@ function loadHoldings(){ dsFetchHoldings().done(drawHoldings).fail(function(){ $
 $(function(){
   $('#d').on('change', function(){ render($(this).val()); });
   $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
+  $('#q').on('input', function(){ PLAN_STATE.filter = $(this).val().trim(); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
   $('#btn-build').on('click', buildPlan);
   startDashboard();
   render($('#d').val());
