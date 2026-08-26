@@ -24,8 +24,7 @@ _LOGO = (
     '</svg>'
 )
 
-_APP_CSS = """
-:root{
+_APP_CSS = """:root{
   --brand:#16263a;
   --brand-2:#1f3350;
   --accent:#2f6f9f;
@@ -35,7 +34,8 @@ _APP_CSS = """
   --text:#1a2332;
   --muted:#66707c;
 }
-html{font-size:16px}
+html{font-size:15px}
+@media (min-width:768px){html{font-size:16px}}
 body{
   margin:0;background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
@@ -50,12 +50,31 @@ main{flex:1 0 auto;width:100%}
 }
 .app-nav .navbar-brand:hover{color:#fff}
 .brand-logo{width:1.5rem;height:1.5rem;flex:none}
-.app-nav .nav-link{color:#c6d0dc}
+.app-nav .nav-link{color:#c6d0dc;padding:.6rem .75rem}
 .app-nav .nav-link:hover{color:#fff}
 .app-nav .nav-link.active{color:#fff;font-weight:600}
+.navbar-toggler{border-color:rgba(255,255,255,.25);padding:.4rem .55rem}
+.navbar-toggler:focus{box-shadow:0 0 0 .15rem rgba(255,255,255,.25)}
+.navbar-toggler-icon{background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.85%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e")}
 .app-footer{border-top:1px solid var(--border);color:var(--muted);font-size:.85rem;background:var(--surface)}
+.page-header{display:flex;flex-direction:column;gap:.25rem;margin-bottom:1rem}
+@media (min-width:768px){.page-header{flex-direction:row;align-items:baseline;justify-content:space-between;gap:1rem}}
 .page-title{font-weight:600}
-.section-title{font-size:1.05rem;font-weight:600;margin-top:1.5rem}
+.filter-toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:1rem}
+.filter-group{display:flex;align-items:center;gap:.5rem}
+.filter-toolbar .form-control{min-height:2.5rem}
+.filter-toolbar .form-control[type="date"]{min-width:8rem}
+.filter-toolbar .form-control[type="search"]{flex:1 1 auto;min-width:12rem}
+.filter-toolbar .btn{white-space:nowrap}
+.filter-toolbar .form-check{padding-top:.25rem}
+@media (max-width:767px){
+  .filter-toolbar{flex-direction:column;align-items:stretch}
+  .filter-group{align-self:flex-start}
+  .filter-toolbar .form-control[type="search"]{width:100%}
+  .filter-toolbar .btn,.filter-toolbar .form-check{align-self:flex-start}
+}
+.section-title{font-size:1rem;font-weight:600;margin-top:1.25rem;margin-bottom:.5rem}
+@media (min-width:768px){.section-title{font-size:1.05rem;margin-top:1.5rem}}
 .app-card{
   background:var(--surface);border:1px solid var(--border);border-radius:.5rem;
   overflow:hidden;
@@ -64,11 +83,13 @@ main{flex:1 0 auto;width:100%}
 .app-table{width:100%;border-collapse:collapse}
 .app-table thead th{
   position:sticky;top:0;z-index:1;
-  background:#fbfcfd;color:var(--muted);font-weight:600;font-size:.8rem;
+  background:#fbfcfd;color:var(--muted);font-weight:600;font-size:.75rem;
   text-transform:uppercase;letter-spacing:.02em;
-  border-bottom:1px solid var(--border);padding:.6rem .75rem;white-space:nowrap;
+  border-bottom:1px solid var(--border);padding:.55rem .65rem;white-space:nowrap;
 }
-.app-table tbody td{padding:.65rem .75rem;vertical-align:middle;border-bottom:1px solid #eef1f4}
+@media (min-width:768px){.app-table thead th{padding:.6rem .75rem;font-size:.8rem}}
+.app-table tbody td{padding:.55rem .65rem;vertical-align:middle;border-bottom:1px solid #eef1f4}
+@media (min-width:768px){.app-table tbody td{padding:.65rem .75rem}}
 .app-table tbody tr:last-child td{border-bottom:none}
 .app-table tbody tr:hover{background:#f6f9fc}
 .app-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -84,25 +105,34 @@ main{flex:1 0 auto;width:100%}
 .app-table thead th.sortable{cursor:pointer;user-select:none}
 .app-table thead th.sortable:hover{color:var(--text)}
 .app-table thead th.sorted{color:var(--accent)}
-.legend-item{display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;color:var(--muted)}
+.legend-item{display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--muted)}
+@media (min-width:768px){.legend-item{font-size:.85rem}}
 .sw{display:inline-block;width:.9rem;height:.9rem;border-radius:.25rem;border:1px solid rgba(0,0,0,.06)}
 .sw-hot{background:#fdecea}
 .sw-warm{background:#fff4e0}
 .sw-mild{background:#f7faf7}
 .sw-neutral{background:#ffffff;border-color:var(--border)}
 .rank-badge{
-  display:inline-flex;min-width:1.7rem;height:1.7rem;align-items:center;justify-content:center;
-  border-radius:.4rem;background:#eef2f6;color:var(--muted);font-size:.8rem;font-weight:600;
+  display:inline-flex;min-width:1.6rem;height:1.6rem;align-items:center;justify-content:center;
+  border-radius:.35rem;background:#eef2f6;color:var(--muted);font-size:.75rem;font-weight:600;
 }
+@media (min-width:768px){.rank-badge{min-width:1.7rem;height:1.7rem;font-size:.8rem}}
 .band-hot{background:#fdecea}
 .band-warm{background:#fff4e0}
 .band-mild{background:#f7faf7}
 .band-neutral{background:#ffffff}
-.pick-card,.plan-card{padding:.65rem .75rem;border-bottom:1px solid #eef1f4}
+.pick-card,.plan-card{padding:.85rem .8rem;border-bottom:1px solid #eef1f4}
 .pick-card:last-child,.plan-card:last-child{border-bottom:none}
-.pick-card .kv,.plan-card .kv{display:flex;justify-content:space-between;gap:.5rem;font-size:.9rem}
-.pick-card .kv .k,.plan-card .kv .k{color:var(--muted)}
-.pick-card .code,.plan-card .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem}
+@media (min-width:768px){.pick-card,.plan-card{padding:.65rem .75rem}}
+.card-header-row{display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;min-height:1.8rem}
+.card-header-row .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.95rem}
+.card-title-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-score{font-weight:600;font-size:1rem;color:var(--accent)}
+.kv-grid{display:grid;grid-template-columns:3.8rem 1fr;gap:.35rem .5rem;font-size:.9rem;align-items:baseline}
+.kv-grid .k{color:var(--muted);font-size:.85rem;text-align:right}
+.kv-grid .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv-grid .v.wrap{white-space:normal}
+.kv-grid .num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;text-align:right}
 .empty-state{text-align:center;color:var(--muted);padding:2.5rem 1rem}
 .skeleton{position:relative;overflow:hidden;background:#eef1f4;border-radius:.35rem}
 .skeleton::after{
@@ -115,7 +145,9 @@ main{flex:1 0 auto;width:100%}
 .skeleton-row{height:2.4rem;margin:.5rem 0}
 .skeleton-table{padding:1rem}
 .log-scroll{max-height:12rem;overflow-y:auto}
-.form-label{font-weight:500}
+.form-label{font-weight:500;margin-bottom:0}
+.summary-card .card-body{display:flex;flex-wrap:wrap;gap:.35rem .9rem}
+.dashboard-card .card-body{min-height:4.5rem}
 """
 
 
@@ -194,19 +226,21 @@ def _page(title: str, active: str, body: str, script: str, config: str = "", ass
 # ---------------------------------------------------------------------------
 
 PAGE_BODY = """<main class="container py-4">
-  <div class="d-flex align-items-baseline justify-content-between mb-3">
+  <div class="page-header">
     <h1 class="h3 mb-0 page-title">每日机会</h1>
     <span class="text-muted small" id="page-date">日期：{{today}}</span>
   </div>
 
   <div id="dashboard"></div>
 
-  <div class="row g-2 align-items-center mb-3">
-    <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
-    <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
-    <div class="col-auto flex-grow-1"><input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选"></div>
-    <div class="col-auto"><button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button></div>
-    <div class="col-auto"><button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button></div>
+  <div class="filter-toolbar">
+    <div class="filter-group">
+      <label class="form-label" for="d">日期</label>
+      <input id="d" type="date" class="form-control" value="{{today}}">
+    </div>
+    <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选">
+    <button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button>
+    <button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
@@ -293,15 +327,18 @@ function drawBoard(){
     html += '<div class="app-card d-md-none mb-3">';
     rows.forEach(function(r, i){
       html += '<div class="pick-card '+scoreBand(r.score, maxScore).replace('row-','band-')+'">'+
-        '<div class="d-flex align-items-center gap-2 mb-1">'+
+        '<div class="card-header-row">'+
           '<span class="rank-badge">'+(i+1)+'</span>'+
-          '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name)+'</span>'+
-          '<span class="ms-auto score-chip fw-semibold">'+(r.score==null?'—':r.score)+'</span>'+
+          '<span class="code fw-semibold">'+esc(r.code)+'</span>'+
+          '<span class="card-title-text">'+esc(r.name)+'</span>'+
+          '<span class="card-score">'+(r.score==null?'—':r.score)+'</span>'+
         '</div>'+
-        '<div class="kv"><span class="k">策略</span><span>'+esc(r.strategy)+'</span></div>'+
-        '<div class="kv"><span class="k">买入</span><span class="num">'+fmt(r.buy)+'</span></div>'+
-        '<div class="kv"><span class="k">止损</span><span class="num">'+fmt(r.stop)+'</span></div>'+
-        '<div class="kv"><span class="k">目标</span><span class="num">'+fmt(r.target)+'</span></div>'+
+        '<div class="kv-grid">'+
+          '<span class="k">策略</span><span class="v wrap">'+esc(r.strategy)+'</span>'+
+          '<span class="k">买入</span><span class="v num">'+fmt(r.buy)+'</span>'+
+          '<span class="k">止损</span><span class="v num">'+fmt(r.stop)+'</span>'+
+          '<span class="k">目标</span><span class="v num">'+fmt(r.target)+'</span>'+
+        '</div>'+
       '</div>';
     });
     html += '</div>';
@@ -313,7 +350,7 @@ function drawBoard(){
       '<span class="legend-item"><i class="sw sw-warm"></i>中 (≥70%)</span>' +
       '<span class="legend-item"><i class="sw sw-mild"></i>低 (≥50%)</span>' +
       '<span class="legend-item"><i class="sw sw-neutral"></i>其余</span>' +
-      '<span class="text-muted small ms-auto">点击表头排序</span>' +
+      '<span class="text-muted small ms-auto d-none d-md-inline">点击表头排序</span>' +
       '</div>' + html;
   }
   $('#board').html(anyVisible ? html : '<div class="empty-state">' + (anyGroup ? '无匹配筛选结果' : '该日期暂无选股数据') + '</div>');
@@ -391,21 +428,21 @@ $(function(){
 });"""
 
 PLAN_BODY = """<main class="container py-4">
-  <div class="d-flex align-items-baseline justify-content-between mb-3">
+  <div class="page-header">
     <h1 class="h3 mb-0 page-title">交易计划 <span class="badge bg-secondary align-middle">paper</span></h1>
   </div>
 
   <div id="dashboard"></div>
 
-  <div class="row g-2 align-items-center mb-3">
-    <div class="col-auto"><label class="form-label mb-0" for="d">日期</label></div>
-    <div class="col-auto"><input id="d" type="date" class="form-control" value="{{today}}"></div>
-    <div class="col-auto flex-grow-1"><input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选"></div>
-    <div class="col-auto"><button id="btn-build" class="btn btn-primary write-control">生成 plan</button></div>
-    <div class="col-auto">
-      <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
-        <label for="include-failed" class="form-check-label">含 failed</label></div>
+  <div class="filter-toolbar">
+    <div class="filter-group">
+      <label class="form-label" for="d">日期</label>
+      <input id="d" type="date" class="form-control" value="{{today}}">
     </div>
+    <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选">
+    <button id="btn-build" class="btn btn-primary write-control">生成 plan</button>
+    <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
+      <label for="include-failed" class="form-check-label">含 failed</label></div>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
@@ -477,7 +514,7 @@ function drawPlan(data){
       if (r.status === 'failed') failed++;
     });
     var counts = Object.entries(groups).filter(function(e){return e[1].length}).map(function(e){return actionMeta(e[0]).label+' '+e[1].length;}).join(' · ');
-    var summary = '<div class="card mb-3"><div class="card-body py-2">' +
+    var summary = '<div class="card summary-card mb-3"><div class="card-body py-2">' +
       '<span class="me-3"><strong>'+data.plan_date+'</strong></span>' +
       '<span class="text-muted me-3">'+rows.length+' 行</span>' +
       '<span class="text-muted me-3">'+counts+'</span>' +
@@ -497,15 +534,22 @@ function drawPlan(data){
       html += '<div class="app-card d-md-none mb-3">';
       rs.forEach(function(r){
         var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
+        var meta = actionMeta(r.action);
         html += '<div class="plan-card">'+
-          '<div class="d-flex align-items-center gap-2 mb-1">'+
-            '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name||'')+'</span>'+
-            '<span class="ms-auto badge '+statusBadge(r.status)+'">'+esc(r.status)+'</span>'+
+          '<div class="card-header-row">'+
+            '<span class="code fw-semibold">'+esc(r.code)+'</span>'+
+            '<span class="card-title-text">'+esc(r.name||'')+'</span>'+
+            '<span class="badge '+meta.cls+'">'+meta.label+'</span>'+
+            '<span class="badge '+statusBadge(r.status)+'">'+esc(r.status)+'</span>'+
           '</div>'+
-          '<div class="kv"><span class="k">计划价</span><span class="num">'+fmt(r.plan_price)+'</span></div>'+
-          '<div class="kv"><span class="k">仓位 / 股数</span><span class="num">'+sizePct+' / '+(r.shares==null?'—':r.shares)+'</span></div>'+
-          '<div class="kv"><span class="k">止损 / 止盈</span><span class="num">'+fmt(r.stop_price)+' / '+fmt(r.tp_price)+'</span></div>'+
-          '<div class="kv"><span class="k">RR</span><span class="num">'+fmt(r.rr_ratio)+'</span></div>'+
+          '<div class="kv-grid">'+
+            '<span class="k">计划价</span><span class="v num">'+fmt(r.plan_price)+'</span>'+
+            '<span class="k">仓位</span><span class="v num">'+sizePct+'</span>'+
+            '<span class="k">股数</span><span class="v num">'+(r.shares==null?'—':r.shares)+'</span>'+
+            '<span class="k">止损</span><span class="v num">'+fmt(r.stop_price)+'</span>'+
+            '<span class="k">止盈</span><span class="v num">'+fmt(r.tp_price)+'</span>'+
+            '<span class="k">RR</span><span class="v num">'+fmt(r.rr_ratio)+'</span>'+
+          '</div>'+
           (r.reason? '<div class="small text-muted mt-1">'+esc(r.reason)+'</div>':'')+
         '</div>';
       });
@@ -560,7 +604,7 @@ function pollBuild(jobId){
 function drawHoldings(d){
   var rows = d.holdings || [];
   var s = d.summary || {};
-  var sumHtml = '<div class="card mb-3"><div class="card-body py-2">' +
+  var sumHtml = '<div class="card summary-card mb-3"><div class="card-body py-2">' +
     '<span class="me-3"><strong>持仓 '+ s.open_count +'</strong></span>' +
     '<span class="me-3">总股数 '+ (s.shares_total||0) +'</span>' +
     '<span class="me-3">浮动 ' + (s.floating_pnl>=0?'+':'') + fmt(s.floating_pnl) + ' 元</span>' +
@@ -585,13 +629,18 @@ function drawHoldings(d){
   h += '<div class="app-card d-md-none mb-3">';
   rows.forEach(function(r){
     h += '<div class="plan-card">'+
-      '<div class="d-flex align-items-center gap-2 mb-1">'+
-        '<span class="code fw-semibold">'+esc(r.code)+'</span> <span>'+esc(r.name||'')+'</span>'+
-        '<span class="ms-auto num '+(r.floating_pnl>=0?'text-success':'text-danger')+'">'+(r.floating_pnl==null?'—':(r.floating_pnl>=0?'+':'')+fmt(r.floating_pnl))+'</span>'+
+      '<div class="card-header-row">'+
+        '<span class="code fw-semibold">'+esc(r.code)+'</span>'+
+        '<span class="card-title-text">'+esc(r.name||'')+'</span>'+
+        '<span class="num '+(r.floating_pnl>=0?'text-success':'text-danger')+'">'+(r.floating_pnl==null?'—':(r.floating_pnl>=0?'+':'')+fmt(r.floating_pnl))+'</span>'+
       '</div>'+
-      '<div class="kv"><span class="k">股数 / 均价</span><span class="num">'+r.shares+' / '+fmt(r.entry_price)+'</span></div>'+
-      '<div class="kv"><span class="k">现价</span><span class="num">'+fmt(r.current_price)+'</span></div>'+
-      '<div class="kv"><span class="k">止损 / 止盈</span><span class="num">'+fmt(r.stop_price)+' / '+fmt(r.tp_price)+'</span></div>'+
+      '<div class="kv-grid">'+
+        '<span class="k">股数</span><span class="v num">'+r.shares+'</span>'+
+        '<span class="k">均价</span><span class="v num">'+fmt(r.entry_price)+'</span>'+
+        '<span class="k">现价</span><span class="v num">'+fmt(r.current_price)+'</span>'+
+        '<span class="k">止损</span><span class="v num">'+fmt(r.stop_price)+'</span>'+
+        '<span class="k">止盈</span><span class="v num">'+fmt(r.tp_price)+'</span>'+
+      '</div>'+
     '</div>';
   });
   h += '</div>';

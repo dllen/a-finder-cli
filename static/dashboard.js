@@ -24,8 +24,8 @@ function renderDashboard(d) {
 
   const card = (title, body) => `
     <div class="col">
-      <div class="card h-100 shadow-sm">
-        <div class="card-body py-2">
+      <div class="card dashboard-card h-100 shadow-sm">
+        <div class="card-body py-2 px-2 px-md-3">
           <div class="text-muted small mb-1">${title}</div>
           ${body}
         </div>
