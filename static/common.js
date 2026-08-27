@@ -9,6 +9,18 @@ function esc(s) {
   });
 }
 
+// 用可选日期填充 #d 下拉框；保留当前选中（若仍在列表），否则选中最新（列表第一条）
+function fillDateSelect(dates) {
+  var sel = $('#d');
+  var prev = sel.val();
+  sel.empty();
+  (dates || []).forEach(function (dt) { sel.append(new Option(dt, dt)); });
+  if (dates && dates.length) {
+    sel.val((prev && dates.indexOf(prev) >= 0) ? prev : dates[0]);
+  }
+  return sel.val();
+}
+
 function setStatus(html, cls) {
   $('#status').html(html ? '<div class="alert ' + cls + '" role="status">' + html + '</div>' : '');
 }

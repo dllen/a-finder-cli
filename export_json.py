@@ -99,6 +99,7 @@ def export(db_path: str, out_dir: str) -> int:
 
         # JSON payloads (mirror the Flask API responses)
         json.dump({"dates": pick_dates}, (data_dir / "dates.json").open("w"), ensure_ascii=False)
+        json.dump({"dates": plan_dates}, (data_dir / "plan-dates.json").open("w"), ensure_ascii=False)
         for d in pick_dates:
             groups = {}
             for row in picks_for_date(conn, d):

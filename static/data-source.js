@@ -12,6 +12,18 @@ function dsFetchPicks(date) {
     : $.getJSON('/api/picks', { date: date });
 }
 
+function dsFetchDates() {
+  return isStatic()
+    ? $.getJSON(dsPath('data/dates.json'))
+    : $.getJSON('/api/dates');
+}
+
+function dsFetchPlanDates() {
+  return isStatic()
+    ? $.getJSON(dsPath('data/plan-dates.json'))
+    : $.getJSON('/api/plan/dates');
+}
+
 function dsFetchPlan(date, includeFailed) {
   return isStatic()
     ? $.getJSON(dsPath('data/plan-' + date + '.json'))

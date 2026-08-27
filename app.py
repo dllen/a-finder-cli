@@ -63,7 +63,7 @@ main{flex:1 0 auto;width:100%}
 .filter-toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:1rem}
 .filter-group{display:flex;align-items:center;gap:.5rem}
 .filter-toolbar .form-control{min-height:2.5rem}
-.filter-toolbar .form-control[type="date"]{min-width:8rem}
+.filter-toolbar .form-select{min-width:9rem;width:auto;min-height:2.5rem}
 .filter-toolbar .form-control[type="search"]{flex:1 1 auto;min-width:12rem}
 .filter-toolbar .btn{white-space:nowrap}
 .filter-toolbar .form-check{padding-top:.25rem}
@@ -236,7 +236,7 @@ PAGE_BODY = """<main class="container py-4">
   <div class="filter-toolbar">
     <div class="filter-group">
       <label class="form-label" for="d">日期</label>
-      <input id="d" type="date" class="form-control" value="{{today}}">
+      <select id="d" class="form-select"></select>
     </div>
     <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选">
     <button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button>
@@ -246,6 +246,9 @@ PAGE_BODY = """<main class="container py-4">
   <div id="prog" class="mb-3"></div>
   <div id="log" class="mb-3"></div>
   <div id="board"></div>
+
+  <h2 class="section-title mt-4">策略胜率统计 <small class="text-muted">基于历史标注样本</small></h2>
+  <div id="stats"></div>
 </main>"""
 
 PAGE_SCRIPT = """var PICKS_STATE = { data: null, sort: { key: 'score', dir: -1 }, filter: '' };
@@ -265,6 +268,7 @@ var PICKS_COLS = [
   { key: 'buy',      label: '买入', type: 'num',  cls: 'num' },
   { key: 'stop',     label: '止损', type: 'num',  cls: 'num' },
   { key: 'target',   label: '目标', type: 'num',  cls: 'num' },
+  { key: 'ret_pct',  label: '涨跌%', type: 'num', cls: 'num' },
   { key: 'score',    label: '评分', type: 'num',  cls: 'num' }
 ];
 
@@ -275,6 +279,13 @@ function scoreBand(score, max) {
   if (ratio >= 0.7) return 'row-warm';
   if (ratio >= 0.5) return 'row-mild';
   return 'row-neutral';
+}
+
+function retCell(r){
+  if (r.ret_pct == null) return '<td class="num text-muted">—</td>';
+  var cls = r.ret_pct >= 0 ? 'text-success' : 'text-danger';
+  var sign = r.ret_pct >= 0 ? '+' : '';
+  return '<td class="num '+cls+'">'+sign+r.ret_pct.toFixed(2)+'</td>';
 }
 
 function sortRows(rs, key, dir) {
@@ -319,7 +330,9 @@ function drawBoard(){
     rows.forEach(function(r, i){
       html += '<tr class="'+scoreBand(r.score, maxScore)+'"><td><span class="rank-badge">'+(i+1)+'</span></td>'+
         '<td class="code">'+esc(r.code)+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.strategy)+'</td>'+
-        '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td><td class="num"><span class="score-chip">'+
+        '<td class="num">'+fmt(r.buy)+'</td><td class="num">'+fmt(r.stop)+'</td><td class="num">'+fmt(r.target)+'</td>'+
+        retCell(r)+
+        '<td class="num"><span class="score-chip">'+
         (r.score==null?'—':r.score)+'</span></td></tr>';
     });
     html += '</tbody></table></div>';
@@ -338,6 +351,7 @@ function drawBoard(){
           '<span class="k">买入</span><span class="v num">'+fmt(r.buy)+'</span>'+
           '<span class="k">止损</span><span class="v num">'+fmt(r.stop)+'</span>'+
           '<span class="k">目标</span><span class="v num">'+fmt(r.target)+'</span>'+
+          '<span class="k">涨跌</span><span class="v num '+(r.ret_pct==null?'text-muted':(r.ret_pct>=0?'text-success':'text-danger'))+'">'+(r.ret_pct==null?'—':(r.ret_pct>=0?'+':'')+r.ret_pct.toFixed(2))+'</span>'+
         '</div>'+
       '</div>';
     });
@@ -356,6 +370,34 @@ function drawBoard(){
   $('#board').html(anyVisible ? html : '<div class="empty-state">' + (anyGroup ? '无匹配筛选结果' : '该日期暂无选股数据') + '</div>');
 }
 
+function drawStats(d){
+  var rows = d.strategies || [];
+  var html = '';
+  if (rows.length) {
+    html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
+      '<th>策略</th><th class="num">样本</th><th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      html += '<tr><td>'+esc(r.strategy)+'</td><td class="num">'+r.n+'</td>' +
+        '<td class="num">'+r.win_rate+'</td>' +
+        '<td class="num '+(r.expectancy>=0?'text-success':'text-danger')+'">'+(r.expectancy>=0?'+':'')+r.expectancy+'</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  var mo = d.monthly || [];
+  if (mo.length) {
+    html += '<h2 class="section-title">月度胜率</h2>';
+    html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+      '<th>月份</th><th class="num">样本</th><th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
+    mo.forEach(function(m){
+      html += '<tr><td>'+esc(m.month)+'</td><td class="num">'+m.n+'</td>' +
+        '<td class="num">'+m.win_rate+'</td>' +
+        '<td class="num '+(m.avg_ret>=0?'text-success':'text-danger')+'">'+(m.avg_ret>=0?'+':'')+m.avg_ret+'</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  $('#stats').html(html || '<div class="empty-state">暂无历史标注样本</div>');
+}
+
 function render(date){
   showBoardLoading();
   dsFetchPicks(date).done(function(data){
@@ -367,8 +409,13 @@ function render(date){
   });
 }
 function loadDates(){
-  var d = $('#d').val();
-  if (d) render(d);
+  dsFetchDates().done(function(d){
+    var v = fillDateSelect(d.dates);
+    if (v) render(v);
+    else $('#board').html('<div class="empty-state">暂无选股数据</div>');
+  }).fail(function(){
+    $('#board').html('<div class="empty-state">日期加载失败</div>');
+  });
 }
 function refresh(sync){
   $('#btn-recalc, #btn-sync').prop('disabled', true);
@@ -425,6 +472,7 @@ $(function(){
   });
   startDashboard();
   loadDates();
+  $.getJSON('/api/stats', drawStats);
 });"""
 
 PLAN_BODY = """<main class="container py-4">
@@ -437,7 +485,7 @@ PLAN_BODY = """<main class="container py-4">
   <div class="filter-toolbar">
     <div class="filter-group">
       <label class="form-label" for="d">日期</label>
-      <input id="d" type="date" class="form-control" value="{{today}}">
+      <select id="d" class="form-select"></select>
     </div>
     <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选">
     <button id="btn-build" class="btn btn-primary write-control">生成 plan</button>
@@ -557,7 +605,15 @@ function drawPlan(data){
     });
     $('#board').html(html);
 }
-function loadDates(){ render($('#d').val()); }
+function loadDates(){
+  dsFetchPlanDates().done(function(d){
+    var v = fillDateSelect(d.dates);
+    if (v) render(v);
+    else $('#board').html('<div class="empty-state">暂无 plan 数据</div>');
+  }).fail(function(){
+    $('#board').html('<div class="empty-state">日期加载失败</div>');
+  });
+}
 function buildPlan(){
   var date = $('#d').val();
   if (!date) { setStatus('请先选日期','alert-warning'); return; }
@@ -653,7 +709,7 @@ $(function(){
   $('#q').on('input', function(){ PLAN_STATE.filter = $(this).val().trim(); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
   $('#btn-build').on('click', buildPlan);
   startDashboard();
-  render($('#d').val());
+  loadDates();
   loadHoldings();
 });"""
 
@@ -783,6 +839,14 @@ def picks_for_date(conn, date):
     ]
 
 
+def latest_close_map(conn):
+    rows = conn.execute(
+        "SELECT code, close FROM daily_prices "
+        "WHERE (code, trade_date) IN (SELECT code, MAX(trade_date) FROM daily_prices GROUP BY code)"
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
 def create_app(db_path="hs300.db", top=10):
     app = Flask(__name__)
 
@@ -822,7 +886,10 @@ def create_app(db_path="hs300.db", top=10):
             date = ds[0] if ds else ""
         groups = {}
         if date:
+            lc = latest_close_map(conn)
             for row in picks_for_date(conn, date):
+                c = lc.get(row["code"])
+                row["ret_pct"] = round((c / row["buy"] - 1) * 100, 2) if (c and row["buy"]) else None
                 groups.setdefault(row["kind"], []).append(row)
         conn.close()
         return jsonify({"date": date, "groups": groups})
@@ -927,6 +994,37 @@ def create_app(db_path="hs300.db", top=10):
             "pnl_5d": pnl,
             "holdings_summary": hd["summary"],
         })
+
+    @app.get("/api/stats")
+    def stats():
+        from db_repository import fetch_pick_outcomes
+        from evolution.attribution import attribute
+        conn = open_conn(db_path)
+        try:
+            rows = fetch_pick_outcomes(conn, judged_only=True)
+        finally:
+            conn.close()
+        s = attribute(rows)
+        strategies = [
+            {"strategy": k, "n": v.n, "win_rate": round(v.win_rate * 100, 1),
+             "expectancy": round(v.expectancy * 100, 2)}
+            for k, v in sorted(s.items(), key=lambda kv: -kv[1].n)
+        ]
+        monthly = {}
+        for r in rows:
+            if r.get("win") is None:
+                continue
+            m = r["date"][:7]
+            b = monthly.setdefault(m, {"n": 0, "wins": 0, "ret": 0.0})
+            b["n"] += 1
+            b["wins"] += int(r["win"])
+            b["ret"] += float(r["outcome_pct"] or 0.0)
+        monthly_list = [
+            {"month": m, "n": b["n"], "win_rate": round(b["wins"] / b["n"] * 100, 1),
+             "avg_ret": round(b["ret"] / b["n"] * 100, 2)}
+            for m, b in sorted(monthly.items())
+        ]
+        return jsonify({"strategies": strategies, "monthly": monthly_list})
 
     return app
 
