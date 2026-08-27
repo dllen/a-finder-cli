@@ -254,6 +254,7 @@ def upsert_picks(conn, date: str, kind: str, picks: List[Dict]) -> int:
         """,
         rows,
     )
+    conn.commit()
     return len(rows)
 
 
@@ -313,29 +314,31 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
     else:
         passed_strategies = load_passed_strategies()
         board_ratios = None
-        if trade_date:
-            # 验证指定日期有行情
-            row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (trade_date,)).fetchone()
-            if not row:
-                report(100, f"指定日期 {trade_date} 无行情数据")
-                return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
-            date = trade_date
-        else:
-            date = latest_trade_date(conn)
-            if not date:
-                report(100, "无交易日期")
-                return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
-        ma_board = build_ma_picks(stocks, top, passed_strategies, ratios=board_ratios)
-        buy_board = build_buy_picks(stocks, top)
-        regime = _detect_market_regime(stocks)
-        signal_board = build_signal_strategy_picks(stocks, regime, top)
-        multi_board = build_multi_factor_picks(stocks, date, top)
-        winrate_board = build_top_winrate_picks(stocks, [signal_board, ma_board, buy_board])
-        winrate_count = upsert_picks(conn, date, "高胜率", winrate_board)
-        ma_count = upsert_picks(conn, date, "均线", ma_board)
-        buy_count = upsert_picks(conn, date, "买入信号", buy_board)
-        signal_count = upsert_picks(conn, date, "信号策略", signal_board)
-        multi_count = upsert_picks(conn, date, "多因子", multi_board)
+
+    if trade_date:
+        # 验证指定日期有行情
+        row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (trade_date,)).fetchone()
+        if not row:
+            report(100, f"指定日期 {trade_date} 无行情数据")
+            return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
+        date = trade_date
+    else:
+        date = latest_trade_date(conn)
+        if not date:
+            report(100, "无交易日期")
+            return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
+
+    ma_board = build_ma_picks(stocks, top, passed_strategies, ratios=board_ratios)
+    buy_board = build_buy_picks(stocks, top)
+    regime = _detect_market_regime(stocks)
+    signal_board = build_signal_strategy_picks(stocks, regime, top)
+    multi_board = build_multi_factor_picks(stocks, date, top)
+    winrate_board = build_top_winrate_picks(stocks, [signal_board, ma_board, buy_board])
+    winrate_count = upsert_picks(conn, date, "高胜率", winrate_board)
+    ma_count = upsert_picks(conn, date, "均线", ma_board)
+    buy_count = upsert_picks(conn, date, "买入信号", buy_board)
+    signal_count = upsert_picks(conn, date, "信号策略", signal_board)
+    multi_count = upsert_picks(conn, date, "多因子", multi_board)
     report(100, f"完成：高胜率 {winrate_count} 条 / 均线 {ma_count} 条 / 买入信号 {buy_count} 条 / 信号策略 {signal_count} 条 / 多因子 {multi_count} 条")
     return {"date": date, "winrate": winrate_count, "ma": ma_count, "buy": buy_count, "signal": signal_count, "multi": multi_count}
 
