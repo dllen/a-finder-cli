@@ -46,8 +46,8 @@ def run_evolve(db_path: str, top: int = 20, backfill_days: int = 250,
                 upsert_pick_outcomes(conn, replay_new)
                 upsert_pick_outcomes(conn, live_new)
             say(78, f"标注写库：重放 +{len(replay_new)}，真实 +{len(live_new)}")
-        pool = fetch_pick_outcomes(conn, source="replay", judged_only=False) if not dry_run else []
-        live = fetch_pick_outcomes(conn, source="live", judged_only=False) if not dry_run else []
+        pool = fetch_pick_outcomes(conn, source="replay", judged_only=False)
+        live = fetch_pick_outcomes(conn, source="live", judged_only=False)
         pool = _dedupe(pool + replay_new)
         live = _dedupe(live + live_new)
         pool_judged = [r for r in pool if r["win"] is not None]
