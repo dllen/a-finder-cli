@@ -42,6 +42,12 @@ def ensure_champion(conn, dry_run: bool = False) -> Optional[Dict]:
     return {**base, "version": None, "created_at": "", "metrics": None}
 
 
+def _agg(rets: List[float], wins: int) -> Dict:
+    n = len(rets)
+    return {"n": n, "win_rate": round(wins / n, 6) if n else 0.0,
+            "expectancy": round(sum(rets) / n, 6) if n else 0.0}
+
+
 def board_metrics(rows: List[Dict], ratios: Dict[str, float], top: int) -> Dict:
     """在同一份重放候选池上按配置重跑榜单选择，聚合胜负（门禁评估核心）。"""
     by_date: Dict[str, List[Dict]] = {}
@@ -61,9 +67,7 @@ def board_metrics(rows: List[Dict], ratios: Dict[str, float], top: int) -> Dict:
                 continue
             wins += int(row["win"])
             rets.append(float(row["outcome_pct"]))
-    n = len(rets)
-    return {"n": n, "win_rate": round(wins / n, 6) if n else 0.0,
-            "expectancy": round(sum(rets) / n, 6) if n else 0.0}
+    return _agg(rets, wins)
 
 
 def decide(champion_m: Dict, challenger_m: Dict) -> Tuple[bool, str]:
@@ -80,8 +84,7 @@ def decide(champion_m: Dict, challenger_m: Dict) -> Tuple[bool, str]:
 
 def live_window_stats(live_rows: List[Dict], since: str) -> Dict:
     judged = [r for r in live_rows if r["win"] is not None and (not since or r["date"] > since)]
-    n = len(judged)
-    return {"n": n, "win_rate": round(sum(int(r["win"]) for r in judged) / n, 6) if n else 0.0}
+    return _agg([float(r["outcome_pct"]) for r in judged], sum(int(r["win"]) for r in judged))
 
 
 def should_rollback(champion: Dict, live_m: Dict) -> bool:
@@ -91,8 +94,3 @@ def should_rollback(champion: Dict, live_m: Dict) -> bool:
     if live_m["n"] < ROLLBACK_MIN_LIVE:
         return False
     return live_m["win_rate"] < float(m["win_rate"]) - ROLLBACK_DROP
-
-
-def rollback(conn, version: int, reason: str) -> None:
-    with conn:
-        mark_config_status(conn, version, "rolled_back", reason)

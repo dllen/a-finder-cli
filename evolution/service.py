@@ -3,7 +3,7 @@
 from typing import Callable, Dict, List, Optional
 
 from candidate_rules import DEFAULT_STRATEGY_RATIOS
-from db_repository import (fetch_pick_outcomes, open_db, upsert_pick_outcomes)
+from db_repository import (fetch_pick_outcomes, mark_config_status, open_db, upsert_pick_outcomes)
 from evolution import attribution, champion, labeling
 from evolution.allocator import NoChange, next_config
 from strategies import STRATEGIES
@@ -56,8 +56,9 @@ def run_evolve(db_path: str, top: int = 20, backfill_days: int = 250,
         report: Dict = {"champion": champ["version"]}
         live_m = champion.live_window_stats(live, champ.get("created_at") or "")
         if champion.should_rollback(champ, live_m):
-            champion.rollback(conn, champ["version"],
-                              f"真实表现 {live_m['win_rate']} < 基线 {champ['metrics']['win_rate']} - {champion.ROLLBACK_DROP}")
+            with conn:
+                mark_config_status(conn, champ["version"], "rolled_back",
+                                   f"真实表现 {live_m['win_rate']} < 基线 {champ['metrics']['win_rate']} - {champion.ROLLBACK_DROP}")
             restored = champion.load_champion_config(conn)
             say(80, f"触发自动回滚，恢复 v{restored['version'] if restored else '基线'}")
             champ = restored or champ
@@ -125,7 +126,7 @@ def format_report(report: Dict) -> str:
     if ratios:
         lines.append("建议配额（信号策略）：")
         for k, v in sorted(ratios.items(), key=lambda kv: -kv[1]):
-            if k in DEFAULT_STRATEGY_RATIOS or v == 0.0 and k not in DEFAULT_STRATEGY_RATIOS:
+            if k in DEFAULT_STRATEGY_RATIOS or v == 0.0:
                 continue
             lines.append(f"  {k:<12} {v:.2%}")
     for key in ("champion_metrics", "challenger_metrics"):

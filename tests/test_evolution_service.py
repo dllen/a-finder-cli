@@ -88,7 +88,9 @@ def test_rollback_restores_previous_champion(patched):
     bad = [dict(_row("z2026-09-01", "A", f"r{i}", 0.5, 0, -0.1), source="live") for i in range(25)]
     live_m = champion.live_window_stats(bad, champ["created_at"])
     assert champion.should_rollback(champ, live_m)
-    champion.rollback(conn, champ["version"], "test")
+    from db_repository import mark_config_status
+    with conn:
+        mark_config_status(conn, champ["version"], "rolled_back", "test")
     restored = load_champion_config(conn)
     assert restored["version"] == 1 and restored["active"] == ["A", "B", "C"]
     conn.close()

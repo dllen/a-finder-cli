@@ -10,7 +10,7 @@ from evolution.attribution import StrategyStats, attribute
 
 
 def _s(n, wr, exp):
-    return StrategyStats("x", n, int(n * wr), wr, exp)
+    return StrategyStats("x", n, wr, exp)
 
 
 STATS_GOOD_A = {"A": _s(60, 0.60, 0.050), "B": _s(60, 0.50, 0.010)}

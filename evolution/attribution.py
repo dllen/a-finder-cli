@@ -8,24 +8,24 @@ from typing import Dict, List
 class StrategyStats:
     strategy: str
     n: int
-    wins: int
     win_rate: float
     expectancy: float  # 平均 outcome_pct（小数，0.05 = +5%）
 
 
 def attribute(rows: List[Dict]) -> Dict[str, StrategyStats]:
     """按策略聚合已判定样本（win 为 None 的行不计入）。"""
-    buckets: Dict[str, List[float]] = {}
+    buckets: Dict[str, List[Dict]] = {}
     for r in rows:
         if r.get("win") is None or r.get("outcome_pct") is None:
             continue
-        buckets.setdefault(r["strategy"], []).append(float(r["outcome_pct"]))
+        buckets.setdefault(r["strategy"], []).append(r)
     out: Dict[str, StrategyStats] = {}
-    for strategy, rets in buckets.items():
-        n = len(rets)
-        wins = sum(1 for x in rets if x > 0)
+    for strategy, rs in buckets.items():
+        n = len(rs)
+        rets = [float(r["outcome_pct"]) for r in rs]
+        wins = sum(int(r["win"]) for r in rs)
         out[strategy] = StrategyStats(
-            strategy=strategy, n=n, wins=wins,
+            strategy=strategy, n=n,
             win_rate=round(wins / n, 6), expectancy=round(sum(rets) / n, 6),
         )
     return out
