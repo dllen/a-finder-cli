@@ -46,11 +46,11 @@ STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
 # 静态页去掉写入类操作按钮（重算/同步/生成 plan/含 failed）。
 _WRITE_BTN = re.compile(
-    r'<div class="col-auto">\s*<button[^>]*write-control[^>]*>.*?</button>\s*</div>',
+    r'<button[^>]*write-control[^>]*>.*?</button>',
     re.S,
 )
 _WRITE_CHECK = re.compile(
-    r'<div class="col-auto">\s*<div class="form-check write-control">.*?</div>\s*</div>',
+    r'<div[^>]*write-control[^>]*>.*?</div>',
     re.S,
 )
 
