@@ -202,11 +202,13 @@ def select_candidates_with_quota(
             selected.append(item)
             used_codes.add(item["stock"].code)
             targets[strategy] -= 1
+    # 回填跳过在 ratios 中显式配 0 的策略（被进化压制的）；未声明 key 维持原弹性行为
+    zero_quota = {k for k, v in (ratios or {}).items() if v <= 0}
     if len(selected) < top:
         for item in ranked:
             if len(selected) >= top:
                 break
-            if item["stock"].code in used_codes:
+            if item["stock"].code in used_codes or item["strategy"] in zero_quota:
                 continue
             selected.append(item)
             used_codes.add(item["stock"].code)

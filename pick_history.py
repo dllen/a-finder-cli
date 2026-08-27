@@ -30,11 +30,11 @@ def _detect_market_regime(stocks) -> RegimeType:
     return regime.regime
 
 
-def build_ma_picks(stocks, top: int, passed_strategies=None, regime=None) -> List[Dict]:
+def build_ma_picks(stocks, top: int, passed_strategies=None, regime=None, ratios=None) -> List[Dict]:
     if passed_strategies:
         regime = regime if regime is not None else _detect_market_regime(stocks)
         candidates = merge_candidates(stocks, regime, set(passed_strategies))
-        ratios = merged_strategy_ratios(set(passed_strategies))
+        ratios = ratios or merged_strategy_ratios(set(passed_strategies))
         ranked = select_candidates_with_quota(candidates, top, ratios)
     else:
         candidates = ma_strategy_candidates(stocks)
@@ -303,9 +303,16 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
         return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
 
     report(94, "计算榜单…")
-    passed_strategies = load_passed_strategies()
     conn = open_db(db_path)
     with conn:
+        from evolution.champion import ensure_champion
+        champ = ensure_champion(conn)
+    if champ:
+        passed_strategies = set(champ["active"])
+        board_ratios = champ["ratios"]
+    else:
+        passed_strategies = load_passed_strategies()
+        board_ratios = None
         if trade_date:
             # 验证指定日期有行情
             row = conn.execute("SELECT 1 FROM daily_prices WHERE trade_date = ? LIMIT 1", (trade_date,)).fetchone()
@@ -318,7 +325,7 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
             if not date:
                 report(100, "无交易日期")
                 return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
-        ma_board = build_ma_picks(stocks, top, passed_strategies)
+        ma_board = build_ma_picks(stocks, top, passed_strategies, ratios=board_ratios)
         buy_board = build_buy_picks(stocks, top)
         regime = _detect_market_regime(stocks)
         signal_board = build_signal_strategy_picks(stocks, regime, top)

@@ -59,7 +59,7 @@ evolution/
 
 ```
 daily_prices ┐
-             ├→ labeling（增量；watermark = pick_outcomes 最大 date）→ pick_outcomes
+             ├→ labeling（增量；watermark = 已判定行的最大 date，未判定日期留待下轮补判）→ pick_outcomes
 daily_picks  ┘                                          ↑
                                  open_positions 自动平仓（source='live'）
 
@@ -80,8 +80,8 @@ pick_outcomes → attribution → allocator → 挑战者配置
    的做法）；
 2. 检测 D 当日市场状态（复用 `detect_regime`）；
 3. 跑与 `run_picks` 同款合并榜单：`merge_candidates` +
-   `select_candidates_with_quota(top=10, ratios=现行 champion 配置)`
-   （top 与 `DEFAULT_TOP` 一致；冷启动尚无 champion 时用现行
+   `select_candidates_with_quota(top=20, ratios=现行 champion 配置)`
+   （top 与 CI `pick-history 20` 一致；冷启动尚无 champion 时用现行
    report.json + `merged_strategy_ratios` 默认配置）；
 4. 每笔 pick 按其 buy/stop/target 与 D 后 10 个交易日的
    high/low/close 判胜负（与 `strategies.backtest._simulate` 同口径：
@@ -151,33 +151,30 @@ pick_outcomes → attribution → allocator → 挑战者配置
 新增 `db/migrations/2026_08_27_strategy_evolution.sql`：
 
 ```sql
+-- 实际落库版本（db/migrations/2026_08_27_strategy_evolution.sql）：
+-- 存"信号级候选池"而非仅榜单 top-N 行。每个历史日所有被检测到的候选
+-- （strategy+code+score+buy/stop/target）都标注入库，这样冠军 vs 挑战者
+-- 的门禁评估只需重跑 select_candidates_with_quota（纯选择、无重检测）。
 CREATE TABLE IF NOT EXISTS pick_outcomes (
-    date        TEXT NOT NULL,      -- 交易日（榜单日）
-    kind        TEXT NOT NULL,      -- 榜单类型，与 daily_picks.kind 对齐
-    rank        INTEGER NOT NULL,
+    date        TEXT NOT NULL,   -- 信号日 D
+    source      TEXT NOT NULL,   -- 'replay' | 'live'
     code        TEXT NOT NULL,
     strategy    TEXT NOT NULL,
-    buy         REAL NOT NULL,
+    name        TEXT,
+    kind        TEXT,
+    score       REAL,
+    buy         REAL,
     stop        REAL,
     target      REAL,
-    exit_date   TEXT,               -- NULL = 未来数据不足，未判定
+    exit_date   TEXT,
     exit_price  REAL,
-    outcome_pct REAL,               -- NULL = 未判定
-    win         INTEGER,            -- 1/0，NULL = 未判定
-    source      TEXT NOT NULL CHECK(source IN ('replay','live')),
-    labeled_at  TEXT NOT NULL,
-    PRIMARY KEY (date, kind, rank, code)
+    outcome_pct REAL,            -- 赢为正、输为负
+    win         INTEGER,         -- 1/0，未判定为 NULL
+    labeled_at  TEXT,
+    PRIMARY KEY (date, source, code, strategy)
 );
-
-CREATE TABLE IF NOT EXISTS strategy_config (
-    version      INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at   TEXT NOT NULL,
-    active_json  TEXT NOT NULL,     -- ["KDJ低位金叉", "布林超卖反弹", ...]
-    ratios_json  TEXT NOT NULL,     -- {"多均线突破": 0.10, ..., "KDJ低位金叉": 0.12}
-    status       TEXT NOT NULL CHECK(status IN ('champion','rejected','rolled_back')),
-    metrics_json TEXT,              -- 晋级时快照 {win_rate, expectancy, n, window}
-    reason       TEXT DEFAULT ''
-);
+CREATE INDEX IF NOT EXISTS idx_pick_outcomes_strategy ON pick_outcomes(strategy);
+CREATE INDEX IF NOT EXISTS idx_pick_outcomes_date     ON pick_outcomes(date);
 ```
 
 `strategy_config` 只追加不修改（`rolled_back`/历史标记是唯一例外：
@@ -244,3 +241,17 @@ evolve 输出（stdout，人读）：watermark、各策略归因表、去留/配
   两者可在同一统计表分层（source 列）对比校准。
 - 为什么基线 70% 不动：均线榜单是现有主榜，进其内部权重等于同时改两
   个变量，破坏挑战者对比的可归因性。
+
+## 实现期偏差（相对本文档初稿）
+
+1. **候选池持久化到信号级**：`pick_outcomes` 每库存当天所有被检测到的候选
+   （含 score），而非仅榜单 top-N。门禁评估因此在同一份数据上重跑选择即可，
+   无需按挑战者配置重新检测。
+2. **top 默认 20**（与 CI `pick-history 20` 对齐），非初稿的 10。
+3. **增量水位线只看已判定行**（`win IS NOT NULL`）：尾部不足 10 个交易日的
+   日期本轮不落库，下周自动补判，避免 NULL 行堆积与水位线越界。
+4. **重放用逐股日期索引**（date→idx），不再受 `run_strategy_backtest` 的
+   `min(len)` 全局截断影响——一只短历史成分股不会把重放窗口压到 40 天。
+5. **`select_candidates_with_quota` 回填修复**：空席位不再回填给在 ratios 中
+   显式配 0 的策略，否则进化压制的策略会借回填复活、门禁失真。未声明 key
+   （如均线自适应家族的市况命名）维持原弹性行为。

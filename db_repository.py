@@ -745,3 +745,81 @@ def get_holdings_detail(conn: sqlite3.Connection) -> Dict:
             "return_pct": return_pct,
         },
     }
+
+
+# ---- 策略自我进化：pick_outcomes / strategy_config ----
+
+def upsert_pick_outcomes(conn: sqlite3.Connection, rows: List[Dict]) -> int:
+    if not rows:
+        return 0
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO pick_outcomes
+        (date, source, code, strategy, name, kind, score, buy, stop, target,
+         exit_date, exit_price, outcome_pct, win, labeled_at)
+        VALUES (:date, :source, :code, :strategy, :name, :kind, :score, :buy, :stop, :target,
+                :exit_date, :exit_price, :outcome_pct, :win, :labeled_at)
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+def fetch_pick_outcomes(conn: sqlite3.Connection, source: Optional[str] = None,
+                        judged_only: bool = True) -> List[Dict]:
+    sql = "SELECT * FROM pick_outcomes"
+    conds, args = [], []
+    if source:
+        conds.append("source = ?")
+        args.append(source)
+    if judged_only:
+        conds.append("win IS NOT NULL")
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY date, strategy, code"
+    cur = conn.execute(sql, args)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def outcomes_watermark(conn: sqlite3.Connection, source: str) -> str:
+    row = conn.execute(
+        "SELECT MAX(date) FROM pick_outcomes WHERE source = ? AND win IS NOT NULL", (source,)
+    ).fetchone()
+    return row[0] or ""
+
+
+def load_champion_config(conn: sqlite3.Connection) -> Optional[Dict]:
+    row = conn.execute(
+        "SELECT version, created_at, active_json, ratios_json, metrics_json "
+        "FROM strategy_config WHERE status = 'champion' ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "version": row[0],
+        "created_at": row[1],
+        "active": json.loads(row[2]),
+        "ratios": json.loads(row[3]),
+        "metrics": json.loads(row[4]) if row[4] else None,
+    }
+
+
+def insert_strategy_config(conn: sqlite3.Connection, active: List[str],
+                           ratios: Dict[str, float], status: str,
+                           metrics: Optional[Dict] = None, reason: str = "") -> int:
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    cur = conn.execute(
+        "INSERT INTO strategy_config (created_at, active_json, ratios_json, metrics_json, status, reason) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (now, json.dumps(active, ensure_ascii=False), json.dumps(ratios, ensure_ascii=False),
+         json.dumps(metrics, ensure_ascii=False) if metrics else None, status, reason),
+    )
+    return int(cur.lastrowid)
+
+
+def mark_config_status(conn: sqlite3.Connection, version: int, status: str, reason: str = "") -> None:
+    conn.execute(
+        "UPDATE strategy_config SET status = ?, reason = reason || ? WHERE version = ?",
+        (status, " | " + reason if reason else "", version),
+    )

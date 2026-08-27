@@ -1,0 +1,43 @@
+name: weekly-evolve
+
+on:
+  schedule:
+    # 周五 16:30（北京时间），当日 daily-sync 出完 pick 后跑进化闭环
+    - cron: "30 8 * * 5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: Run strategy evolution
+        run: python stock_cli.py evolve --db hs300.db
+
+      - name: Save hs300.db to cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}

@@ -242,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--show", dest="show_mode", action="store_true",
                               help="显示某日 plan 详情（含 failed 行）")
 
+    evolve_parser = subparsers.add_parser("evolve", help="选股策略自我进化闭环（周频 cron 用）")
+    evolve_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
+    evolve_parser.add_argument("--top", type=int, default=20, help="榜单席位数（与每日 pick 保持一致）")
+    evolve_parser.add_argument("--backfill-days", type=int, default=250, help="首次重放标注的交易日数")
+    evolve_parser.add_argument("--dry-run", action="store_true", help="只打印报告，不写库")
+
     return parser
 
 
@@ -312,6 +318,8 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         run_textual_ui(stocks, scores, args.top, args.code)
     elif args.command == "plan":
         _run_plan(args)
+    elif args.command == "evolve":
+        _run_evolve(args)
     else:
         build_parser().print_help()
 
@@ -395,3 +403,15 @@ def _run_plan(args) -> None:
               f"size={r.size_pct} stop={r.stop_price:.2f} "
               f"tp={r.tp_price:.2f} rr={r.rr_ratio:.2f} "
               f"status={r.status} reason={r.reason}")
+
+
+def _run_evolve(args) -> None:
+    """CLI handler for `evolve` subcommand: 每周策略自我进化闭环。"""
+    from evolution.service import format_report, run_evolve
+
+    def _progress(pct: int, msg: str) -> None:
+        print(f"[{pct:3d}%] {msg}")
+
+    report = run_evolve(args.db, top=args.top, backfill_days=args.backfill_days,
+                        dry_run=args.dry_run, progress=_progress)
+    print(format_report(report))
