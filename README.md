@@ -144,18 +144,21 @@ bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
 
 - 第 1 个参数：数据库路径，默认 `hs300.db`
 - 第 2 个参数：选股数量 top，默认 `10`
-- 第 3 个参数：选股命令，支持 `ma-picks` 或 `picks`，默认 `ma-picks`
+- 第 3 个参数：选股模式，支持 `pick-history` / `picks` / `ma-picks`，默认 `pick-history`（写入 `daily_picks` 表供看板/静态站点使用）
 - 第 4 个及之后参数：透传给 `sync-hs300 --mode incremental`，可直接传 `--limit`、`--log-level` 等同步参数
 
 ## Web 看板
 
-Flask 后端 + Bootstrap/jQuery（CDN）单页看板，只读 `daily_picks` 预计算结果：
+Flask 后端 + Bootstrap/jQuery（CDN）单页看板，展示每日选股、涨跌表现与历史胜率统计：
 
 ```bash
 bash run_web.sh                    # 默认 http://127.0.0.1:8000
 DB=hs300.db PORT=8080 TOP=20 bash run_web.sh
 ```
 
+- 日期选择：下拉框列出可用交易日，默认最新交易日（选股页取 `daily_picks`，计划页取 `trade_plan`）
+- 「涨跌%」列：最新收盘价相对买入价的涨跌幅（红涨绿跌），移动端卡片同步展示
+- 「策略胜率统计」：基于 `pick_outcomes` 历史标注样本，展示每策略样本数/胜率/期望收益，及月度胜率趋势
 - 「重算榜单」：不联网，仅重算 `daily_picks`（走 `pick_history.run_picks` 的 `do_sync=False`）
 - 「同步行情并重算」：先增量同步沪深300行情再重算榜单（较慢，依赖网络）
 
