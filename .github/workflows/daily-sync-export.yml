@@ -1,6 +1,10 @@
 name: daily-sync-export
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/daily-sync-export.yml'
   schedule:
     # 工作日 15:30（北京时间）≈ 07:30 UTC，收盘后跑
     - cron: "30 7 * * 1-5"
