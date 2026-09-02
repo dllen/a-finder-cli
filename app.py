@@ -575,12 +575,16 @@ function render(date){
   }).fail(function(){ setStatus('加载失败','alert-danger'); });
 }
 function drawPlan(data){
-    var rows = (data.rows || []).filter(function(r){ return matchFilter(r, PLAN_STATE.filter); });
-    if (!rows.length) { $('#board').html('<div class="empty-state">' + ((data.rows || []).length ? '无匹配筛选结果' : '该日期暂无 plan') + '</div>'); return; }
+    var allRows = (data.rows || []);
+    var rows = allRows.filter(function(r){ return matchFilter(r, PLAN_STATE.filter); });
+    if (!rows.length) { $('#board').html('<div class="empty-state">' + (allRows.length ? '无匹配筛选结果' : '该日期暂无 plan') + '</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
-    var buySize = 0, buyShares = 0, usedCapital = 0, failed = 0;
     rows.forEach(function(r){
       (groups[r.action] || (groups[r.action]=[])).push(r);
+    });
+    // 组合级汇总（买入合计/已用/现金/失败）基于全计划，不受筛选影响
+    var buySize = 0, buyShares = 0, usedCapital = 0, failed = 0;
+    allRows.forEach(function(r){
       if (r.action === 'buy' && r.status === 'ok' && r.size_pct != null) {
         buySize += r.size_pct;
         var sh = rowShares(r);
