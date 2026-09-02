@@ -13,6 +13,19 @@ from typing import Literal
 
 from risk_manager import PositionConfig  # for type hint; re-exported from package root
 
+LOT_SIZE = 100  # A股一手
+
+
+def size_shares(capital: float, size_pct: float, price: float) -> int:
+    """A股整手建仓：预算 = capital*size_pct，股数 = floor(预算/价格/100)*100。
+
+    不足一手返回 0。前端 PLAN_SCRIPT.sizeShares 为此函数的 JS 镜像，禁止单边改动。
+    """
+    if capital <= 0 or size_pct <= 0 or price <= 0:
+        return 0
+    budget = float(capital) * float(size_pct)
+    return int(budget // (price * LOT_SIZE)) * LOT_SIZE
+
 
 @dataclass
 class PlanRow:
