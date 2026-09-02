@@ -246,3 +246,29 @@ def test_plan_page_has_dsFetchHoldings(plan_db):
     app = create_app(db_path=plan_db)
     resp = app.test_client().get("/plan")
     assert b'dsFetchHoldings' in resp.data
+
+
+def test_api_plan_build_passes_capital(plan_db, monkeypatch):
+    import app as app_module
+
+    captured = {}
+    def fake_start(db_path, plan_date, capital):
+        captured["capital"] = capital
+        return "job-1"
+
+    monkeypatch.setattr(app_module, "_start_plan_job", fake_start)
+    app = create_app(db_path=plan_db)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.post("/api/plan/build",
+                       data=json.dumps({"plan_date": "2026-08-18", "capital": 500000}),
+                       content_type="application/json")
+    assert resp.status_code == 202
+    assert captured["capital"] == 500000
+
+    # 非法档位回退默认 10W
+    client.post("/api/plan/build",
+                data=json.dumps({"plan_date": "2026-08-18", "capital": 999999}),
+                content_type="application/json")
+    assert captured["capital"] == 100000

@@ -7,6 +7,7 @@ from datetime import datetime as _dt_class
 from flask import Flask, jsonify, request
 
 from pick_history import run_picks
+from config import CAPITAL_TIERS, DEFAULT_CAPITAL
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +719,7 @@ JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 
 
-def _start_plan_job(db_path, plan_date):
+def _start_plan_job(db_path, plan_date, capital):
     from config import MAX_SINGLE, MAX_TOTAL, RR_TARGET, SLIPPAGE
     from plan_builder import build_plan
 
@@ -748,6 +749,7 @@ def _start_plan_job(db_path, plan_date):
                 "max_total": MAX_TOTAL,
                 "rr_target": RR_TARGET,
                 "regime": "sideways",
+                "capital": capital,
             }
             on_progress(40, f"参数：{params} slippage={SLIPPAGE}")
             result = build_plan(plan_date, db_path, params, slippage=SLIPPAGE)
@@ -909,7 +911,14 @@ def create_app(db_path="hs300.db", top=10):
         plan_date = (body.get("plan_date") or "").strip()
         if not plan_date:
             return jsonify({"error": "plan_date 必填"}), 400
-        job_id = _start_plan_job(db_path, plan_date)
+        capital = body.get("capital")
+        try:
+            capital = int(capital)
+        except (TypeError, ValueError):
+            capital = DEFAULT_CAPITAL
+        if capital not in CAPITAL_TIERS:
+            capital = DEFAULT_CAPITAL
+        job_id = _start_plan_job(db_path, plan_date, capital)
         if job_id is None:
             return jsonify({"error": "已有任务进行中"}), 409
         return jsonify({"job_id": job_id}), 202
