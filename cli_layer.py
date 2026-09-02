@@ -1,6 +1,7 @@
 import argparse
 from typing import Dict, List, Optional
 
+from config import CAPITAL_TIERS
 from domain_models import Stock
 from db_repository import get_metadata_by_code, list_fetch_offsets, open_db
 from formatter import format_lines, format_table
@@ -235,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--slippage", type=float, default=None, help="纸面撮合滑点（覆盖 config）")
     plan_parser.add_argument("--regime", type=str, default=None,
                               choices=["bull", "bear", "sideways"], help="市场状态")
+    plan_parser.add_argument("--capital", type=int, default=None, choices=CAPITAL_TIERS,
+                              metavar="资金", help="初始资金（元）：50000/100000/200000/300000/500000，默认 10W")
     plan_parser.add_argument("--dry-run", action="store_true", help="仅打印将处理的日期，不写库")
     plan_parser.add_argument("--list", dest="list_mode", action="store_true",
                               help="列出最近 N 天已生成的 plan")
@@ -332,6 +335,7 @@ def _run_plan(args) -> None:
         MAX_TOTAL as DEFAULT_MAX_TOTAL,
         RR_TARGET as DEFAULT_RR_TARGET,
         SLIPPAGE as DEFAULT_SLIPPAGE,
+        DEFAULT_CAPITAL,
     )
     from db_repository import open_db, get_trade_plan_by_date
     from plan_builder import build_plan
@@ -386,6 +390,7 @@ def _run_plan(args) -> None:
         "max_total": DEFAULT_MAX_TOTAL,
         "rr_target": args.rr_target if args.rr_target is not None else DEFAULT_RR_TARGET,
         "regime": args.regime or "sideways",
+        "capital": args.capital if args.capital is not None else DEFAULT_CAPITAL,
     }
     slippage = args.slippage if args.slippage is not None else DEFAULT_SLIPPAGE
 
