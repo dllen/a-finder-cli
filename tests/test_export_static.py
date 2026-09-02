@@ -35,3 +35,25 @@ def test_export_emits_holdings_json(tmp_path):
     out = str(tmp_path / "site")
     export(db, out)
     assert os.path.exists(os.path.join(out, "data", "holdings.json"))
+
+
+def test_cleanup_stale_date_files(tmp_path):
+    from export_json import _cleanup_stale_date_files
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "picks-2026-08-12.json").write_text("{}")
+    (data / "picks-2026-08-20.json").write_text("{}")  # 陈旧
+    (data / "plan-2026-08-12.json").write_text("{}")
+    (data / "plan-2026-08-20.json").write_text("{}")  # 陈旧
+    (data / "plan-dates.json").write_text("{}")  # 特殊文件，不应被删
+    (data / "dashboard.json").write_text("{}")  # 非日期文件，不应被删
+
+    _cleanup_stale_date_files(data, ["2026-08-12"], ["2026-08-12"])
+
+    names = sorted(p.name for p in data.iterdir())
+    assert "picks-2026-08-12.json" in names
+    assert "picks-2026-08-20.json" not in names
+    assert "plan-2026-08-12.json" in names
+    assert "plan-2026-08-20.json" not in names
+    assert "plan-dates.json" in names
+    assert "dashboard.json" in names

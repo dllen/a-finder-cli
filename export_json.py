@@ -59,6 +59,23 @@ def _strip_write_controls(body: str) -> str:
     return _WRITE_CHECK.sub("", _WRITE_BTN.sub("", body))
 
 
+def _cleanup_stale_date_files(data_dir: Path, pick_dates, plan_dates) -> None:
+    """删除 site/data 下已不在当前日期集合中的 picks-*/plan-* 陈旧文件。
+
+    export 只写当前日期、不清理历史残留；重导出后旧日期文件会留在原地。
+    这里按文件名里的 YYYY-MM-DD 过滤，删掉不在最新日期集合里的。
+    """
+    pick_set = set(pick_dates)
+    plan_set = set(plan_dates)
+    for prefix, keep in (("picks", pick_set), ("plan", plan_set)):
+        for f in data_dir.glob(f"{prefix}-*.json"):
+            date = f.stem[len(prefix) + 1:]  # picks-YYYY-MM-DD -> YYYY-MM-DD
+            if len(date) != 10 or date[4] != "-" or date[7] != "-":
+                continue  # 跳过 plan-dates.json 等非日期文件
+            if date not in keep:
+                f.unlink()
+
+
 def _dashboard_payload(conn) -> dict:
     last = get_last_refresh(conn)
     today = get_today_plan_summary(conn, _dt_class.now().strftime("%Y-%m-%d"))
@@ -123,6 +140,9 @@ def export(db_path: str, out_dir: str) -> int:
                   ensure_ascii=False, default=str)
     finally:
         conn.close()
+
+    # 清理已不在当前日期集合里的陈旧 picks-*/plan-* 文件
+    _cleanup_stale_date_files(data_dir, pick_dates, plan_dates)
 
     # 静态页默认日期 = 最新可用数据日期（fallback 到今天仅用于展示占位）
     # 注意：无需 fallback —— 只要有任意一天的 picks 数据就用它
