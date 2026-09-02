@@ -34,12 +34,14 @@ from db_repository import (
     insert_trade_plan,
     open_db,
 )
+from config import DEFAULT_CAPITAL
 from market_regime import RegimeType
 from risk_manager import RiskManager
 from shared_lib.strategy import (
     PlanRow,
     compute_plan_prices,
     params_hash,
+    size_shares,
 )
 
 
@@ -143,12 +145,12 @@ def _build_buy_rows(
     picks: List[Dict[str, Any]],
     regime: RegimeType,
     risk_manager: RiskManager,
-    signal_strength_max: float = 1.0,
+    capital: float,
 ) -> List[PlanRow]:
     """Convert each daily_picks row into a PlanRow(action='buy').
 
-    Plan price = picks.buy (the strategy-recommended entry). If absent,
-    fall back to picks.target or 0.0 (sanity gate will catch bad values).
+    Plan price = picks.buy. shares = size_shares(capital, size_pct, plan_price)
+    （A股整手，不足一手 0）。
     """
     rows: List[PlanRow] = []
     for p in picks:
@@ -161,6 +163,7 @@ def _build_buy_rows(
         stop, tp = compute_plan_prices(plan_price, cfg)
         risk = plan_price - stop
         rr = (tp - plan_price) / risk if risk > 0 else 0.0
+        shares = size_shares(capital, cfg.position_size, plan_price)
         rows.append(PlanRow(
             code=str(p["code"]),
             action="buy",
@@ -169,7 +172,7 @@ def _build_buy_rows(
             stop_price=stop,
             tp_price=tp,
             rr_ratio=round(rr, 4),
-            shares=200,
+            shares=shares,
             rationale={
                 "score": score,
                 "regime": regime.value,
@@ -283,6 +286,8 @@ def _paper_trade(
     try:
         for r in rows:
             if r.action == "buy" and r.status == "ok":
+                if r.shares <= 0:
+                    continue  # 资金不足一手，不建仓
                 # C1 幂等（改）：以 trade_events 的 (code, plan_date, 'open') 为准，
                 # 允许同 code 跨日累积。
                 existing = conn.execute(
@@ -346,6 +351,7 @@ def build_plan(
     max_single = float(params.get("max_single", 0.15))
     max_total = float(params.get("max_total", 0.95))
     regime = _regime_from_str(params.get("regime", "SIDEWAYS"))
+    capital = float(params.get("capital") or DEFAULT_CAPITAL)
     risk_manager = RiskManager()
     phash = params_hash(params)
 
@@ -378,7 +384,7 @@ def build_plan(
         conn.close()
 
     rows: List[PlanRow] = []
-    rows.extend(_build_buy_rows(picks, regime, risk_manager))
+    rows.extend(_build_buy_rows(picks, regime, risk_manager, capital))
     rows.extend(_build_carryover_rows(opens, current_prices))
 
     reasons = _apply_sanity_gate(rows, max_single, max_total)

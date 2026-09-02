@@ -106,13 +106,13 @@ def test_build_plan_buys_200_shares_and_accumulates_next_day():
             "SELECT shares, entry_price FROM open_positions WHERE code='600519' AND status='open'"
         ).fetchall()
         assert len(opens) == 1
-        assert opens[0][0] == 400  # 累积 400 股
-        # 加权均价 = (200*100.1 + 200*110.11)/400 ≈ 105.1（滑点 0.1%）
+        assert opens[0][0] == 200  # 累积 100 + 100 股
+        # 加权均价 = (100*100.1 + 100*110.11)/200 ≈ 105.1（滑点 0.1%）
         assert 104.0 < opens[0][1] < 106.0
         evts = conn.execute(
             "SELECT plan_date, shares FROM trade_events WHERE event_type='open' ORDER BY plan_date"
         ).fetchall()
-        assert evts == [("2026-08-18", 200), ("2026-08-19", 200)]
+        assert evts == [("2026-08-18", 100), ("2026-08-19", 100)]
     finally:
         conn.close()
 
@@ -130,7 +130,7 @@ def test_build_plan_same_day_rebuild_does_not_double_buy():
         shares = conn.execute(
             "SELECT shares FROM open_positions WHERE code='600519' AND status='open'"
         ).fetchone()[0]
-        assert shares == 200  # 未重复买
+        assert shares == 100  # 未重复买
     finally:
         conn.close()
 
@@ -227,3 +227,30 @@ def test_holdings_detail_summary():
     assert d["holdings"][0]["floating_pnl"] == 2000.0
     assert d["holdings"][0]["stop_pnl"] == (92.0 - 100.0) * 200
     conn.close()
+
+
+def test_build_plan_sizes_shares_by_capital():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0, score=2.0)
+    conn.close()
+    # 5W：50000*0.125=6250 元 → 62 股 → 不足一手 → 0（不建仓）
+    r_small = build_plan("2026-08-18", path, params={"regime": "BULL", "capital": 50000})
+    # 50W：500000*0.125=62500 元 → 625 股 → 6 手 = 600 股
+    r_big = build_plan("2026-08-18", path, params={"regime": "BULL", "capital": 500000})
+
+    buy_small = [r for r in r_small.rows if r.action == "buy"]
+    buy_big = [r for r in r_big.rows if r.action == "buy"]
+    assert buy_small[0].shares == 0
+    assert buy_big[0].shares == 600
+
+    conn = open_db(path)
+    try:
+        opens = conn.execute(
+            "SELECT shares FROM open_positions WHERE code='600519' AND status='open'"
+        ).fetchall()
+    finally:
+        conn.close()
+    # 第一次 0 股不建仓，第二次 600 股建仓 → 仅一笔 600
+    assert [o[0] for o in opens] == [600]

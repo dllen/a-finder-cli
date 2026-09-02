@@ -212,8 +212,8 @@ def test_held_code_rebought_accumulates_shares():
         conn.close()
     open_rows = [o for o in opens if o[1] == "open"]
     assert len(open_rows) == 1
-    # Accumulated: original 200 + re-buy 200 = 400 shares
-    assert open_rows[0][2] == 400
+    # Accumulated: original 200 + re-buy 100 = 300 shares
+    assert open_rows[0][2] == 300
 
 
 def test_tp_exit_fires_when_price_above_tp():
