@@ -488,6 +488,16 @@ PLAN_BODY = """<main class="container py-4">
       <label class="form-label" for="d">日期</label>
       <select id="d" class="form-select"></select>
     </div>
+    <div class="filter-group">
+      <label class="form-label" for="capital-group">资金</label>
+      <div id="capital-group" class="btn-group btn-group-sm" role="group" aria-label="资金档位">
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="50000">5W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="100000">10W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="200000">20W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="300000">30W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="500000">50W</button>
+      </div>
+    </div>
     <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选">
     <button id="btn-build" class="btn btn-primary write-control">生成 plan</button>
     <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
@@ -502,7 +512,20 @@ PLAN_BODY = """<main class="container py-4">
   <div id="holdings"></div>
 </main>"""
 
-PLAN_SCRIPT = """var PLAN_STATE = { data: null, filter: '' };
+PLAN_SCRIPT = """var PLAN_STATE = { data: null, filter: '', capital: 100000 };
+var CAPITAL_TIERS = [50000, 100000, 200000, 300000, 500000]; // 与 config.py CAPITAL_TIERS 同步
+var CAPITAL_LABELS = {50000:'5W',100000:'10W',200000:'20W',300000:'30W',500000:'50W'};
+function sizeShares(capital, sizePct, price){ // 与 shared_lib/strategy.py size_shares 同式
+  if (!(capital > 0) || !(sizePct > 0) || !(price > 0)) return 0;
+  return Math.floor(capital * sizePct / (price * 100)) * 100;
+}
+function rowShares(r){
+  if (r.action !== 'buy') return (r.shares == null ? 0 : r.shares);
+  return sizeShares(PLAN_STATE.capital, r.size_pct, r.plan_price);
+}
+function insufficientLot(r){
+  return r.action === 'buy' && (r.size_pct || 0) > 0 && rowShares(r) === 0;
+}
 function matchFilter(r, q){
   if (!q) return true;
   q = q.toLowerCase();
@@ -519,7 +542,7 @@ function statusBadge(s){ return s==='ok' ? 'bg-success' : 'bg-danger'; }
 function row(r){
   var meta = actionMeta(r.action);
   var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
-  var shares = r.shares == null ? '—' : r.shares;
+  var sharesHtml = insufficientLot(r) ? '0 <span class="text-warning small">资金不足一手</span>' : rowShares(r);
   var rationale;
   try {
     var obj = JSON.parse(r.rationale_json || '{}');
@@ -536,7 +559,7 @@ function row(r){
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
     '<td class="num">'+fmt(r.plan_price)+'</td>' +
     '<td class="num">'+sizePct+'</td>' +
-    '<td class="num">'+shares+'</td>' +
+    '<td class="num">'+sharesHtml+'</td>' +
     '<td class="num">'+fmt(r.stop_price)+'</td>' +
     '<td class="num">'+fmt(r.tp_price)+'</td>' +
     '<td class="num">'+fmt(r.rr_ratio)+'</td>' +
@@ -555,18 +578,28 @@ function drawPlan(data){
     var rows = (data.rows || []).filter(function(r){ return matchFilter(r, PLAN_STATE.filter); });
     if (!rows.length) { $('#board').html('<div class="empty-state">' + ((data.rows || []).length ? '无匹配筛选结果' : '该日期暂无 plan') + '</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
-    var buySize = 0, buyShares = 0, failed = 0;
+    var buySize = 0, buyShares = 0, usedCapital = 0, failed = 0;
     rows.forEach(function(r){
       (groups[r.action] || (groups[r.action]=[])).push(r);
-      if (r.action === 'buy' && r.status === 'ok' && r.size_pct != null) buySize += r.size_pct;
-      if (r.action === 'buy' && r.status === 'ok' && r.shares != null) buyShares += r.shares;
+      if (r.action === 'buy' && r.status === 'ok' && r.size_pct != null) {
+        buySize += r.size_pct;
+        var sh = rowShares(r);
+        buyShares += sh;
+        usedCapital += sh * (r.plan_price || 0);
+      }
       if (r.status === 'failed') failed++;
     });
+    var cash = PLAN_STATE.capital - usedCapital;
+    var util = PLAN_STATE.capital > 0 ? usedCapital / PLAN_STATE.capital : 0;
+    var capLabel = CAPITAL_LABELS[PLAN_STATE.capital] || (PLAN_STATE.capital/10000 + 'W');
     var counts = Object.entries(groups).filter(function(e){return e[1].length}).map(function(e){return actionMeta(e[0]).label+' '+e[1].length;}).join(' · ');
     var summary = '<div class="card summary-card mb-3"><div class="card-body py-2">' +
       '<span class="me-3"><strong>'+data.plan_date+'</strong></span>' +
       '<span class="text-muted me-3">'+rows.length+' 行</span>' +
       '<span class="text-muted me-3">'+counts+'</span>' +
+      '<span class="me-3">资金 '+capLabel+'</span>' +
+      '<span class="me-3 '+(util>1?'text-danger':'text-muted')+'">已用 ¥'+fmt(usedCapital)+' ('+(util*100).toFixed(1)+'%)</span>' +
+      '<span class="me-3 '+(cash<0?'text-danger':'text-muted')+'">现金 ¥'+fmt(cash)+'</span>' +
       '<span class="text-muted me-3">买入合计仓位 '+ (buySize*100).toFixed(1) +'% · '+ buyShares +' 股</span>' +
       '<span class="text-muted">失败 '+failed+'</span>' +
       '</div></div>';
@@ -594,7 +627,7 @@ function drawPlan(data){
           '<div class="kv-grid">'+
             '<span class="k">计划价</span><span class="v num">'+fmt(r.plan_price)+'</span>'+
             '<span class="k">仓位</span><span class="v num">'+sizePct+'</span>'+
-            '<span class="k">股数</span><span class="v num">'+(r.shares==null?'—':r.shares)+'</span>'+
+            '<span class="k">股数</span><span class="v num">'+(insufficientLot(r)?'0 <span class="text-warning small">资金不足一手</span>':rowShares(r))+'</span>'+
             '<span class="k">止损</span><span class="v num">'+fmt(r.stop_price)+'</span>'+
             '<span class="k">止盈</span><span class="v num">'+fmt(r.tp_price)+'</span>'+
             '<span class="k">RR</span><span class="v num">'+fmt(r.rr_ratio)+'</span>'+
@@ -626,7 +659,7 @@ function buildPlan(){
     url: '/api/plan/build',
     method: 'POST',
     contentType: 'application/json',
-    data: JSON.stringify({plan_date: date}),
+    data: JSON.stringify({plan_date: date, capital: PLAN_STATE.capital}),
     dataType: 'json'
   }).done(function(data){
     pollBuild(data.job_id);
@@ -709,6 +742,16 @@ $(function(){
   $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
   $('#q').on('input', function(){ PLAN_STATE.filter = $(this).val().trim(); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
   $('#btn-build').on('click', buildPlan);
+  $('#capital-group .capital-btn').on('click', function(){
+    var c = parseInt($(this).attr('data-capital'), 10);
+    if (PLAN_STATE.capital === c) return;
+    PLAN_STATE.capital = c;
+    $('#capital-group .capital-btn').removeClass('btn-primary').addClass('btn-outline-primary');
+    $(this).removeClass('btn-outline-primary').addClass('btn-primary');
+    if (PLAN_STATE.data) drawPlan(PLAN_STATE.data);
+  });
+  $('#capital-group .capital-btn[data-capital="'+PLAN_STATE.capital+'"]')
+    .removeClass('btn-outline-primary').addClass('btn-primary');
   startDashboard();
   loadDates();
   loadHoldings();
