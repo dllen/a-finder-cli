@@ -244,6 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--days", type=int, default=30, help="--list 时回看天数")
     plan_parser.add_argument("--show", dest="show_mode", action="store_true",
                               help="显示某日 plan 详情（含 failed 行）")
+    plan_parser.add_argument("--backfill", action="store_true",
+                              help="为所有历史 daily_picks 日期补齐 plan（不纸面成交）")
 
     evolve_parser = subparsers.add_parser("evolve", help="选股策略自我进化闭环（周频 cron 用）")
     evolve_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
@@ -393,6 +395,21 @@ def _run_plan(args) -> None:
         "capital": args.capital if args.capital is not None else DEFAULT_CAPITAL,
     }
     slippage = args.slippage if args.slippage is not None else DEFAULT_SLIPPAGE
+
+    # --- backfill mode: 补齐所有历史日期的 plan（只落 trade_plan，不纸面成交）---
+    if args.backfill:
+        conn = open_db(args.db)
+        try:
+            dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT date FROM daily_picks ORDER BY date"
+            ).fetchall()]
+        finally:
+            conn.close()
+        for d in dates:
+            result = build_plan(d, args.db, params, slippage=slippage,
+                                paper_trade=False, include_carryover=False)
+            print(f"backfilled {d}: picks={result.num_picks} rows={len(result.rows)}")
+        return
 
     if args.dry_run:
         print(f"[dry-run] would build plan for {plan_date} (params={params})")

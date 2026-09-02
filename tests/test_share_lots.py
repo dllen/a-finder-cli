@@ -254,3 +254,46 @@ def test_build_plan_sizes_shares_by_capital():
         conn.close()
     # 第一次 0 股不建仓，第二次 600 股建仓 → 仅一笔 600
     assert [o[0] for o in opens] == [600]
+
+
+def test_build_plan_paper_trade_false_skips_fills():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0, score=2.0)
+    conn.close()
+    result = build_plan("2026-08-18", path, params={"regime": "BULL"}, paper_trade=False)
+
+    buys = [r for r in result.rows if r.action == "buy"]
+    assert len(buys) == 1
+    assert buys[0].shares > 0  # 资金感知股数已算
+
+    conn = open_db(path)
+    try:
+        plan_n = conn.execute("SELECT COUNT(*) FROM trade_plan").fetchone()[0]
+        open_n = conn.execute("SELECT COUNT(*) FROM open_positions").fetchone()[0]
+        evt_n = conn.execute("SELECT COUNT(*) FROM trade_events").fetchone()[0]
+    finally:
+        conn.close()
+    assert plan_n == 1
+    assert open_n == 0
+    assert evt_n == 0
+
+
+def test_build_plan_include_carryover_false_skips_hold_rows():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = open_db(path)
+    _seed_pick(conn, "2026-08-18", "600519", buy=100.0, score=2.0)
+    # 存量持仓：正常 build 会产出 hold 行
+    conn.execute(
+        "INSERT INTO open_positions (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares) "
+        "VALUES ('000001','2026-08-10',50.0,0.1,46.0,60.0,'open',200)"
+    )
+    conn.execute("INSERT INTO daily_prices (code, trade_date, close) VALUES ('000001','2026-08-18',52.0)")
+    conn.commit()
+    conn.close()
+
+    result = build_plan("2026-08-18", path, params={"regime": "BULL"},
+                        paper_trade=False, include_carryover=False)
+    assert {r.action for r in result.rows} == {"buy"}  # 只有买入行，无 hold/exit

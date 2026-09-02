@@ -338,6 +338,8 @@ def build_plan(
     db_path: str,
     params: Optional[Dict[str, Any]] = None,
     slippage: float = 0.001,
+    paper_trade: bool = True,
+    include_carryover: bool = True,
 ) -> PlanResult:
     """Compose a daily plan from picks + carryover.
 
@@ -346,6 +348,10 @@ def build_plan(
       max_single: float    — single-position cap (default 0.15)
       max_total: float     — portfolio cap (default 0.95)
       min_score: float     — filter (currently unused; picks already filtered)
+
+    paper_trade=False 时只落 trade_plan，不写 open_positions / trade_events
+    （历史补齐数据用）。include_carryover=False 时跳过 hold/exit 行（历史补齐
+    只出买入行，避免把当前持仓错误挂到过去日期）。
     """
     params = params or {}
     max_single = float(params.get("max_single", 0.15))
@@ -385,7 +391,8 @@ def build_plan(
 
     rows: List[PlanRow] = []
     rows.extend(_build_buy_rows(picks, regime, risk_manager, capital))
-    rows.extend(_build_carryover_rows(opens, current_prices))
+    if include_carryover:
+        rows.extend(_build_carryover_rows(opens, current_prices))
 
     reasons = _apply_sanity_gate(rows, max_single, max_total)
 
@@ -401,7 +408,8 @@ def build_plan(
 
     # Paper trade: insert_trade_plan inside _paper_trade returns 0 on dup,
     # which gates the corresponding fill (C1). Exit rows always re-run.
-    _paper_trade(rows, plan_date, db_path, slippage)
+    if paper_trade:
+        _paper_trade(rows, plan_date, db_path, slippage)
 
     return PlanResult(
         plan_date=plan_date,
