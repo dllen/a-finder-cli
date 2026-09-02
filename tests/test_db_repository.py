@@ -28,18 +28,20 @@ def test_insert_and_fetch_trade_plan():
         conn.close()
 
 
-def test_trade_plan_idempotent_via_insert_ignore():
-    """UNIQUE(plan_date, code, action) + INSERT OR IGNORE = silent no-op on dup."""
+def test_trade_plan_upsert_updates_shares():
+    """UNIQUE(plan_date, code, action) + upsert：二次插入更新 shares，行数仍为 1。"""
     from db_repository import insert_trade_plan, get_trade_plan_by_date
     conn = _conn()
     try:
-        row = PlanRow("600519", "buy", 100.0, 0.1, 95.0, 110.0, 2.0, {}, "ok", "")
-        first_id = insert_trade_plan(conn, row, "2026-08-18", "abc")
-        second_id = insert_trade_plan(conn, row, "2026-08-18", "abc")
+        r1 = PlanRow("600519", "buy", 100.0, 0.1, 95.0, 110.0, 2.0, {}, "ok", "", shares=100)
+        r2 = PlanRow("600519", "buy", 100.0, 0.1, 95.0, 110.0, 2.0, {}, "ok", "", shares=600)
+        first_id = insert_trade_plan(conn, r1, "2026-08-18", "abc")
+        second_id = insert_trade_plan(conn, r2, "2026-08-18", "abc")
         assert first_id > 0
-        assert second_id == 0  # ignored
+        assert second_id > 0  # upsert，非 0
         rows = get_trade_plan_by_date(conn, "2026-08-18")
         assert len(rows) == 1
+        assert rows[0]["shares"] == 600  # 被第二次覆盖
     finally:
         conn.close()
 

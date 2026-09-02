@@ -372,15 +372,27 @@ def insert_trade_plan(
     plan_date: str,
     params_hash: str,
 ) -> int:
-    """Insert a trade_plan row. Idempotent via UNIQUE(plan_date, code, action).
+    """Insert a trade_plan row. Upsert via UNIQUE(plan_date, code, action).
 
-    Returns plan_id (>0) on insert, 0 on duplicate ignored.
+    Returns plan_id (>0) on insert or update; rebuild at a different capital
+    overwrites all fields (except created_at), including shares.
     """
     cur = conn.execute(
-        """INSERT OR IGNORE INTO trade_plan
+        """INSERT INTO trade_plan
         (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
          rr_ratio, status, reason, rationale_json, params_hash, created_at, shares)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(plan_date, code, action) DO UPDATE SET
+         plan_price=excluded.plan_price,
+         size_pct=excluded.size_pct,
+         stop_price=excluded.stop_price,
+         tp_price=excluded.tp_price,
+         rr_ratio=excluded.rr_ratio,
+         status=excluded.status,
+         reason=excluded.reason,
+         rationale_json=excluded.rationale_json,
+         params_hash=excluded.params_hash,
+         shares=excluded.shares""",
         (
             plan_date, row.code, row.action, row.plan_price, row.size_pct,
             row.stop_price, row.tp_price, row.rr_ratio, row.status, row.reason,
@@ -390,7 +402,6 @@ def insert_trade_plan(
         ),
     )
     conn.commit()
-    # cur.rowcount=1 on insert, 0 on ignored dup; lastrowid is unreliable on ignore.
     return cur.lastrowid if cur.rowcount > 0 else 0
 
 
