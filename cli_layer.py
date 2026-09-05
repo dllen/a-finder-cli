@@ -253,6 +253,28 @@ def build_parser() -> argparse.ArgumentParser:
     evolve_parser.add_argument("--backfill-days", type=int, default=250, help="首次重放标注的交易日数")
     evolve_parser.add_argument("--dry-run", action="store_true", help="只打印报告，不写库")
 
+    ly = subparsers.add_parser(
+        "linyuan-picks",
+        help="林园策略选股：连续5年毛利率>40% ∧ 扣非ROE>15% ∧ 行业白名单",
+    )
+    ly.add_argument("--top", type=int, default=20)
+    ly.add_argument("--db", type=str, default="hs300.db")
+    ly.add_argument("--dry-run", action="store_true")
+
+    sfh = subparsers.add_parser("sync-fundamentals-history", help="同步历年财务到 fundamentals_history")
+    sfh.add_argument("--db", type=str, default="hs300.db")
+    sfh.add_argument("--concurrency", type=int, default=4)
+    sfh.add_argument("--rate", type=float, default=3.0)
+    sfh.add_argument("--retries", type=int, default=2)
+    sfh.add_argument("--backoff", type=float, default=1.0)
+
+    si = subparsers.add_parser("sync-industry", help="回填 hs300_metadata.industry")
+    si.add_argument("--db", type=str, default="hs300.db")
+    si.add_argument("--concurrency", type=int, default=4)
+    si.add_argument("--rate", type=float, default=3.0)
+    si.add_argument("--retries", type=int, default=2)
+    si.add_argument("--backoff", type=float, default=1.0)
+
     return parser
 
 
@@ -325,6 +347,12 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         _run_plan(args)
     elif args.command == "evolve":
         _run_evolve(args)
+    elif args.command == "linyuan-picks":
+        _run_linyuan(args)
+    elif args.command == "sync-fundamentals-history":
+        _run_sync_fundamentals_history(args)
+    elif args.command == "sync-industry":
+        _run_sync_industry(args)
     else:
         build_parser().print_help()
 
@@ -437,3 +465,50 @@ def _run_evolve(args) -> None:
     report = run_evolve(args.db, top=args.top, backfill_days=args.backfill_days,
                         dry_run=args.dry_run, progress=_progress)
     print(format_report(report))
+
+
+def _run_linyuan(args) -> None:
+    from strategies.linyuan_multi_factor import LinYuanRunner
+
+    runner = LinYuanRunner(top_n=args.top)
+    result = runner.run(args.db)
+    if args.dry_run:
+        print(f"[dry-run] 林园候选 {len(result.positions)} 只")
+        for p in result.positions:
+            print(f"  {p.code} {p.name} sector={p.sector} weight={p.weight:.4f}")
+        return
+    headers = ["代码", "名称", "行业", "权重"]
+    rows = [[p.code, p.name, p.sector, f"{p.weight:.4f}"] for p in result.positions]
+    print(format_table(headers, rows))
+
+
+def _run_sync_fundamentals_history(args) -> None:
+    from sync_service import sync_fundamentals_history
+
+    def _progress(pct: int, msg: str) -> None:
+        print(f"[{pct:3d}%] {msg}")
+
+    print(sync_fundamentals_history(
+        args.db,
+        concurrency=args.concurrency,
+        rate_limit=args.rate,
+        retries=args.retries,
+        backoff=args.backoff,
+        progress=_progress,
+    ))
+
+
+def _run_sync_industry(args) -> None:
+    from sync_service import sync_industry
+
+    def _progress(pct: int, msg: str) -> None:
+        print(f"[{pct:3d}%] {msg}")
+
+    print(sync_industry(
+        args.db,
+        concurrency=args.concurrency,
+        rate_limit=args.rate,
+        retries=args.retries,
+        backoff=args.backoff,
+        progress=_progress,
+    ))
