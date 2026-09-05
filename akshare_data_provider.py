@@ -77,18 +77,26 @@ def fetch_stock_meta_akshare(code: str) -> Optional[StockMeta]:
     return retry_call(_fetch)
 
 
-def _abstract_metric(df, name: str) -> Optional[List[float]]:
-    """取 stock_financial_abstract 中指定指标行的全部报告期数值（按列倒序，最新在前）"""
+def _abstract_metric(df, name: str, col: Optional[str] = None) -> Optional[List[float]]:
+    """取 stock_financial_abstract 中指定指标行的全部（或指定列）报告期数值。"""
     matched = df[df["指标"] == name]
     if matched.empty:
         return None
-    row = matched.iloc[0]
+    if col is not None:
+        values = []
+        for _, row in matched.iterrows():
+            try:
+                values.append(float(row[col]))
+            except (TypeError, ValueError):
+                values.append(float("nan"))
+        return values
     values = []
-    for col in df.columns[2:]:
-        try:
-            values.append(float(row[col]))
-        except (TypeError, ValueError):
-            values.append(float("nan"))
+    for c in df.columns[2:]:
+        for _, row in matched.iterrows():
+            try:
+                values.append(float(row[c]))
+            except (TypeError, ValueError):
+                values.append(float("nan"))
     return values
 
 
