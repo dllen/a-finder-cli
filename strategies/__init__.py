@@ -13,3 +13,9 @@ STRATEGIES = {
     "KDJ低位金叉": kdj_cross.detect,
     "量价齐升": volume_price.detect,
 }
+
+from strategies.linyuan_multi_factor import LinYuanRunner
+
+MULTI_FACTOR_STRATEGIES = {
+    "linyuan": LinYuanRunner,
+}
