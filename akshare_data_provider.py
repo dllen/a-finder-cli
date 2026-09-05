@@ -264,3 +264,18 @@ def fetch_sw_sector_codes(sector_code: str = "801150.SI") -> Set[str]:
         return set(re.findall(r'data-stock-code="(\d{6})\.', resp.text))
 
     return retry_call(_fetch)
+
+
+def fetch_industry_akshare(code: str) -> str:
+    """单只股票从 stock_individual_info_em 抽「行业」字段。失败返回 ''。"""
+    try:
+        df = ak.stock_individual_info_em(symbol=code)
+    except Exception:
+        return ""
+    if df is None or df.empty or "item" not in df.columns or "value" not in df.columns:
+        return ""
+    matched = df[df["item"] == "行业"]
+    if matched.empty:
+        return ""
+    val = matched.iloc[0]["value"]
+    return str(val) if val is not None else ""

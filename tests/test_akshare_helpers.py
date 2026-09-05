@@ -97,3 +97,33 @@ def test_fetch_returns_empty_on_empty_dataframe():
         mock_ak.stock_financial_abstract.return_value = pd.DataFrame()
         rows = fetch_fundamentals_history_akshare("600519")
     assert rows == []
+
+
+from akshare_data_provider import fetch_industry_akshare
+
+
+def _info_df_with(industry="医药生物"):
+    return pd.DataFrame({
+        "item": ["股票简称", "行业", "区域"],
+        "value": ["贵州茅台", industry, "贵州"],
+    })
+
+
+def test_fetch_industry_returns_industry_field():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_individual_info_em.return_value = _info_df_with("食品饮料")
+        assert fetch_industry_akshare("600519") == "食品饮料"
+
+
+def test_fetch_industry_returns_empty_on_missing_field():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_individual_info_em.return_value = pd.DataFrame({
+            "item": ["股票简称"], "value": ["X"]
+        })
+        assert fetch_industry_akshare("600519") == ""
+
+
+def test_fetch_industry_returns_empty_on_exception():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_individual_info_em.side_effect = RuntimeError("net")
+        assert fetch_industry_akshare("600519") == ""
