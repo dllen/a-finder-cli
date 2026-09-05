@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Dict, List, Optional, Set
 
 import akshare as ak
@@ -223,6 +224,27 @@ def fetch_fundamentals_akshare(code: str, close_price: float, dividends: List[tu
         )
 
     return retry_call(_fetch)
+
+
+def fetch_fundamentals_history_akshare(code: str) -> List["FundamentalsHistoryRow"]:
+    """单只股票拉历年财报关键指标（年报列 1231）。失败返回 []。"""
+    from db_repository import FundamentalsHistoryRow
+
+    try:
+        df = ak.stock_financial_abstract(symbol=code)
+    except Exception:
+        return []
+    metrics_by_year = _annual_metrics(df)
+    now = datetime.now().isoformat(timespec="seconds")
+    return [
+        FundamentalsHistoryRow(
+            code=code, year=y,
+            gross_margin=m["gross_margin"], roe_excl=m["roe_excl"],
+            revenue=None, net_profit_excl=None,
+            report_date=f"{y}-12-31", synced_at=now,
+        )
+        for y, m in sorted(metrics_by_year.items(), reverse=True)[:7]
+    ]
 
 
 def fetch_sw_sector_codes(sector_code: str = "801150.SI") -> Set[str]:

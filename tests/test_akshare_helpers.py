@@ -1,6 +1,10 @@
 import pandas as pd
 import pytest
 from akshare_data_provider import _abstract_metric, _annual_metrics
+from datetime import datetime
+from unittest.mock import patch
+
+from akshare_data_provider import fetch_fundamentals_history_akshare
 
 
 def _make_df():
@@ -59,3 +63,37 @@ def test_annual_metrics_extracts_gross_margin_and_roe_excl():
 def test_annual_metrics_empty_or_invalid_returns_empty():
     assert _annual_metrics(None) == {}
     assert _annual_metrics(pd.DataFrame()) == {}
+
+
+def _yearly_df():
+    return pd.DataFrame({
+        "指标": ["毛利率", "净资产收益率(扣非)"],
+        "单位": ["%", "%"],
+        "20241231": [42.5, 18.0],
+        "20231231": [41.0, 17.5],
+        "20221231": [40.5, 16.0],
+        "20240930": [22.0, 9.0],
+    })
+
+
+def test_fetch_returns_one_row_per_annual_report():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_financial_abstract.return_value = _yearly_df()
+        rows = fetch_fundamentals_history_akshare("600519")
+    assert len(rows) == 3
+    years = sorted(r.year for r in rows)
+    assert years == [2022, 2023, 2024]
+
+
+def test_fetch_returns_empty_on_exception():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_financial_abstract.side_effect = RuntimeError("net")
+        rows = fetch_fundamentals_history_akshare("600519")
+    assert rows == []
+
+
+def test_fetch_returns_empty_on_empty_dataframe():
+    with patch("akshare_data_provider.ak") as mock_ak:
+        mock_ak.stock_financial_abstract.return_value = pd.DataFrame()
+        rows = fetch_fundamentals_history_akshare("600519")
+    assert rows == []
