@@ -7,6 +7,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from config import SyncConfig
 from db_repository import (
+    FundamentalsHistoryRow,
     StockMeta,
     get_completed_codes,
     get_fetch_offsets,
@@ -21,8 +22,10 @@ from db_repository import (
     upsert_constituents,
     upsert_fetch_offsets,
     upsert_fundamentals,
+    upsert_fundamentals_history,
     upsert_metadata,
 )
+from akshare_data_provider import fetch_fundamentals_history_akshare
 from data_providers import fetch_daily_kline_with_name, fetch_hs300_constituents, fetch_stock_meta
 from errors import FetchError, InvalidConfigError
 from logger import get_logger
@@ -451,4 +454,64 @@ def sync_fundamentals(
     with conn:
         inserted = upsert_fundamentals(conn, rows)
     logger.info("基本面同步完成: symbols=%s rows=%s pharma=%s", total, inserted, len(pharma_codes))
+    return {"symbols": total, "rows": inserted}
+
+
+def _wrap_retry(func, retries: int, backoff: float):
+    """Wrap a single-argument function with exponential-backoff retry."""
+    def wrapper(code: str):
+        last_error: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                return func(code)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                time.sleep(backoff * (2 ** attempt))
+        if last_error:
+            raise last_error
+    return wrapper
+
+
+def sync_fundamentals_history(
+    db_path: str,
+    *,
+    concurrency: int = 4,
+    rate_limit: float = 3.0,
+    retries: int = 2,
+    backoff: float = 1.0,
+    progress: Optional[Callable[[int, str], None]] = None,
+) -> Dict[str, int]:
+    """同步历年财务指标到 fundamentals_history。失败单只股票降级日志。"""
+    logger = get_logger()
+    conn = open_db(db_path)
+    with conn:
+        codes = get_all_codes(conn)
+    if not codes:
+        raise FetchError("无本地股票代码，无法同步财务历史")
+
+    limiter = RateLimiter(rate_limit)
+    all_rows = []
+    done = 0
+    total = len(codes)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_wrap_retry(fetch_fundamentals_history_akshare, retries, backoff), code): code
+            for code in sorted(codes)
+        }
+        for future in as_completed(futures):
+            code = futures[future]
+            try:
+                rows = future.result() or []
+                all_rows.extend(rows)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("财务历史同步失败: code=%s error=%s", code, exc)
+            done += 1
+            if progress:
+                progress(int(done * 100 / total), f"财务历史 {code}（{done}/{total}）")
+
+    with conn:
+        inserted = upsert_fundamentals_history(conn, all_rows)
+    logger.info("财务历史同步完成: symbols=%s rows=%s", total, inserted)
     return {"symbols": total, "rows": inserted}
