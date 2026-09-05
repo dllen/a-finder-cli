@@ -92,6 +92,18 @@ class FundamentalsRow:
     sector: str = ""
 
 
+@dataclass
+class FundamentalsHistoryRow:
+    code: str
+    year: int
+    gross_margin: float = 0.0
+    roe_excl: float = 0.0
+    revenue: Optional[float] = None
+    net_profit_excl: Optional[float] = None
+    report_date: str = ""
+    synced_at: str = ""
+
+
 def upsert_fundamentals(conn: sqlite3.Connection, rows: Iterable[FundamentalsRow]) -> int:
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     data = [
@@ -122,6 +134,65 @@ def upsert_fundamentals(conn: sqlite3.Connection, rows: Iterable[FundamentalsRow
         data,
     )
     return len(data)
+
+
+def upsert_fundamentals_history(
+    conn: sqlite3.Connection,
+    rows: Iterable[FundamentalsHistoryRow],
+) -> int:
+    data = [
+        (r.code, r.year, r.gross_margin, r.roe_excl,
+         r.revenue, r.net_profit_excl, r.report_date, r.synced_at)
+        for r in rows
+    ]
+    if not data:
+        return 0
+    conn.executemany(
+        """
+        INSERT INTO fundamentals_history
+            (code, year, gross_margin, roe_excl, revenue, net_profit_excl, report_date, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code, year) DO UPDATE SET
+            gross_margin=excluded.gross_margin,
+            roe_excl=excluded.roe_excl,
+            revenue=excluded.revenue,
+            net_profit_excl=excluded.net_profit_excl,
+            report_date=excluded.report_date,
+            synced_at=excluded.synced_at
+        """,
+        data,
+    )
+    return len(data)
+
+
+def get_fundamentals_history_by_code(
+    conn: sqlite3.Connection, code: str
+) -> List[FundamentalsHistoryRow]:
+    cur = conn.execute(
+        "SELECT code, year, gross_margin, roe_excl, revenue, net_profit_excl, "
+        "report_date, synced_at FROM fundamentals_history WHERE code = ? ORDER BY year DESC",
+        (code,),
+    )
+    return [FundamentalsHistoryRow(*r) for r in cur.fetchall()]
+
+
+def upsert_constituents(conn: sqlite3.Connection, mapping: Dict[str, str]) -> None:
+    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for code, name in mapping.items():
+        exchange = "SH" if code.startswith(("60", "688")) else "SZ"
+        rows.append((code, name, exchange, now))
+    conn.executemany(
+        """
+        INSERT INTO hs300_constituents (code, name, exchange, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+            name=excluded.name,
+            exchange=excluded.exchange,
+            updated_at=excluded.updated_at
+        """,
+        rows,
+    )
 
 
 _FUNDAMENTALS_COLS = (
