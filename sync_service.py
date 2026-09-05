@@ -25,7 +25,7 @@ from db_repository import (
     upsert_fundamentals_history,
     upsert_metadata,
 )
-from akshare_data_provider import fetch_fundamentals_history_akshare
+from akshare_data_provider import fetch_fundamentals_history_akshare, fetch_industry_akshare
 from data_providers import fetch_daily_kline_with_name, fetch_hs300_constituents, fetch_stock_meta
 from errors import FetchError, InvalidConfigError
 from logger import get_logger
@@ -514,4 +514,60 @@ def sync_fundamentals_history(
     with conn:
         inserted = upsert_fundamentals_history(conn, all_rows)
     logger.info("财务历史同步完成: symbols=%s rows=%s", total, inserted)
+    return {"symbols": total, "rows": inserted}
+
+
+def sync_industry(
+    db_path: str,
+    *,
+    concurrency: int = 4,
+    rate_limit: float = 3.0,
+    retries: int = 2,
+    backoff: float = 1.0,
+    progress: Optional[Callable[[int, str], None]] = None,
+) -> Dict[str, int]:
+    """从 akshare 拉单只股票行业回填 hs300_metadata.industry。空字符串不覆盖。"""
+    from db_repository import StockMeta
+
+    logger = get_logger()
+    conn = open_db(db_path)
+    with conn:
+        codes = get_all_codes(conn)
+        existing = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT code, COALESCE(name, code) FROM hs300_metadata"
+            ).fetchall()
+        }
+    if not codes:
+        raise FetchError("无本地股票代码，无法同步行业")
+
+    limiter = RateLimiter(rate_limit)
+    industry_map: Dict[str, str] = {}
+    done = 0
+    total = len(codes)
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_wrap_retry(fetch_industry_akshare, retries, backoff), code): code
+            for code in sorted(codes)
+        }
+        for future in as_completed(futures):
+            code = futures[future]
+            try:
+                industry = future.result() or ""
+                if industry:
+                    industry_map[code] = industry
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("行业同步失败: code=%s error=%s", code, exc)
+            done += 1
+            if progress:
+                progress(int(done * 100 / total), f"行业 {code}（{done}/{total}）")
+
+    rows = [
+        StockMeta(code=c, name=existing.get(c, c), industry=ind, region="")
+        for c, ind in industry_map.items()
+    ]
+    with conn:
+        inserted = upsert_metadata(conn, rows)
+    logger.info("行业同步完成: symbols=%s rows=%s", total, inserted)
     return {"symbols": total, "rows": inserted}
