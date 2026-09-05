@@ -25,6 +25,9 @@ uv sync
 - meta：按股票代码查询元数据
 - ui：启动 Textual 美化界面，可用 --top / --code / --db 控制展示
 - plan：交易计划（paper-trade 纸面交易），子命令 `build` [--capital] [--backfill]
+- linyuan-picks：林园策略选股，财务质量主导（连续5年毛利率>40% ∧ 扣非ROE>15%），过滤医药/中药/食品饮料/高端制造
+- sync-fundamentals-history：同步历年财务到 fundamentals_history
+- sync-industry：从 akshare 拉行业回填 hs300_metadata.industry
 - sync-hs300-range：同步沪深 300 区间数据，常用参数：
   - --start / --end：同步起止日期
   - --db：输出数据库文件
@@ -56,6 +59,10 @@ uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.
 uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.db --only-failed
 uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.db --gap-fill
 uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.db --retry-gaps
+uv run a-finder linyuan-picks --top 20
+uv run a-finder linyuan-picks --top 20 --dry-run
+uv run a-finder sync-industry --db hs300.db
+uv run a-finder sync-fundamentals-history --db hs300.db --concurrency 6 --rate 5
 ```
 
 日志输出：
@@ -149,6 +156,26 @@ bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
 - 第 2 个参数：选股数量 top，默认 `10`
 - 第 3 个参数：选股模式，支持 `pick-history` / `picks` / `ma-picks`，默认 `pick-history`（写入 `daily_picks` 表供看板/静态站点使用）
 - 第 4 个及之后参数：透传给 `sync-hs300 --mode incremental`，可直接传 `--limit`、`--log-level` 等同步参数
+
+## 林园策略 / LinYuan
+
+财务质量主导的选股策略：行业白名单 + 连续 5 年毛利率/扣非 ROE 双门槛。
+
+| 维度 | 阈值 |
+|---|---|
+| 行业 | 医药生物 / 中药 / 食品饮料 / 机械设备 / 电力设备 / 汽车整车 |
+| 毛利率（连续 5 年） | > 40% |
+| 扣非 ROE（连续 5 年） | > 15% |
+
+**数据底座**：先用 `sync-industry` 回填 `hs300_metadata.industry`，再 `sync-fundamentals-history` 拉历年财务指标到 `fundamentals_history`。两表缺一不可。
+
+```bash
+uv run a-finder sync-industry --db hs300.db                     # 一次性回填行业
+uv run a-finder sync-fundamentals-history --db hs300.db         # 拉历年财务
+uv run a-finder linyuan-picks --top 20                          # 跑林园策略
+```
+
+输出落在终端表格；`--dry-run` 仅打印候选不写库。
 
 ## 交易计划 / Trade Plan
 
