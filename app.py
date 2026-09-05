@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import traceback
+import urllib.parse
 import uuid
 from datetime import datetime as _dt_class
 
@@ -24,6 +25,19 @@ _LOGO = (
     '<path d="M3 19 L21 8" stroke="#8896a6" stroke-width="1.3" stroke-dasharray="3 2"/>'
     '</svg>'
 )
+
+# 同款 bar-chart 作为 favicon：内联 SVG data URI，免文件、Flask/静态站共用。
+# 类名 / aria-hidden 等仅 nav 用得到的属性已剥离；viewBox 24x24 在 16/32px 下都清晰。
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<rect x="4" y="9" width="2.4" height="8" rx="0.6" fill="#5b8def"/>'
+    '<rect x="8.6" y="5" width="2.4" height="12" rx="0.6" fill="#34c98e"/>'
+    '<rect x="13.2" y="11" width="2.4" height="6" rx="0.6" fill="#ef6c6c"/>'
+    '<rect x="17.8" y="3" width="2.4" height="14" rx="0.6" fill="#34c98e"/>'
+    '<path d="M3 19 L21 8" stroke="#8896a6" stroke-width="1.3" stroke-dasharray="3 2" fill="none"/>'
+    '</svg>'
+)
+_FAVICON_HREF = "data:image/svg+xml;utf8," + urllib.parse.quote(_FAVICON_SVG, safe="")
 
 _APP_CSS = """:root{
   --brand:#16263a;
@@ -188,6 +202,7 @@ _SHELL = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
+<link rel="icon" type="image/svg+xml" href="__FAVICON__">
 <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
 <style>__CSS__</style>
 </head>
@@ -218,6 +233,7 @@ def _page(title: str, active: str, body: str, script: str, config: str = "", ass
         .replace("__FOOTER__", _footer())
         .replace("__CONFIG__", config)
         .replace("__ASSETS__", assets)
+        .replace("__FAVICON__", _FAVICON_HREF)
         .replace("__SCRIPT__", script)
     )
 
@@ -476,6 +492,11 @@ $(function(){
   $.getJSON('/api/stats', drawStats);
 });"""
 
+_TIER_FILTER_OPTIONS = "".join(
+    f'<li><label class="dropdown-item"><input type="checkbox" class="form-check-input me-1 tier-filter-cb" value="{c}"> {c//10000}W</label></li>'
+    for c in CAPITAL_TIERS
+)
+
 PLAN_BODY = """<main class="container py-4">
   <div class="page-header">
     <h1 class="h3 mb-0 page-title">交易计划 <span class="badge bg-secondary align-middle">paper</span></h1>
@@ -490,18 +511,34 @@ PLAN_BODY = """<main class="container py-4">
     </div>
     <div class="filter-group">
       <label class="form-label" for="capital-group">资金</label>
-      <div id="capital-group" class="btn-group btn-group-sm" role="group" aria-label="资金档位">
+      <div id="capital-group" class="btn-group btn-group-sm flex-wrap" role="group" aria-label="资金档位">
         <button type="button" class="btn btn-outline-primary capital-btn" data-capital="50000">5W</button>
         <button type="button" class="btn btn-outline-primary capital-btn" data-capital="100000">10W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="150000">15W</button>
         <button type="button" class="btn btn-outline-primary capital-btn" data-capital="200000">20W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="250000">25W</button>
         <button type="button" class="btn btn-outline-primary capital-btn" data-capital="300000">30W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="350000">35W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="400000">40W</button>
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="450000">45W</button>
         <button type="button" class="btn btn-outline-primary capital-btn" data-capital="500000">50W</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="form-label">档位筛选（交集）</label>
+      <div class="dropdown" id="tier-filter-dd">
+        <button id="tier-filter-btn" class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <span id="tier-filter-label">不限</span>
+        </button>
+        <ul class="dropdown-menu p-2" aria-labelledby="tier-filter-btn">{{tier_filter}}</ul>
       </div>
     </div>
     <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选">
     <button id="btn-build" class="btn btn-primary write-control">生成 plan</button>
     <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
       <label for="include-failed" class="form-check-label">含 failed</label></div>
+    <div class="form-check"><input id="only-affordable" type="checkbox" class="form-check-input">
+      <label for="only-affordable" class="form-check-label">只显示可建仓</label></div>
   </div>
   <div id="status" class="mb-3"></div>
   <div id="prog" class="mb-3"></div>
@@ -512,9 +549,10 @@ PLAN_BODY = """<main class="container py-4">
   <div id="holdings"></div>
 </main>"""
 
-PLAN_SCRIPT = """var PLAN_STATE = { data: null, filter: '', capital: 100000 };
-var CAPITAL_TIERS = [50000, 100000, 200000, 300000, 500000]; // 与 config.py CAPITAL_TIERS 同步
-var CAPITAL_LABELS = {50000:'5W',100000:'10W',200000:'20W',300000:'30W',500000:'50W'};
+PLAN_SCRIPT = """var PLAN_STATE = { data: null, filter: '', capital: 100000, onlyAffordable: false, tierFilter: [] };
+var CAPITAL_TIERS = [50000, 100000, 150000, 200000, 250000, 300000, 350000, 400000, 450000, 500000]; // 与 config.py CAPITAL_TIERS 同步（5W-50W step 5W，10 档）
+var CAPITAL_LABELS = {};
+CAPITAL_TIERS.forEach(function(c){ CAPITAL_LABELS[c] = (c/10000) + 'W'; });
 function sizeShares(capital, sizePct, price){ // 与 shared_lib/strategy.py size_shares 同式
   if (!(capital > 0) || !(sizePct > 0) || !(price > 0)) return 0;
   return Math.floor(capital * sizePct / (price * 100)) * 100;
@@ -525,6 +563,21 @@ function rowShares(r){
 }
 function insufficientLot(r){
   return r.action === 'buy' && (r.size_pct || 0) > 0 && rowShares(r) === 0;
+}
+function tierSharesHtml(r){
+  // 仅 buy 行渲染各档位股数子表；hold/exit 不随资金变化，跳过
+  if (r.action !== 'buy' || !(r.plan_price > 0)) return '';
+  var heads = [], bodyCells = [];
+  CAPITAL_TIERS.forEach(function(c){
+    var label = CAPITAL_LABELS[c] || (c/10000) + 'W';
+    heads.push('<th class="tier-label" data-tier="'+c+'">'+label+'</th>');
+    var s = sizeShares(c, r.size_pct, r.plan_price);
+    var cell = s > 0 ? s : '<span class="text-warning">0</span>';
+    bodyCells.push('<td class="num" data-tier="'+c+'">'+cell+'</td>');
+  });
+  return '<details class="tier-shares-wrap"><summary class="text-muted">各档股数 5W-50W</summary>' +
+    '<table class="tier-shares-table table table-sm table-borderless mb-0 mt-1"><thead><tr>'+
+    heads.join('')+'</tr></thead><tbody><tr>'+bodyCells.join('')+'</tr></tbody></table></details>';
 }
 function matchFilter(r, q){
   if (!q) return true;
@@ -543,10 +596,13 @@ function row(r){
   var meta = actionMeta(r.action);
   var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
   var sharesHtml = insufficientLot(r) ? '0 <span class="text-warning small">资金不足一手</span>' : rowShares(r);
-  var rationale;
+  // rationale_json 解析一次：策略提取 + 折叠详情共用
+  var rationale = '<span class="text-muted">—</span>';
+  var strategy = '—';
   try {
     var obj = JSON.parse(r.rationale_json || '{}');
-    var keys = Object.keys(obj);
+    if (obj && obj.strategy) strategy = String(obj.strategy);
+    var keys = Object.keys(obj || {});
     rationale = keys.length
       ? '<details><summary class="text-muted">'+keys.length+' 字段</summary>' +
         '<pre class="mb-0 small">' + JSON.stringify(obj, null, 2) + '</pre></details>'
@@ -557,6 +613,7 @@ function row(r){
   return '<tr><td class="code">'+esc(r.code)+'</td>' +
     '<td>'+(r.name?esc(r.name):'<span class="text-muted">—</span>')+'</td>' +
     '<td><span class="badge '+meta.cls+'">'+meta.label+'</span></td>' +
+    '<td>'+esc(strategy)+'</td>' +
     '<td class="num">'+fmt(r.plan_price)+'</td>' +
     '<td class="num">'+sizePct+'</td>' +
     '<td class="num">'+sharesHtml+'</td>' +
@@ -565,7 +622,7 @@ function row(r){
     '<td class="num">'+fmt(r.rr_ratio)+'</td>' +
     '<td><span class="badge '+statusBadge(r.status)+'">'+r.status+'</span>' +
       (r.reason? ' <small class="text-muted">'+esc(r.reason)+'</small>':'')+'</td>' +
-    '<td>'+rationale+'</td></tr>';
+    '<td>'+tierSharesHtml(r)+rationale+'</td></tr>';
 }
 function render(date){
   showBoardLoading();
@@ -576,7 +633,16 @@ function render(date){
 }
 function drawPlan(data){
     var allRows = (data.rows || []);
-    var rows = allRows.filter(function(r){ return matchFilter(r, PLAN_STATE.filter); });
+    var rows = allRows.filter(function(r){ return matchFilter(r, PLAN_STATE.filter); })
+                      .filter(function(r){ return !PLAN_STATE.onlyAffordable || !insufficientLot(r); })
+                      .filter(function(r){
+                        // 档位筛选（交集）：空表示不限；非空时 row 必须在每个选中档位下都能建仓
+                        if (!PLAN_STATE.tierFilter.length) return true;
+                        for (var i = 0; i < PLAN_STATE.tierFilter.length; i++){
+                          if (sizeShares(PLAN_STATE.tierFilter[i], r.size_pct, r.plan_price) === 0) return false;
+                        }
+                        return true;
+                      });
     if (!rows.length) { $('#board').html('<div class="empty-state">' + (allRows.length ? '无匹配筛选结果' : '该日期暂无 plan') + '</div>'); return; }
     var groups = {buy:[], hold:[], exit:[]};
     rows.forEach(function(r){
@@ -614,13 +680,15 @@ function drawPlan(data){
       var meta = actionMeta(a);
       html += '<h2 class="section-title"><span class="badge '+meta.cls+'">'+meta.label+'</span> <small class="text-muted">'+rs.length+' 只</small></h2>';
       html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
-        '<th>代码</th><th>名称</th><th>方向</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">股数</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
+        '<th>代码</th><th>名称</th><th>方向</th><th>策略</th><th class="num">计划价</th><th class="num">仓位</th><th class="num">股数</th><th class="num">止损</th><th class="num">止盈</th><th class="num">RR</th><th>状态</th><th>理由</th>' +
         '</tr></thead><tbody>' + rs.map(row).join('') + '</tbody></table></div>';
       // 移动端：grid 卡片，每行数据一张卡片
       html += '<div class="app-card d-md-none mb-3">';
       rs.forEach(function(r){
         var sizePct = r.size_pct==null ? '—' : (r.size_pct*100).toFixed(1) + '%';
         var meta = actionMeta(r.action);
+        var cardStrategy = '—';
+        try { var _so = JSON.parse(r.rationale_json || '{}'); if (_so && _so.strategy) cardStrategy = String(_so.strategy); } catch(e) {}
         html += '<div class="plan-card">'+
           '<div class="card-header-row">'+
             '<span class="code fw-semibold">'+esc(r.code)+'</span>'+
@@ -629,6 +697,7 @@ function drawPlan(data){
             '<span class="badge '+statusBadge(r.status)+'">'+esc(r.status)+'</span>'+
           '</div>'+
           '<div class="kv-grid">'+
+            '<span class="k">策略</span><span class="v wrap">'+esc(cardStrategy)+'</span>'+
             '<span class="k">计划价</span><span class="v num">'+fmt(r.plan_price)+'</span>'+
             '<span class="k">仓位</span><span class="v num">'+sizePct+'</span>'+
             '<span class="k">股数</span><span class="v num">'+(insufficientLot(r)?'0 <span class="text-warning small">资金不足一手</span>':rowShares(r))+'</span>'+
@@ -637,6 +706,7 @@ function drawPlan(data){
             '<span class="k">RR</span><span class="v num">'+fmt(r.rr_ratio)+'</span>'+
           '</div>'+
           (r.reason? '<div class="small text-muted mt-1">'+esc(r.reason)+'</div>':'')+
+          tierSharesHtml(r)+
         '</div>';
       });
       html += '</div>';
@@ -744,6 +814,14 @@ function loadHoldings(){ dsFetchHoldings().done(drawHoldings).fail(function(){ $
 $(function(){
   $('#d').on('change', function(){ render($(this).val()); });
   $('#include-failed').on('change', function(){ var d = $('#d').val(); if (d) render(d); });
+  $('#only-affordable').on('change', function(){ PLAN_STATE.onlyAffordable = $(this).is(':checked'); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
+  $('.tier-filter-cb').on('change', function(){
+    PLAN_STATE.tierFilter = $('.tier-filter-cb:checked').map(function(){ return parseInt($(this).val(), 10); }).get();
+    $('#tier-filter-label').text(PLAN_STATE.tierFilter.length
+      ? PLAN_STATE.tierFilter.map(function(c){ return CAPITAL_LABELS[c] || (c/10000)+'W'; }).join('+')
+      : '不限');
+    if (PLAN_STATE.data) drawPlan(PLAN_STATE.data);
+  });
   $('#q').on('input', function(){ PLAN_STATE.filter = $(this).val().trim(); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
   $('#btn-build').on('click', buildPlan);
   $('#capital-group .capital-btn').on('click', function(){
@@ -915,7 +993,7 @@ def create_app(db_path="hs300.db", top=10):
         today = _date.today().isoformat()
         return _page(
             "每日 Plan", "plan",
-            PLAN_BODY.replace("{{today}}", today),
+            PLAN_BODY.replace("{{today}}", today).replace("{{tier_filter}}", _TIER_FILTER_OPTIONS),
             PLAN_SCRIPT,
         )
 

@@ -40,6 +40,7 @@ from app import (
     list_dates,
     picks_for_date,
     _dt_class,
+    _TIER_FILTER_OPTIONS,
 )
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
@@ -158,7 +159,9 @@ def export(db_path: str, out_dir: str) -> int:
     )
     (out / "plan.html").write_text(
         _page("每日 Plan", "plan",
-              _strip_write_controls(PLAN_BODY).replace("{{today}}", plan_default),
+              _strip_write_controls(PLAN_BODY)
+                  .replace("{{today}}", plan_default)
+                  .replace("{{tier_filter}}", _TIER_FILTER_OPTIONS),
               PLAN_SCRIPT, config=STATIC_CONFIG, assets="static/"),
         encoding="utf-8",
     )

@@ -17,5 +17,6 @@ SLIPPAGE = 0.001       # paper-trade fill slippage (0.1%)
 STOP_ATR_MULT = 2.0    # ATR multiple for stop
 
 # Initial-capital tiers for the daily plan (元). Default active capital = 10W.
-CAPITAL_TIERS = [50000, 100000, 200000, 300000, 500000]
+# 5W → 50W every 5W（10 档），CLI/页面/plan_builder 共用同一份。
+CAPITAL_TIERS = [50000, 100000, 150000, 200000, 250000, 300000, 350000, 400000, 450000, 500000]
 DEFAULT_CAPITAL = 100000
