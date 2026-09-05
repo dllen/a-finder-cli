@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List, Optional, Set
 
 import akshare as ak
@@ -98,6 +99,21 @@ def _abstract_metric(df, name: str, col: Optional[str] = None) -> Optional[List[
             except (TypeError, ValueError):
                 values.append(float("nan"))
     return values
+
+
+def _annual_metrics(df) -> Dict[int, dict]:
+    """从 stock_financial_abstract DataFrame 抽年报关键指标。列名格式：YYYYMMDD。"""
+    out: Dict[int, dict] = {}
+    if df is None or df.empty:
+        return out
+    annual_cols = [c for c in df.columns[2:] if re.match(r"^\d{4}1231$", str(c))]
+    for col in annual_cols:
+        year = int(str(col)[:4])
+        out[year] = {
+            "gross_margin": _first_valid(_abstract_metric(df, "毛利率", col=col) or []),
+            "roe_excl": _first_valid(_abstract_metric(df, "净资产收益率(扣非)", col=col) or []),
+        }
+    return out
 
 
 def _first_valid(values: Optional[List[float]]) -> float:
