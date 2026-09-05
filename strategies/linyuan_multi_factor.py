@@ -18,19 +18,13 @@ class LinYuanConfig:
     continuity_years: int = 5
 
 
-def _sector_matches(sector: str, whitelist: Tuple[str, ...]) -> bool:
-    """Case-insensitive substring match: each whitelist entry must appear in sector."""
-    sl = sector.lower()
-    return any(w.lower() in sl for w in whitelist)
-
-
 def passes_linyuan_filter(
     sector: str,
     history: List[FundamentalsHistoryRow],
     config: LinYuanConfig,
 ) -> bool:
     """行业白名单 + 连续 N 年 (gross_margin > min AND roe_excl > min)。"""
-    if not _sector_matches(sector, config.industries):
+    if sector not in config.industries:
         return False
     if len(history) < config.continuity_years:
         return False
