@@ -11,6 +11,158 @@ from pick_history import run_picks
 from config import CAPITAL_TIERS, DEFAULT_CAPITAL
 
 
+PORTFOLIO_BODY = """<main class="container py-4">
+  <h2 class="mb-3">持仓组合 <small class="text-muted fs-6">[paper]</small></h2>
+
+  <div class="row g-2 align-items-end mb-3">
+    <div class="col-auto">
+      <label class="form-label mb-0">日期</label>
+      <input type="date" id="pf-date" class="form-control form-control-sm" value="{{today}}">
+    </div>
+    <div class="col-auto">
+      <label class="form-label mb-0">策略</label>
+      <select id="pf-strategy" class="form-select form-select-sm">
+        <option value="linyuan" selected>林园</option>
+        <option value="ma-picks">均线</option>
+        <option value="buy-signals">买入信号</option>
+      </select>
+    </div>
+    <div class="col-auto ms-auto small text-muted">
+      <span class="me-2">基准：所有 tier 共用同一组 daily_picks；按 capital 等权分配</span>
+    </div>
+  </div>
+
+  <h5 class="mt-4">资金档位</h5>
+  <div class="d-flex flex-row overflow-auto pb-2 gap-2" id="pf-tier-cards"></div>
+
+  <h5 class="mt-4">累计收益对比</h5>
+  <div style="position:relative; height:280px;">
+    <canvas id="pf-returns-chart"></canvas>
+  </div>
+
+  <div id="pf-detail" class="mt-4"></div>
+</main>"""
+
+
+PORTFOLIO_SCRIPT = """
+window.PORTFOLIO_PAGE = true;
+function tierCard(t) {
+  const cls = t.return_rate >= 0 ? 'border-success' : 'border-danger';
+  const sign = t.return_rate >= 0 ? '+' : '';
+  return `
+    <div class="card ${cls} pf-tier-card" data-label="${t.label}" style="min-width:120px; cursor:pointer;">
+      <div class="card-body p-2 text-center">
+        <div class="fw-bold fs-5">${t.label}</div>
+        <div class="small text-muted">${(t.capital/10000).toFixed(0)}万</div>
+        <div class="fs-6 mt-1 ${t.return_rate>=0?'text-success':'text-danger'}">
+          ${sign}${(t.return_rate*100).toFixed(2)}%
+        </div>
+        <div class="small text-muted">
+          ¥${t.total_value.toFixed(0)}
+        </div>
+      </div>
+    </div>`;
+}
+
+async function loadPortfolio() {
+  const date = document.getElementById('pf-date').value;
+  const resp = await fetch(`/api/portfolio/summary?date=${date}`);
+  const data = await resp.json();
+  const cards = document.getElementById('pf-tier-cards');
+  cards.innerHTML = data.tiers.map(tierCard).join('');
+  cards.querySelectorAll('.pf-tier-card').forEach(el => {
+    el.addEventListener('click', () => selectTier(el.dataset.label, date));
+  });
+  drawReturnsChart(data.tiers);
+  if (data.tiers.length) selectTier('10W', date);
+}
+
+function drawReturnsChart(tiers) {
+  const ctx = document.getElementById('pf-returns-chart').getContext('2d');
+  if (window._pfChart) window._pfChart.destroy();
+  window._pfChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: tiers.map(t => t.label),
+      datasets: [{
+        label: '累计收益率',
+        data: tiers.map(t => +(t.return_rate * 100).toFixed(2)),
+        backgroundColor: tiers.map(t => t.return_rate >= 0 ? '#22c55e' : '#ef4444'),
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { ticks: { callback: v => v + '%' } },
+      },
+    },
+  });
+}
+
+async function selectTier(label, date) {
+  cards = document.querySelectorAll('.pf-tier-card');
+  cards.forEach(c => c.classList.remove('border-primary', 'shadow'));
+  const active = document.querySelector(`.pf-tier-card[data-label="${label}"]`);
+  if (active) active.classList.add('border-primary', 'shadow');
+  const resp = await fetch(`/api/portfolio/${encodeURIComponent(label)}?date=${date}`);
+  const data = await resp.json();
+  if (!resp.ok) return;
+  renderDetail(data);
+}
+
+function renderDetail(d) {
+  const detail = document.getElementById('pf-detail');
+  const pnl = d.pnl;
+  const used = pnl.initial_capital - pnl.cash_remaining;
+  const util = (used / pnl.initial_capital * 100).toFixed(1);
+  const html = `
+    <h5>${d.label} <small class="text-muted">资金 ${pnl.initial_capital.toLocaleString()} 元</small></h5>
+    <div class="row g-2 mb-3">
+      <div class="col-auto"><span class="badge bg-secondary">已用 ¥${used.toLocaleString()}</span></div>
+      <div class="col-auto"><span class="badge bg-info">现金 ¥${pnl.cash_remaining.toLocaleString()}</span></div>
+      <div class="col-auto"><span class="badge bg-warning text-dark">利用率 ${util}%</span></div>
+      <div class="col-auto"><span class="badge ${pnl.unrealized_pnl>=0?'bg-success':'bg-danger'}">
+        未实现 ¥${pnl.unrealized_pnl.toFixed(0)}
+      </span></div>
+      <div class="col-auto"><span class="badge bg-dark">已实现 ¥${pnl.realized_pnl.toFixed(0)}</span></div>
+    </div>
+    <h6>当日计划</h6>
+    <table class="table table-sm">
+      <thead><tr><th>动作</th><th>代码</th><th>价格</th><th>仓位%</th><th>止损</th><th>止盈</th><th>状态</th></tr></thead>
+      <tbody>
+        ${d.plan_rows.map(r => `<tr>
+          <td>${r.action}</td><td>${r.code}</td>
+          <td>${r.plan_price.toFixed(2)}</td>
+          <td>${(r.size_pct*100).toFixed(1)}%</td>
+          <td>${r.stop_price.toFixed(2)}</td>
+          <td>${r.tp_price.toFixed(2)}</td>
+          <td>${r.status}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <h6>当前持仓</h6>
+    <table class="table table-sm">
+      <thead><tr><th>代码</th><th>成本</th><th>现价</th><th>股数</th><th>浮盈</th></tr></thead>
+      <tbody>
+        ${d.holdings.items.map(it => `<tr>
+          <td>${it.code}</td>
+          <td>${it.entry_price.toFixed(2)}</td>
+          <td>${(it.current_price||0).toFixed(2)}</td>
+          <td>${it.shares}</td>
+          <td class="${(it.floating_pnl||0)>=0?'text-success':'text-danger'}">
+            ¥${(it.floating_pnl||0).toFixed(0)}
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  detail.innerHTML = html;
+}
+
+document.getElementById('pf-date').addEventListener('change', loadPortfolio);
+window.addEventListener('DOMContentLoaded', loadPortfolio);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Shared UI shell: logo + top nav + footer + CSS
 # ---------------------------------------------------------------------------
@@ -180,6 +332,7 @@ def _footer() -> str:
 
 def _nav(active: str) -> str:
     picks_cls = "nav-link active" if active == "picks" else "nav-link"
+    portfolio_cls = "nav-link active" if active == "portfolio" else "nav-link"
     plan_cls = "nav-link active" if active == "plan" else "nav-link"
     return (
         '<nav class="navbar navbar-expand-md app-nav">'
@@ -191,6 +344,7 @@ def _nav(active: str) -> str:
         '<div class="collapse navbar-collapse" id="appNav">'
         '<div class="navbar-nav ms-auto">'
         f'<a class="{picks_cls}" data-nav="picks" href="/">每日机会</a>'
+        f'<a class="{portfolio_cls}" data-nav="portfolio" href="/portfolio">持仓组合</a>'
         f'<a class="{plan_cls}" data-nav="plan" href="/plan">交易计划</a>'
         '</div></div></div></nav>'
     )
@@ -1167,6 +1321,90 @@ def create_app(db_path="hs300.db", top=10):
             for m, b in sorted(monthly.items())
         ]
         return jsonify({"strategies": strategies, "monthly": monthly_list})
+
+    # ---- Portfolio tiers ----
+    from config import CAPITAL_TIERS
+    from db_repository import compute_portfolio_pnl, get_open_positions_with_unrealized
+
+    @app.get("/portfolio")
+    def portfolio_page():
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        return _page("持仓组合", "portfolio",
+                     PORTFOLIO_BODY.replace("{{today}}", today),
+                     PORTFOLIO_SCRIPT)
+
+    def _portfolio_label_to_capital(label: str):
+        """'10W' → 100000；None if label doesn't match a known tier."""
+        for c in CAPITAL_TIERS:
+            if f"{c // 10000}W" == label:
+                return c
+        return None
+
+    @app.get("/api/portfolio/summary")
+    def api_portfolio_summary():
+        date = request.args.get("date", "")
+        conn = open_conn(db_path)
+        try:
+            tiers = []
+            for capital in CAPITAL_TIERS:
+                label = f"{capital // 10000}W"
+                pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
+                last = conn.execute(
+                    "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio=?",
+                    (label,),
+                ).fetchone()[0]
+                tiers.append({
+                    "label": label,
+                    "capital": capital,
+                    "cash_remaining": pnl["cash_remaining"],
+                    "position_value": pnl["position_value"],
+                    "total_value": pnl["total_value"],
+                    "realized_pnl": pnl["realized_pnl"],
+                    "unrealized_pnl": pnl["unrealized_pnl"],
+                    "return_rate": pnl["return_rate"],
+                    "last_plan_date": last,
+                })
+        finally:
+            conn.close()
+        return jsonify({"date": date, "tiers": tiers})
+
+    @app.get("/api/portfolio/<label>")
+    def api_portfolio_detail(label):
+        capital = _portfolio_label_to_capital(label)
+        if capital is None:
+            return jsonify({"error": f"unknown portfolio: {label}"}), 404
+        date = request.args.get("date", "")
+        conn = open_conn(db_path)
+        try:
+            pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
+            holdings = get_open_positions_with_unrealized(conn, portfolio=label)
+            plan_rows = []
+            if date:
+                cur = conn.execute(
+                    "SELECT tp.*, m.name AS name FROM trade_plan tp "
+                    "LEFT JOIN hs300_metadata m ON m.code = tp.code "
+                    "WHERE tp.plan_date=? AND tp.portfolio=? "
+                    "ORDER BY tp.action DESC, tp.code",
+                    (date, label),
+                )
+                cols = [d[0] for d in cur.description]
+                plan_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            last = conn.execute(
+                "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio=?",
+                (label,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        return jsonify({
+            "label": label,
+            "capital": capital,
+            "date": date,
+            "pnl": pnl,
+            "holdings": holdings,
+            "plan_rows": plan_rows,
+            "last_plan_date": last,
+        })
 
     return app
 
