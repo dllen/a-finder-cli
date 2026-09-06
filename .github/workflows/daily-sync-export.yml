@@ -44,6 +44,11 @@ jobs:
           bash sync_incremental_pick.sh hs300.db 20 pick-history
           python stock_cli.py plan --db hs300.db --date "$(date +%F)"
 
+      - name: Build all tier portfolios
+        run: |
+          python stock_cli.py plan build-all --db hs300.db \
+            --strategy linyuan --tiers 50000,100000,150000,200000,250000,300000,350000,400000,450000,500000
+
       - name: Export static site
         run: |
           python export_json.py --db hs300.db --out site
