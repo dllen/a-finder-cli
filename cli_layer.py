@@ -229,23 +229,45 @@ def build_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
 
     plan_parser = subparsers.add_parser("plan", help="生成 / 查看每日交易计划（paper）")
-    plan_parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD（默认今日）")
-    plan_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
-    plan_parser.add_argument("--rr-target", type=float, default=None, help="止盈/止损比（覆盖 config）")
-    plan_parser.add_argument("--max-single", type=float, default=None, help="单只最大仓位（覆盖 config）")
-    plan_parser.add_argument("--slippage", type=float, default=None, help="纸面撮合滑点（覆盖 config）")
-    plan_parser.add_argument("--regime", type=str, default=None,
-                              choices=["bull", "bear", "sideways"], help="市场状态")
-    plan_parser.add_argument("--capital", type=int, default=None, choices=CAPITAL_TIERS,
-                              metavar="资金", help="初始资金（元）：50000/100000/200000/300000/500000，默认 10W")
-    plan_parser.add_argument("--dry-run", action="store_true", help="仅打印将处理的日期，不写库")
-    plan_parser.add_argument("--list", dest="list_mode", action="store_true",
-                              help="列出最近 N 天已生成的 plan")
-    plan_parser.add_argument("--days", type=int, default=30, help="--list 时回看天数")
-    plan_parser.add_argument("--show", dest="show_mode", action="store_true",
-                              help="显示某日 plan 详情（含 failed 行）")
-    plan_parser.add_argument("--backfill", action="store_true",
-                              help="为所有历史 daily_picks 日期补齐 plan（不纸面成交）")
+    plan_sub = plan_parser.add_subparsers(dest="action")
+
+    # plan build
+    pb = plan_sub.add_parser("build", help="生成单 portfolio 的 plan")
+    pb.add_argument("--date", type=str, default=None, help="YYYY-MM-DD（默认今日）")
+    pb.add_argument("--db", type=str, default="hs300.db")
+    pb.add_argument("--rr-target", type=float, default=None)
+    pb.add_argument("--max-single", type=float, default=None)
+    pb.add_argument("--slippage", type=float, default=None)
+    pb.add_argument("--regime", type=str, default=None,
+                    choices=["bull", "bear", "sideways"])
+    pb.add_argument("--capital", type=int, default=None, choices=CAPITAL_TIERS, metavar="资金")
+    pb.add_argument("--portfolio", type=str, default="default",
+                    help="portfolio label（如 '10W'），默认 'default'")
+    pb.add_argument("--dry-run", action="store_true")
+    pb.add_argument("--backfill", action="store_true",
+                    help="补齐所有历史 daily_picks 日期的 plan")
+    pb.add_argument("--list", dest="list_mode", action="store_true")
+    pb.add_argument("--days", type=int, default=30)
+    pb.add_argument("--show", dest="show_mode", action="store_true")
+
+    # plan build-all
+    pba = plan_sub.add_parser("build-all", help="为所有资金档位批量生成 plan")
+    pba.add_argument("--date", type=str, default=None, help="YYYY-MM-DD（默认今日）")
+    pba.add_argument("--db", type=str, default="hs300.db")
+    pba.add_argument("--strategy", type=str, default="linyuan",
+                     help="策略名（仅日志）")
+    pba.add_argument("--tiers", type=str, default=None,
+                     help="逗号分隔资金列表（如 '50000,100000'），默认走 CAPITAL_TIERS")
+    pba.add_argument("--since", type=str, default=None,
+                     help="回算起点 YYYY-MM-DD（仅 --backfill）")
+    pba.add_argument("--backfill", action="store_true",
+                     help="回填所有历史 daily_picks 日期")
+    pba.add_argument("--dry-run", action="store_true")
+    pba.add_argument("--regime", type=str, default="sideways",
+                     choices=["bull", "bear", "sideways"])
+    pba.add_argument("--rr-target", type=float, default=None)
+    pba.add_argument("--max-single", type=float, default=None)
+    pba.add_argument("--slippage", type=float, default=None)
 
     evolve_parser = subparsers.add_parser("evolve", help="选股策略自我进化闭环（周频 cron 用）")
     evolve_parser.add_argument("--db", type=str, default="hs300.db", help="SQLite 文件路径")
@@ -344,7 +366,10 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
     elif args.command == "ui":
         run_textual_ui(stocks, scores, args.top, args.code)
     elif args.command == "plan":
-        _run_plan(args)
+        if args.action == "build-all":
+            _run_plan_build_all(args)
+        else:
+            _run_plan_build(args)
     elif args.command == "evolve":
         _run_evolve(args)
     elif args.command == "linyuan-picks":
@@ -357,9 +382,9 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         build_parser().print_help()
 
 
-def _run_plan(args) -> None:
-    """CLI handler for `plan` subcommand: build / list / show."""
-    from datetime import date as _date
+def _run_plan_build(args) -> None:
+    """CLI handler for `plan build`: build / list / show / backfill."""
+    from datetime import date as _date, timedelta
     from config import (
         MAX_SINGLE as DEFAULT_MAX_SINGLE,
         MAX_TOTAL as DEFAULT_MAX_TOTAL,
@@ -372,50 +397,54 @@ def _run_plan(args) -> None:
 
     today = _date.today().isoformat()
     plan_date = args.date or today
+    portfolio = getattr(args, "portfolio", "default")
 
-    # --- list mode: skip build, query trade_plan directly ---
+    # --- list mode ---
     if args.list_mode:
-        from datetime import date as _date, timedelta
-        end = _date.fromisoformat(plan_date)
-        start = end - timedelta(days=args.days)
         conn = open_db(args.db)
         try:
             cur = conn.execute(
                 "SELECT DISTINCT plan_date FROM trade_plan "
-                "WHERE plan_date >= ? AND plan_date <= ? ORDER BY plan_date DESC",
-                (start.isoformat(), end.isoformat()),
+                "WHERE portfolio=? ORDER BY plan_date DESC LIMIT 30",
+                (portfolio,),
             )
             dates = [r[0] for r in cur.fetchall()]
         finally:
             conn.close()
         if not dates:
-            print(f"无 plan（{start} ~ {end}）")
+            print(f"无 plan（portfolio={portfolio}）")
             return
-        print(f"已生成 plan（共 {len(dates)} 天）：")
+        print(f"portfolio={portfolio} 已生成 plan 共 {len(dates)} 天：")
         for d in dates:
             print(f"  {d}")
         return
 
-    # --- show mode: read existing trade_plan for the date ---
+    # --- show mode ---
     if args.show_mode:
         conn = open_db(args.db)
         try:
-            rows = get_trade_plan_by_date(conn, plan_date, include_failed=True)
+            cur = conn.execute(
+                "SELECT tp.*, m.name AS name FROM trade_plan tp "
+                "LEFT JOIN hs300_metadata m ON m.code = tp.code "
+                "WHERE tp.plan_date=? AND tp.portfolio=? "
+                "ORDER BY tp.action DESC, tp.code",
+                (plan_date, portfolio),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         finally:
             conn.close()
         if not rows:
-            print(f"无 plan：{plan_date}")
+            print(f"无 plan：{plan_date} portfolio={portfolio}")
             return
-        print(f"plan_date={plan_date} rows={len(rows)}")
+        print(f"plan_date={plan_date} portfolio={portfolio} rows={len(rows)}")
         for r in rows:
             print(f"  {r['action']:4s} {r['code']} px={r['plan_price']:.2f} "
-                  f"size={r['size_pct']} stop={r['stop_price']:.2f} "
-                  f"tp={r['tp_price']:.2f} rr={r['rr_ratio']:.2f} "
                   f"status={r['status']} reason={r['reason']}")
         return
 
     # --- build mode ---
-    params: dict = {
+    params = {
         "max_single": args.max_single if args.max_single is not None else DEFAULT_MAX_SINGLE,
         "max_total": DEFAULT_MAX_TOTAL,
         "rr_target": args.rr_target if args.rr_target is not None else DEFAULT_RR_TARGET,
@@ -424,7 +453,6 @@ def _run_plan(args) -> None:
     }
     slippage = args.slippage if args.slippage is not None else DEFAULT_SLIPPAGE
 
-    # --- backfill mode: 补齐所有历史日期的 plan（只落 trade_plan，不纸面成交）---
     if args.backfill:
         conn = open_db(args.db)
         try:
@@ -435,24 +463,82 @@ def _run_plan(args) -> None:
             conn.close()
         for d in dates:
             result = build_plan(d, args.db, params, slippage=slippage,
-                                paper_trade=False, include_carryover=False)
-            print(f"backfilled {d}: picks={result.num_picks} rows={len(result.rows)}")
+                                paper_trade=False, include_carryover=False,
+                                portfolio=portfolio)
+            print(f"backfilled {d} portfolio={portfolio}: "
+                  f"picks={result.num_picks} rows={len(result.rows)}")
         return
 
     if args.dry_run:
-        print(f"[dry-run] would build plan for {plan_date} (params={params})")
+        print(f"[dry-run] would build plan for {plan_date} "
+              f"portfolio={portfolio} params={params}")
         return
 
-    result = build_plan(plan_date, args.db, params, slippage=slippage)
-    print(f"plan_date={plan_date} picks={result.num_picks} "
-          f"open={result.num_open_positions} sanity={result.sanity_passed}")
-    if result.sanity_reasons:
-        print(f"sanity_reasons: {result.sanity_reasons}")
+    result = build_plan(plan_date, args.db, params, slippage=slippage,
+                        portfolio=portfolio)
+    print(f"plan_date={plan_date} portfolio={portfolio} "
+          f"picks={result.num_picks} open={result.num_open_positions} "
+          f"sanity={result.sanity_passed}")
     for r in result.rows:
         print(f"  {r.action:4s} {r.code} px={r.plan_price:.2f} "
-              f"size={r.size_pct} stop={r.stop_price:.2f} "
-              f"tp={r.tp_price:.2f} rr={r.rr_ratio:.2f} "
-              f"status={r.status} reason={r.reason}")
+              f"size={r.size_pct} status={r.status} reason={r.reason}")
+
+
+def _run_plan_build_all(args) -> None:
+    """CLI handler for `plan build-all`: batch build all capital tiers."""
+    from datetime import date as _date
+    from config import CAPITAL_TIERS, DEFAULT_CAPITAL, MAX_SINGLE as DEFAULT_MAX_SINGLE, MAX_TOTAL as DEFAULT_MAX_TOTAL, RR_TARGET as DEFAULT_RR_TARGET
+    from db_repository import open_db
+    from plan_builder import build_all_portfolios
+
+    today = _date.today().isoformat()
+    plan_date = args.date or today
+
+    tiers = CAPITAL_TIERS
+    if args.tiers:
+        tiers = [int(x.strip()) for x in args.tiers.split(",")]
+
+    def _progress(pct: int, msg: str) -> None:
+        print(f"[{pct:3d}%] {msg}")
+
+    params = {
+        "regime": args.regime or "sideways",
+        "max_single": args.max_single if args.max_single is not None else DEFAULT_MAX_SINGLE,
+        "max_total": DEFAULT_MAX_TOTAL,
+        "rr_target": args.rr_target if args.rr_target is not None else DEFAULT_RR_TARGET,
+    }
+
+    if args.backfill:
+        conn = open_db(args.db)
+        try:
+            dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT date FROM daily_picks ORDER BY date"
+            ).fetchall()]
+        finally:
+            conn.close()
+        if args.since:
+            dates = [d for d in dates if d >= args.since]
+        for d in dates:
+            results = build_all_portfolios(
+                args.db, d,
+                params=params,
+                tiers=tiers, progress=_progress,
+            )
+            ok = sum(1 for r in results if r is not None)
+            print(f"backfilled {d}: ok={ok}/{len(results)}")
+        return
+
+    if args.dry_run:
+        print(f"[dry-run] would build plans for {plan_date} tiers={tiers}")
+        return
+
+    results = build_all_portfolios(
+        args.db, plan_date,
+        params=params,
+        tiers=tiers, progress=_progress,
+    )
+    ok = sum(1 for r in results if r is not None)
+    print(f"\nDONE plan_date={plan_date} tiers={len(tiers)} ok={ok}/{len(results)}")
 
 
 def _run_evolve(args) -> None:

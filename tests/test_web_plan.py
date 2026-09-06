@@ -385,19 +385,25 @@ def test_plan_page_renders_ten_capital_tiers(plan_db):
 
 def test_cli_plan_accepts_new_capital_tier():
     """CLI --capital 现在接受 15W（之前被 5 档 choices 拒掉）。"""
+    import argparse
     from config import CAPITAL_TIERS
 
     assert 150000 in CAPITAL_TIERS
     from cli_layer import build_parser
     parser = build_parser()
-    # plan 是 subparser，需要从 _subparsers 里拿
+    # plan 是 subparser，capital 现在在 plan build 子解析器上
     sub_actions = next(
         a for a in parser._actions
         if hasattr(a, "choices") and isinstance(a.choices, dict) and "plan" in a.choices
     )
     plan_parser = sub_actions.choices["plan"]
+    subparsers_action = next(
+        a for a in plan_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    build_parser_ = subparsers_action.choices["build"]
     capital_action = next(
-        a for a in plan_parser._actions if any(s == "--capital" for s in a.option_strings)
+        a for a in build_parser_._actions if any(s == "--capital" for s in a.option_strings)
     )
     assert capital_action.choices == CAPITAL_TIERS
 
