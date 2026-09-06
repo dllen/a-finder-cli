@@ -442,18 +442,19 @@ def insert_trade_plan(
     row: "PlanRow",  # forward ref; imported lazily to avoid import cycle
     plan_date: str,
     params_hash: str,
+    portfolio: str = "default",
 ) -> int:
-    """Insert a trade_plan row. Upsert via UNIQUE(plan_date, code, action).
+    """Insert a trade_plan row. Upsert via UNIQUE(plan_date, portfolio, code, action).
 
     Returns plan_id (>0) on insert or update; rebuild at a different capital
     overwrites all fields (except created_at), including shares.
     """
     cur = conn.execute(
         """INSERT INTO trade_plan
-        (plan_date, code, action, plan_price, size_pct, stop_price, tp_price,
+        (plan_date, portfolio, code, action, plan_price, size_pct, stop_price, tp_price,
          rr_ratio, status, reason, rationale_json, params_hash, created_at, shares)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(plan_date, code, action) DO UPDATE SET
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(plan_date, portfolio, code, action) DO UPDATE SET
          plan_price=excluded.plan_price,
          size_pct=excluded.size_pct,
          stop_price=excluded.stop_price,
@@ -465,7 +466,7 @@ def insert_trade_plan(
          params_hash=excluded.params_hash,
          shares=excluded.shares""",
         (
-            plan_date, row.code, row.action, row.plan_price, row.size_pct,
+            plan_date, portfolio, row.code, row.action, row.plan_price, row.size_pct,
             row.stop_price, row.tp_price, row.rr_ratio, row.status, row.reason,
             json.dumps(row.rationale), params_hash,
             dt.datetime.utcnow().isoformat(timespec="seconds"),
