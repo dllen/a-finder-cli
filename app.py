@@ -525,8 +525,14 @@ PLAN_BODY = """<main class="container py-4">
       </div>
     </div>
     <div class="filter-group">
-      <label class="form-label">档位筛选（交集）</label>
-      <div class="dropdown" id="tier-filter-dd">
+      <label class="form-label d-inline-block align-baseline mb-0">档位筛选（交集）</label>
+      <button type="button" id="tier-filter-help" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+              data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-html="true"
+              data-bs-placement="right"
+              data-bs-title="档位筛选（交集）"
+              data-bs-content="勾选多档时，只保留在 <b>所有</b> 选中档位下都能建仓的票。空选 = 不限。"
+              aria-label="档位筛选说明">?</button>
+      <div class="dropdown d-inline-block ms-1" id="tier-filter-dd">
         <button id="tier-filter-btn" class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
           <span id="tier-filter-label">不限</span>
         </button>
@@ -824,6 +830,8 @@ $(function(){
   });
   $('#q').on('input', function(){ PLAN_STATE.filter = $(this).val().trim(); if (PLAN_STATE.data) drawPlan(PLAN_STATE.data); });
   $('#btn-build').on('click', buildPlan);
+  var tierHelp = document.getElementById('tier-filter-help');
+  if (tierHelp && window.bootstrap && bootstrap.Popover) new bootstrap.Popover(tierHelp);
   $('#capital-group .capital-btn').on('click', function(){
     var c = parseInt($(this).attr('data-capital'), 10);
     if (PLAN_STATE.capital === c) return;
