@@ -40,7 +40,7 @@ def test_build_all_portfolios_default_tiers(fresh_db):
 
     from plan_builder import build_all_portfolios
     results = build_all_portfolios(
-        "2026-09-07", path, params={"regime": "BULL"},
+        path, "2026-09-07", params={"regime": "BULL"},
     )
     # 5W/10W/.../50W = 10 档
     assert len(results) == 10
@@ -57,7 +57,7 @@ def test_build_all_portfolios_custom_tiers(fresh_db):
 
     from plan_builder import build_all_portfolios
     results = build_all_portfolios(
-        "2026-09-07", path, params={"regime": "BULL"},
+        path, "2026-09-07", params={"regime": "BULL"},
         tiers=[50000, 200000],
     )
     assert {r.portfolio for r in results} == {"5W", "20W"}
@@ -72,14 +72,10 @@ def test_build_all_portfolios_shares_scale_by_capital(fresh_db):
 
     from plan_builder import build_all_portfolios
     results = build_all_portfolios(
-        "2026-09-07", path, params={"regime": "BULL"},
+        path, "2026-09-07", params={"regime": "BULL"},
         tiers=[50000, 100000, 500000],
     )
     by_label = {r.portfolio: r for r in results}
-    # Debug: print all buy rows
-    for label, result in by_label.items():
-        buy_rows = [row for row in result.rows if row.action == "buy"]
-        print(f"{label}: buy_rows={[(r.code, r.shares, r.status, r.reason) for r in buy_rows]}, num_picks={result.num_picks}")
     shares_5w = sum(r.shares for r in by_label["5W"].rows if r.action == "buy")
     shares_50w = sum(r.shares for r in by_label["50W"].rows if r.action == "buy")
     assert shares_50w > shares_5w
@@ -110,7 +106,7 @@ def test_build_all_portfolios_per_tier_isolation(fresh_db):
     pb.build_plan = flaky
     try:
         results = build_all_portfolios(
-            "2026-09-07", path, params={"regime": "BULL"},
+            path, "2026-09-07", params={"regime": "BULL"},
             tiers=[50000, 100000, 200000],
         )
     finally:
@@ -137,7 +133,7 @@ def test_build_all_portfolios_progress_callback(fresh_db):
 
     from plan_builder import build_all_portfolios
     build_all_portfolios(
-        "2026-09-07", path, params={"regime": "BULL"},
+        path, "2026-09-07", params={"regime": "BULL"},
         tiers=[50000, 100000], progress=progress,
     )
     # emit sequence: start(0%) + one per tier (50%, 100% for 2 tiers) = 3 calls

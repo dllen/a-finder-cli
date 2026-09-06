@@ -448,11 +448,10 @@ def build_plan(
 # ---------------------------------------------------------------------------
 
 def build_all_portfolios(
-    plan_date: str,
     db_path: str,
+    plan_date: str,
     params: Optional[Dict[str, Any]] = None,
     *,
-    strategy: str = "linyuan",
     tiers: Optional[Sequence[int]] = None,
     portfolio_label_fn: Optional[Callable[[int], str]] = None,
     progress: Optional[Callable[[int, str], None]] = None,
@@ -478,6 +477,13 @@ def build_all_portfolios(
 
     _emit(0, f"plan build-all starting: tiers={len(tiers)}")
 
+    # Shared picks read — one open/close cycle
+    conn = open_db(db_path)
+    try:
+        shared_picks = _read_picks(conn, plan_date)
+    finally:
+        conn.close()
+
     results: List[Optional["PlanResult"]] = []
     n = len(tiers)
     for i, capital in enumerate(tiers):
@@ -486,10 +492,11 @@ def build_all_portfolios(
         tier_params["capital"] = capital
         try:
             res = build_plan(
-                plan_date,
-                db_path,
-                tier_params,
+                plan_date=plan_date,
+                db_path=db_path,
+                params=tier_params,
                 portfolio=label,
+                _picks=shared_picks,
             )
             results.append(res)
             _emit(int((i + 1) / n * 100), f"{label} done picks={res.num_picks}")
