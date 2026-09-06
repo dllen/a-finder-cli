@@ -30,7 +30,7 @@ bash "$ROOT_DIR/sync_incremental_pick.sh" "$DB" "$TOP" pick-history
 # 2. 生成今日交易计划
 PLAN_DATE="$(date +%Y-%m-%d)"
 echo "[2/5] 生成 $PLAN_DATE 交易计划..."
-run_cmd plan --db "$DB" --date "$PLAN_DATE"
+run_cmd plan build --db "$DB" --date "$PLAN_DATE"
 
 # 3. 构建所有资金档位组合（5W-50W，10 档）
 echo "[3/5] 构建 10 个资金档位组合..."
