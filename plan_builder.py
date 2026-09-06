@@ -24,7 +24,7 @@ Paper trader (Task 12):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from db_repository import (
     accumulate_open_position,
@@ -441,3 +441,61 @@ def build_plan(
         sanity_passed=(not reasons),
         sanity_reasons=reasons,
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-tier orchestrator
+# ---------------------------------------------------------------------------
+
+def build_all_portfolios(
+    plan_date: str,
+    db_path: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    strategy: str = "linyuan",
+    tiers: Optional[Sequence[int]] = None,
+    portfolio_label_fn: Optional[Callable[[int], str]] = None,
+    progress: Optional[Callable[[int, str], None]] = None,
+) -> List[Optional["PlanResult"]]:
+    """Run build_plan for every capital tier, sharing one picks read.
+
+    Args:
+        tiers: defaults to config.CAPITAL_TIERS.
+        portfolio_label_fn: defaults to lambda c: f"{c//10000}W".
+        progress(pct, msg): 0-100 progress callback.
+
+    Returns:
+        List of PlanResult or None (failed tier). Aligned 1:1 with tiers.
+    """
+    from config import CAPITAL_TIERS
+
+    tiers = list(tiers) if tiers else CAPITAL_TIERS
+    label_fn = portfolio_label_fn or (lambda c: f"{c // 10000}W")
+
+    def _emit(pct: int, msg: str) -> None:
+        if progress:
+            progress(pct, msg)
+
+    _emit(0, f"plan build-all starting: tiers={len(tiers)}")
+
+    results: List[Optional["PlanResult"]] = []
+    n = len(tiers)
+    for i, capital in enumerate(tiers):
+        label = label_fn(capital)
+        tier_params = dict(params or {})
+        tier_params["capital"] = capital
+        try:
+            res = build_plan(
+                plan_date,
+                db_path,
+                tier_params,
+                portfolio=label,
+            )
+            results.append(res)
+            _emit(int((i + 1) / n * 100), f"{label} done picks={res.num_picks}")
+        except Exception as e:
+            results.append(None)
+            _emit(int((i + 1) / n * 100), f"{label} FAILED: {e}")
+
+    return results
+
