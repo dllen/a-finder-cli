@@ -516,10 +516,17 @@ def _run_plan_build_all(args) -> None:
             dates = [r[0] for r in conn.execute(
                 "SELECT DISTINCT date FROM daily_picks ORDER BY date"
             ).fetchall()]
+            # 与每个日期对应的全部策略，按时间倒序在 daily_picks 里出现
+            # 的所有 strategy 都要跑一次，保证 trade_plan 里每个 (date,
+            # portfolio, code, action, params_hash) 都留有策略标记。
+            strategies = [r[0] for r in conn.execute(
+                "SELECT DISTINCT strategy FROM daily_picks ORDER BY strategy"
+            ).fetchall()]
         finally:
             conn.close()
         if args.since:
             dates = [d for d in dates if d >= args.since]
+        # 第一轮：无策略过滤，按 daily_picks 实际顺序建仓、累积 opens。
         for d in dates:
             results = build_all_portfolios(
                 args.db, d,
@@ -527,7 +534,24 @@ def _run_plan_build_all(args) -> None:
                 tiers=tiers, progress=_progress,
             )
             ok = sum(1 for r in results if r is not None)
-            print(f"backfilled {d}: ok={ok}/{len(results)}")
+            print(f"backfilled {d} (all): ok={ok}/{len(results)}")
+        # 第二轮：每个策略单独再跑一遍，paper_trade=False + ignore_capacity
+        # 保证 trade_plan 里每个 (date, portfolio, code, action, params_hash)
+        # 都留有 rationale_json.strategy 标签，但不重复开仓。
+        for d in dates:
+            for strat in strategies:
+                results = build_all_portfolios(
+                    args.db, d,
+                    params=params,
+                    tiers=tiers, progress=_progress,
+                    strategy=strat,
+                    ignore_capacity=True,
+                    paper_trade=False,
+                )
+                ok = sum(1 for r in results if r is not None)
+                # 简化日志：只在 ok != 0 时打印
+                if ok:
+                    print(f"backfilled {d} strategy={strat}: ok={ok}/{len(results)}")
         return
 
     if args.dry_run:

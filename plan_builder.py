@@ -80,14 +80,29 @@ class PlanResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _read_picks(conn, plan_date: str) -> List[Dict[str, Any]]:
+def _read_picks(
+    conn,
+    plan_date: str,
+    strategy: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Read today's daily_picks rows. Real schema: (date, rank, kind, code,
-    name, strategy, buy, stop, target, score)."""
-    cur = conn.execute(
-        """SELECT code, score, buy, stop, target, strategy
-           FROM daily_picks WHERE date = ? ORDER BY rank, code""",
-        (plan_date,),
-    )
+    name, strategy, buy, stop, target, score).
+
+    strategy: when provided, only return picks whose `strategy` matches.
+    """
+    if strategy:
+        cur = conn.execute(
+            """SELECT code, score, buy, stop, target, strategy
+               FROM daily_picks WHERE date = ? AND strategy = ?
+               ORDER BY rank, code""",
+            (plan_date, strategy),
+        )
+    else:
+        cur = conn.execute(
+            """SELECT code, score, buy, stop, target, strategy
+               FROM daily_picks WHERE date = ? ORDER BY rank, code""",
+            (plan_date,),
+        )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -380,7 +395,9 @@ def build_plan(
     include_carryover: bool = True,
     *,
     portfolio: str = "default",
+    strategy: Optional[str] = None,
     _picks: Optional[List[Dict[str, Any]]] = None,
+    ignore_capacity: bool = False,
 ) -> PlanResult:
     """Compose a daily plan from picks + carryover.
 
@@ -401,7 +418,14 @@ def build_plan(
     regime = _regime_from_str(params.get("regime", "SIDEWAYS"))
     capital = float(params.get("capital") or DEFAULT_CAPITAL)
     risk_manager = RiskManager()
-    phash = params_hash(params)
+    # params_hash is the per-(date, portfolio, capital, strategy) cache key.
+    # Threading strategy here makes each strategy × tier run cache distinctly,
+    # so the same code picked by two strategies writes two rows (one per
+    # strategy), distinguishable by JSON_EXTRACT(rationale_json, '$.strategy').
+    hash_params = dict(params)
+    if strategy is not None:
+        hash_params["__strategy"] = strategy
+    phash = params_hash(hash_params)
 
     # Cache hit: same (plan_date, portfolio, params_hash) already persisted → skip rebuild.
     from db_repository import get_trade_plan_by_date_and_portfolio
@@ -428,7 +452,7 @@ def build_plan(
         if _picks is not None:
             picks = _picks
         else:
-            picks = _read_picks(conn, plan_date)
+            picks = _read_picks(conn, plan_date, strategy=strategy)
         # Always read opens for capacity / carryover, even when picks are
         # pre-supplied by build_all_portfolios — without this, the cross-day
         # current_open_count cap (5-10 positions per tier) silently degrades
@@ -443,7 +467,8 @@ def build_plan(
     open_count = len({o["code"] for o in opens})
     rows.extend(_build_buy_rows(
         picks, regime, risk_manager, capital,
-        max_positions, max_total, current_open_count=open_count,
+        max_positions, max_total,
+        current_open_count=(0 if ignore_capacity else open_count),
     ))
     if include_carryover:
         rows.extend(_build_carryover_rows(opens, current_prices))
@@ -488,6 +513,9 @@ def build_all_portfolios(
     tiers: Optional[Sequence[int]] = None,
     portfolio_label_fn: Optional[Callable[[int], str]] = None,
     progress: Optional[Callable[[int, str], None]] = None,
+    strategy: Optional[str] = None,
+    ignore_capacity: bool = False,
+    paper_trade: bool = True,
 ) -> List[Optional["PlanResult"]]:
     """Run build_plan for every capital tier, sharing one picks read.
 
@@ -495,6 +523,7 @@ def build_all_portfolios(
         tiers: defaults to config.CAPITAL_TIERS.
         portfolio_label_fn: defaults to lambda c: f"{c//10000}W".
         progress(pct, msg): 0-100 progress callback.
+        strategy: when provided, filter daily_picks by this strategy.
 
     Returns:
         List of PlanResult or None (failed tier). Aligned 1:1 with tiers.
@@ -508,12 +537,12 @@ def build_all_portfolios(
         if progress:
             progress(pct, msg)
 
-    _emit(0, f"plan build-all starting: tiers={len(tiers)}")
+    _emit(0, f"plan build-all starting: tiers={len(tiers)} strategy={strategy or '*'}")
 
     # Shared picks read — one open/close cycle
     conn = open_db(db_path)
     try:
-        shared_picks = _read_picks(conn, plan_date)
+        shared_picks = _read_picks(conn, plan_date, strategy=strategy)
     finally:
         conn.close()
 
@@ -529,7 +558,10 @@ def build_all_portfolios(
                 db_path=db_path,
                 params=tier_params,
                 portfolio=label,
+                strategy=strategy,
                 _picks=shared_picks,
+                ignore_capacity=ignore_capacity,
+                paper_trade=paper_trade,
             )
             results.append(res)
             _emit(int((i + 1) / n * 100), f"{label} done picks={res.num_picks}")

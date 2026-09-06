@@ -454,7 +454,7 @@ def insert_trade_plan(
         (plan_date, portfolio, code, action, plan_price, size_pct, stop_price, tp_price,
          rr_ratio, status, reason, rationale_json, params_hash, created_at, shares)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(plan_date, portfolio, code, action) DO UPDATE SET
+        ON CONFLICT(plan_date, portfolio, code, action, params_hash) DO UPDATE SET
          plan_price=excluded.plan_price,
          size_pct=excluded.size_pct,
          stop_price=excluded.stop_price,
