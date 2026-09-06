@@ -30,6 +30,7 @@ from db_repository import (
     get_open_positions_with_unrealized,
     get_recent_pnl,
     get_holdings_detail,
+    compute_portfolio_pnl,
 )
 from app import (
     _page,
@@ -37,11 +38,14 @@ from app import (
     PLAN_BODY,
     PAGE_SCRIPT,
     PLAN_SCRIPT,
+    PORTFOLIO_BODY,
+    PORTFOLIO_SCRIPT,
     list_dates,
     picks_for_date,
     _dt_class,
     _TIER_FILTER_OPTIONS,
 )
+from config import CAPITAL_TIERS
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
@@ -97,6 +101,75 @@ def _dashboard_payload(conn) -> dict:
         "pnl_5d": pnl,
         "holdings_summary": get_holdings_detail(conn)["summary"],
     }
+
+
+def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = None) -> None:
+    """写出 portfolio 静态数据 + portfolio.html。"""
+    pf_dir = out_dir / "data" / "portfolio"
+    pf_dir.mkdir(parents=True, exist_ok=True)
+
+    conn = open_db(db_path)
+    try:
+        latest = plan_date or conn.execute(
+            "SELECT MAX(plan_date) FROM trade_plan"
+        ).fetchone()[0] or ""
+
+        tiers = []
+        for capital in CAPITAL_TIERS:
+            label = f"{capital // 10000}W"
+            pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
+            holdings = get_open_positions_with_unrealized(conn, portfolio=label)
+            cur = conn.execute(
+                "SELECT tp.*, m.name AS name FROM trade_plan tp "
+                "LEFT JOIN hs300_metadata m ON m.code = tp.code "
+                "WHERE tp.plan_date=? AND tp.portfolio=? "
+                "ORDER BY tp.action DESC, tp.code",
+                (latest, label),
+            )
+            cols = [d[0] for d in cur.description]
+            plan_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            tiers.append({
+                "label": label,
+                "capital": capital,
+                "cash_remaining": pnl["cash_remaining"],
+                "position_value": pnl["position_value"],
+                "total_value": pnl["total_value"],
+                "realized_pnl": pnl["realized_pnl"],
+                "unrealized_pnl": pnl["unrealized_pnl"],
+                "return_rate": pnl["return_rate"],
+                "last_plan_date": latest,
+            })
+            detail = {
+                "label": label,
+                "capital": capital,
+                "date": latest,
+                "pnl": pnl,
+                "holdings": holdings,
+                "plan_rows": plan_rows,
+                "last_plan_date": latest,
+            }
+            json.dump(
+                detail,
+                (pf_dir / f"{label}.json").open("w"),
+                ensure_ascii=False, default=str,
+            )
+
+        json.dump(
+            {"date": latest, "tiers": tiers},
+            (pf_dir / "summary.json").open("w"),
+            ensure_ascii=False, default=str,
+        )
+    finally:
+        conn.close()
+
+    # 静态页
+    (out_dir / "portfolio.html").write_text(
+        _page("持仓组合", "portfolio",
+              PORTFOLIO_BODY.replace("{{today}}", latest),
+              PORTFOLIO_SCRIPT,
+              config=STATIC_CONFIG, assets="static/"),
+        encoding="utf-8",
+    )
 
 
 def export(db_path: str, out_dir: str) -> int:
@@ -175,6 +248,7 @@ def export(db_path: str, out_dir: str) -> int:
         shutil.copy(src_static / f, static_dir / f)
 
     print(f"导出完成：picks={len(pick_dates)} plan={len(plan_dates)} → {out}")
+    export_portfolio(db_path, out)
     return 0
 
 
