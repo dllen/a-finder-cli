@@ -68,6 +68,7 @@ def _regime_from_str(regime: str) -> RegimeType:
 @dataclass
 class PlanResult:
     plan_date: str
+    portfolio: str = "default"
     rows: List[PlanRow] = field(default_factory=list)
     num_picks: int = 0
     num_open_positions: int = 0
@@ -113,9 +114,15 @@ def _row_from_db(r: Dict[str, Any]) -> PlanRow:
     )
 
 
-def _read_open_positions(conn) -> List[Dict[str, Any]]:
-    """Read all open positions (carryover)."""
-    return get_open_positions(conn)
+def _read_open_positions(conn, *, portfolio: str = "default") -> List[Dict[str, Any]]:
+    """Read open positions (carryover), filtered by portfolio."""
+    cur = conn.execute(
+        "SELECT * FROM open_positions WHERE status='open' AND portfolio=? "
+        "ORDER BY entry_date, code",
+        (portfolio,),
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 def _lookup_current_prices(conn, codes: List[str]) -> Dict[str, float]:
@@ -273,6 +280,8 @@ def _paper_trade(
     plan_date: str,
     db_path: str,
     slippage: float,
+    *,
+    portfolio: str = "default",
 ) -> None:
     """Persist paper fills: open for buy rows, close for exit rows.
 
@@ -292,8 +301,9 @@ def _paper_trade(
                 # 允许同 code 跨日累积。
                 existing = conn.execute(
                     "SELECT 1 FROM trade_events "
-                    "WHERE code=? AND plan_date=? AND event_type='open' LIMIT 1",
-                    (r.code, plan_date),
+                    "WHERE code=? AND plan_date=? AND event_type='open' "
+                    "AND portfolio=? LIMIT 1",
+                    (r.code, plan_date, portfolio),
                 ).fetchone()
                 if existing:
                     continue
@@ -301,17 +311,19 @@ def _paper_trade(
                 accumulate_open_position(
                     conn, r.code, fill_price, r.size_pct,
                     r.stop_price, r.tp_price, r.shares,
-                    entry_date=plan_date,
+                    entry_date=plan_date, portfolio=portfolio,
                 )
                 insert_trade_event(
                     conn, plan_date, r.code, "open",
                     fill_price, r.size_pct, shares=r.shares, note="paper_fill",
+                    portfolio=portfolio,
                 )
             elif r.action == "exit" and r.status == "ok":
                 cur = conn.execute(
                     "SELECT pos_id, entry_price, shares FROM open_positions "
-                    "WHERE code=? AND status='open' ORDER BY entry_date LIMIT 1",
-                    (r.code,),
+                    "WHERE code=? AND status='open' AND portfolio=? "
+                    "ORDER BY entry_date LIMIT 1",
+                    (r.code, portfolio),
                 )
                 row = cur.fetchone()
                 if row:
@@ -323,7 +335,7 @@ def _paper_trade(
                     insert_trade_event(
                         conn, plan_date, r.code, "close",
                         r.plan_price, None, shares=shares, pnl_amt=pnl_amt,
-                        note="paper_close",
+                        note="paper_close", portfolio=portfolio,
                     )
     finally:
         conn.close()
@@ -340,6 +352,9 @@ def build_plan(
     slippage: float = 0.001,
     paper_trade: bool = True,
     include_carryover: bool = True,
+    *,
+    portfolio: str = "default",
+    _picks: Optional[List[Dict[str, Any]]] = None,
 ) -> PlanResult:
     """Compose a daily plan from picks + carryover.
 
@@ -361,20 +376,21 @@ def build_plan(
     risk_manager = RiskManager()
     phash = params_hash(params)
 
-    # Cache hit: same (plan_date, params_hash) already persisted → skip rebuild.
-    # INSERT OR IGNORE already prevents duplicate rows, but build_plan still
-    # does the pick/open/price reads + sanity gate + paper fill on every call.
-    from db_repository import get_trade_plan_by_date_and_hash
+    # Cache hit: same (plan_date, portfolio, params_hash) already persisted → skip rebuild.
+    from db_repository import get_trade_plan_by_date_and_portfolio
     cache_conn = open_db(db_path)
     try:
-        cached_rows = get_trade_plan_by_date_and_hash(cache_conn, plan_date, phash)
+        cached_rows = get_trade_plan_by_date_and_portfolio(
+            cache_conn, plan_date, portfolio, phash,
+        )
     finally:
         cache_conn.close()
     if cached_rows:
         return PlanResult(
             plan_date=plan_date,
+            portfolio=portfolio,
             rows=[_row_from_db(r) for r in cached_rows],
-            num_picks=0,  # not stored; callers don't use it for cached path
+            num_picks=0,
             num_open_positions=0,
             sanity_passed=all(r["status"] == "ok" for r in cached_rows),
             sanity_reasons=[],
@@ -382,10 +398,15 @@ def build_plan(
 
     conn = open_db(db_path)
     try:
-        picks = _read_picks(conn, plan_date)
-        opens = _read_open_positions(conn)
-        codes = list({o["code"] for o in opens})
-        current_prices = _lookup_current_prices(conn, codes)
+        if _picks is not None:
+            picks = _picks
+            opens = []
+            current_prices = {}
+        else:
+            picks = _read_picks(conn, plan_date)
+            opens = _read_open_positions(conn, portfolio=portfolio)
+            codes = list({o["code"] for o in opens})
+            current_prices = _lookup_current_prices(conn, codes)
     finally:
         conn.close()
 
@@ -402,17 +423,18 @@ def build_plan(
     write_conn = open_db(db_path)
     try:
         for r in rows:
-            insert_trade_plan(write_conn, r, plan_date, phash)
+            insert_trade_plan(write_conn, r, plan_date, phash, portfolio=portfolio)
     finally:
         write_conn.close()
 
     # Paper trade: insert_trade_plan inside _paper_trade returns 0 on dup,
     # which gates the corresponding fill (C1). Exit rows always re-run.
     if paper_trade:
-        _paper_trade(rows, plan_date, db_path, slippage)
+        _paper_trade(rows, plan_date, db_path, slippage, portfolio=portfolio)
 
     return PlanResult(
         plan_date=plan_date,
+        portfolio=portfolio,
         rows=rows,
         num_picks=len(picks),
         num_open_positions=len(opens),

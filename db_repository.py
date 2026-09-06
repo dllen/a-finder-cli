@@ -515,6 +515,20 @@ def get_trade_plan_by_date_and_hash(
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def get_trade_plan_by_date_and_portfolio(
+    conn: sqlite3.Connection,
+    plan_date: str,
+    portfolio: str,
+    params_hash: str,
+) -> List[Dict]:
+    cur = conn.execute(
+        "SELECT * FROM trade_plan WHERE plan_date=? AND portfolio=? AND params_hash=?",
+        (plan_date, portfolio, params_hash),
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
 def insert_open_position(
     conn: sqlite3.Connection,
     code: str,
