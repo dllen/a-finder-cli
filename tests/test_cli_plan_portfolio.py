@@ -89,11 +89,11 @@ def test_plan_build_all_runs_full_tiers(tmp_path, capsys):
     conn.execute(
         """INSERT INTO daily_picks (date, rank, kind, code, name, strategy,
              buy, stop, target, score)
-           VALUES ('2026-09-07', 1, 'test', '600519', 'M', 'test', 100, 80, 140, 2.0)"""
+           VALUES ('2026-09-07', 1, 'test', '600519', 'M', 'test', 10, 8, 14, 2.0)"""
     )
     conn.execute(
         """INSERT INTO daily_prices (code, trade_date, open, close, high, low,
-                                    volume, amount) VALUES ('600519','2026-09-07',100,100,100,100,0,0)"""
+                                    volume, amount) VALUES ('600519','2026-09-07',10,10,10,10,0,0)"""
     )
     conn.commit()
     conn.close()

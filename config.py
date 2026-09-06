@@ -11,8 +11,9 @@ class SyncConfig:
 
 # Daily execution plan defaults (used by plan_builder sanity gate).
 RR_TARGET = 2.0        # take-profit / stop-loss ratio
-MAX_SINGLE = 0.15      # max single-position weight
+MAX_SINGLE = 0.15      # max single-position weight (reference only; fixed-share lots)
 MAX_TOTAL = 0.95       # max total portfolio weight
+MAX_POSITIONS = 8      # max positions per tier (diversification: pick top-N by score, equal-weight)
 SLIPPAGE = 0.001       # paper-trade fill slippage (0.1%)
 STOP_ATR_MULT = 2.0    # ATR multiple for stop
 

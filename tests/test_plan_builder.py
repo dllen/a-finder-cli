@@ -194,7 +194,7 @@ def test_sanity_gate_scales_total_overflow():
     try:
         for code in ["600000", "600001", "600002", "600003", "600004"]:
             _seed_pick(conn, date="2026-08-18", code=code, score=2.0,
-                       buy=100.0, stop=80.0, target=140.0)
+                       buy=10.0, stop=8.0, target=14.0)
     finally:
         conn.close()
 
@@ -202,11 +202,13 @@ def test_sanity_gate_scales_total_overflow():
     result = build_plan("2026-08-18", path, params={
         "regime": "BULL",
         "max_single": 0.99,
-        "max_total": 0.5,  # cap below default signal size
+        "max_total": 0.5,
+        "max_positions": 5,
+        "capital": 1000000,  # enough to afford 5 picks × 0.1 slot
     })
     buys = [r for r in result.rows if r.action == "buy"]
+    # Top-5 by score (all equal here), equal-weight at 0.5/5=0.1 each
     assert len(buys) == 5
-    # Fixed-share lots: no portfolio scaling → all rows stay ok at full size.
     assert all(r.status == "ok" for r in buys)
     assert all("scaled_to_fit" not in r.reason for r in buys)
 

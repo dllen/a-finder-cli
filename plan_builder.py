@@ -34,7 +34,7 @@ from db_repository import (
     insert_trade_plan,
     open_db,
 )
-from config import DEFAULT_CAPITAL
+from config import DEFAULT_CAPITAL, MAX_POSITIONS
 from market_regime import RegimeType
 from risk_manager import RiskManager
 from shared_lib.strategy import (
@@ -153,29 +153,55 @@ def _build_buy_rows(
     regime: RegimeType,
     risk_manager: RiskManager,
     capital: float,
+    max_positions: int = 8,
+    max_total: float = 0.95,
+    current_open_count: int = 0,
 ) -> List[PlanRow]:
-    """Convert each daily_picks row into a PlanRow(action='buy').
+    """Convert top-scored daily_picks into PlanRow(action='buy').
 
-    Plan price = picks.buy. shares = size_shares(capital, size_pct, plan_price)
-    （A股整手，不足一手 0）。
+    Diversification:
+      - sort picks by score desc, keep top `max_positions`
+      - per-position weight = max_total / max_positions (capped at 0.20)
+      - shares = size_shares(capital, weight, plan_price)
+      - skip new buys once `current_open_count + len(top)` exceeds `max_positions`
+        (preserves a 5-10 position cap across multiple days)
+    Picks whose price × 100 (1 lot) exceeds the per-position budget are dropped
+    (too expensive to enter even one lot). Picks with insufficient score (no
+    usable score) sort to the end.
     """
     rows: List[PlanRow] = []
+    if max_positions <= 0 or max_total <= 0:
+        return rows
+    per_slot = min(0.20, max_total / max_positions)
+    capacity = max(0, max_positions - current_open_count)
+    if capacity <= 0:
+        return rows
+
+    # Sort picks by score desc, drop unusable prices, keep top N (within capacity)
+    sortable = []
     for p in picks:
         plan_price = float(p.get("buy") or p.get("target") or 0.0)
         if plan_price <= 0:
-            continue  # no usable price → skip; not a sanity failure
-        score = float(p.get("score") or 0.0)
+            continue
+        sortable.append((float(p.get("score") or 0.0), plan_price, p))
+    sortable.sort(key=lambda t: t[0], reverse=True)
+    top = sortable[:capacity]
+
+    for score, plan_price, p in top:
         strength = _signal_strength(score)
         cfg = risk_manager.get_config(regime, strength)
         stop, tp = compute_plan_prices(plan_price, cfg)
         risk = plan_price - stop
         rr = (tp - plan_price) / risk if risk > 0 else 0.0
-        shares = size_shares(capital, cfg.position_size, plan_price)
+        size_pct = per_slot
+        shares = size_shares(capital, size_pct, plan_price)
+        if shares <= 0:
+            continue  # price too high for 1 lot at this slot budget
         rows.append(PlanRow(
             code=str(p["code"]),
             action="buy",
             plan_price=plan_price,
-            size_pct=cfg.position_size,
+            size_pct=size_pct,
             stop_price=stop,
             tp_price=tp,
             rr_ratio=round(rr, 4),
@@ -371,6 +397,7 @@ def build_plan(
     params = params or {}
     max_single = float(params.get("max_single", 0.15))
     max_total = float(params.get("max_total", 0.95))
+    max_positions = int(params.get("max_positions", MAX_POSITIONS))
     regime = _regime_from_str(params.get("regime", "SIDEWAYS"))
     capital = float(params.get("capital") or DEFAULT_CAPITAL)
     risk_manager = RiskManager()
@@ -400,18 +427,24 @@ def build_plan(
     try:
         if _picks is not None:
             picks = _picks
-            opens = []
-            current_prices = {}
         else:
             picks = _read_picks(conn, plan_date)
-            opens = _read_open_positions(conn, portfolio=portfolio)
-            codes = list({o["code"] for o in opens})
-            current_prices = _lookup_current_prices(conn, codes)
+        # Always read opens for capacity / carryover, even when picks are
+        # pre-supplied by build_all_portfolios — without this, the cross-day
+        # current_open_count cap (5-10 positions per tier) silently degrades
+        # to 0 in build-all mode.
+        opens = _read_open_positions(conn, portfolio=portfolio)
+        codes = list({o["code"] for o in opens})
+        current_prices = _lookup_current_prices(conn, codes)
     finally:
         conn.close()
 
     rows: List[PlanRow] = []
-    rows.extend(_build_buy_rows(picks, regime, risk_manager, capital))
+    open_count = len({o["code"] for o in opens})
+    rows.extend(_build_buy_rows(
+        picks, regime, risk_manager, capital,
+        max_positions, max_total, current_open_count=open_count,
+    ))
     if include_carryover:
         rows.extend(_build_carryover_rows(opens, current_prices))
 

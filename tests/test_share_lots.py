@@ -188,18 +188,21 @@ def test_sanity_gate_no_scaling_under_fixed_shares():
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     conn = open_db(path)
-    for code in ["600000", "600001", "600002", "600003", "600004"]:
-        _seed_pick(conn, "2026-08-18", code, buy=100.0)
+    # 12 picks → only top `max_positions` (8) become buy rows
+    for i, code in enumerate([f"60000{i}" for i in range(12)]):
+        _seed_pick(conn, "2026-08-18", code, buy=10.0, score=float(12 - i))
     conn.close()
     result = build_plan("2026-08-18", path, params={
-        "regime": "BULL", "max_single": 0.15, "max_total": 0.3,
+        "regime": "BULL", "max_single": 0.15, "max_total": 0.8,
+        "max_positions": 8, "capital": 500000,
     })
     buys = [r for r in result.rows if r.action == "buy"]
-    assert len(buys) == 5
-    # 固定股数下不得缩放、不得标 failed
+    # top-8 by score, equal-weight slot
+    assert len(buys) == 8
     assert all(r.status == "ok" for r in buys)
-    assert not any("scaled_to_fit" in r.reason for r in buys)
-    assert not any("size_exceed_max" in r.reason for r in buys)
+    # equal-weight: per-slot = 0.8 / 8 = 0.1, so size_pct=0.1 for all
+    assert all(abs(r.size_pct - 0.1) < 1e-9 for r in buys)
+    assert all(r.shares > 0 for r in buys)
 
 
 def test_holdings_detail_summary():
@@ -235,25 +238,42 @@ def test_build_plan_sizes_shares_by_capital():
     conn = open_db(path)
     _seed_pick(conn, "2026-08-18", "600519", buy=100.0, score=2.0)
     conn.close()
-    # 5W：50000*0.125=6250 元 → 62 股 → 不足一手 → 0（不建仓）
-    r_small = build_plan("2026-08-18", path, params={"regime": "BULL", "capital": 50000})
-    # 50W：500000*0.125=62500 元 → 625 股 → 6 手 = 600 股
-    r_big = build_plan("2026-08-18", path, params={"regime": "BULL", "capital": 500000})
+    # Per-slot = min(0.20, max_total/max_positions) — single-pick cap is 0.20.
+    # 5W：50000*0.20=10000 元 → 100 股 → 1 手 = 100 股
+    r_small = build_plan("2026-08-18", path, params={
+        "regime": "BULL", "capital": 50000, "max_total": 0.95, "max_positions": 1,
+    })
+    # 50W with max_positions=2 → capacity = 1, picks still has 600519.
+    # Re-emits a buy row sized at 50W (per_slot=0.20), but _paper_trade's
+    # (code, plan_date, 'open') idempotency gates the second fill, so
+    # shares stays at 100 and the run is a no-op on the DB.
+    # 50W：500000*0.20=100000 元 → 1000 股 → 10 手 = 1000 股 (plan row shares)
+    r_big = build_plan("2026-08-18", path, params={
+        "regime": "BULL", "capital": 500000, "max_total": 0.95, "max_positions": 2,
+    })
 
     buy_small = [r for r in r_small.rows if r.action == "buy"]
     buy_big = [r for r in r_big.rows if r.action == "buy"]
-    assert buy_small[0].shares == 0
-    assert buy_big[0].shares == 600
+    assert buy_small[0].shares == 100
+    # Re-emitted buy row scaled to 50W slot
+    assert len(buy_big) == 1
+    assert buy_big[0].code == "600519"
+    assert buy_big[0].shares == 1000
 
+    # 5W filled 600519 (100 sh); 50W's re-emitted buy is idempotency-skipped,
+    # so open_positions stays at 1 row × 100 shares.
     conn = open_db(path)
     try:
         opens = conn.execute(
-            "SELECT shares FROM open_positions WHERE code='600519' AND status='open'"
+            "SELECT code, shares FROM open_positions WHERE status='open' ORDER BY code"
         ).fetchall()
+        evts = conn.execute(
+            "SELECT COUNT(*) FROM trade_events WHERE event_type='open'"
+        ).fetchone()[0]
     finally:
         conn.close()
-    # 第一次 0 股不建仓，第二次 600 股建仓 → 仅一笔 600
-    assert [o[0] for o in opens] == [600]
+    assert dict(opens) == {"600519": 100}
+    assert evts == 1  # 第二轮 buy 因幂等检查未写入事件
 
 
 def test_build_plan_paper_trade_false_skips_fills():

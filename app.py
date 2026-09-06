@@ -22,9 +22,13 @@ PORTFOLIO_BODY = """<main class="container py-4">
     <div class="col-auto">
       <label class="form-label mb-0">策略</label>
       <select id="pf-strategy" class="form-select form-select-sm">
-        <option value="linyuan" selected>林园</option>
-        <option value="ma-picks">均线</option>
-        <option value="buy-signals">买入信号</option>
+        <option value="" selected>全部</option>
+        <option value="高股息+低波防御">高股息+低波防御</option>
+        <option value="震荡市精准回踩">震荡市精准回踩</option>
+        <option value="KDJ低位金叉">KDJ低位金叉</option>
+        <option value="均线突破">均线突破</option>
+        <option value="回调买入">回调买入</option>
+        <option value="量价齐升">量价齐升</option>
       </select>
     </div>
     <div class="col-auto ms-auto small text-muted">
@@ -46,13 +50,18 @@ PORTFOLIO_BODY = """<main class="container py-4">
 
 PORTFOLIO_SCRIPT = """
 window.PORTFOLIO_PAGE = true;
-function tierCard(t) {
-  const cls = t.return_rate >= 0 ? 'border-success' : 'border-danger';
+const TIER_PALETTE = [
+  '#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa',
+  '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#c084fc',
+];
+
+function tierCard(t, idx) {
+  const color = TIER_PALETTE[idx % TIER_PALETTE.length];
   const sign = t.return_rate >= 0 ? '+' : '';
   return `
-    <div class="card ${cls} pf-tier-card" data-label="${t.label}" style="min-width:120px; cursor:pointer;">
+    <div class="card pf-tier-card" data-label="${t.label}" style="min-width:120px; cursor:pointer; border-left: 4px solid ${color};">
       <div class="card-body p-2 text-center">
-        <div class="fw-bold fs-5">${t.label}</div>
+        <div class="fw-bold fs-5" style="color:${color};">${t.label}</div>
         <div class="small text-muted">${(t.capital/10000).toFixed(0)}万</div>
         <div class="fs-6 mt-1 ${t.return_rate>=0?'text-success':'text-danger'}">
           ${sign}${(t.return_rate*100).toFixed(2)}%
@@ -66,20 +75,25 @@ function tierCard(t) {
 
 async function loadPortfolio() {
   const date = document.getElementById('pf-date').value;
-  const resp = await fetch(`/api/portfolio/summary?date=${date}`);
+  const strategy = document.getElementById('pf-strategy').value;
+  const resp = await fetch(`/api/portfolio/summary?date=${date}&strategy=${encodeURIComponent(strategy)}`);
   const data = await resp.json();
   const cards = document.getElementById('pf-tier-cards');
-  cards.innerHTML = data.tiers.map(tierCard).join('');
+  cards.innerHTML = data.tiers.map((t, i) => tierCard(t, i)).join('');
   cards.querySelectorAll('.pf-tier-card').forEach(el => {
-    el.addEventListener('click', () => selectTier(el.dataset.label, date));
+    el.addEventListener('click', () => selectTier(el.dataset.label, date, strategy));
   });
   drawReturnsChart(data.tiers);
-  if (data.tiers.length) selectTier('10W', date);
+  if (data.tiers.length) selectTier('10W', date, strategy);
 }
 
 function drawReturnsChart(tiers) {
   const ctx = document.getElementById('pf-returns-chart').getContext('2d');
   if (window._pfChart) window._pfChart.destroy();
+  const palette = [
+    '#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa',
+    '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#c084fc',
+  ];
   window._pfChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -87,11 +101,21 @@ function drawReturnsChart(tiers) {
       datasets: [{
         label: '累计收益率',
         data: tiers.map(t => +(t.return_rate * 100).toFixed(2)),
-        backgroundColor: tiers.map(t => t.return_rate >= 0 ? '#22c55e' : '#ef4444'),
+        backgroundColor: tiers.map((_, i) => palette[i % palette.length]),
+        borderColor: tiers.map((_, i) => palette[i % palette.length]),
+        borderWidth: 1,
       }],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.parsed.y.toFixed(2)}%`,
+          },
+        },
+      },
       scales: {
         y: { ticks: { callback: v => v + '%' } },
       },
@@ -99,12 +123,12 @@ function drawReturnsChart(tiers) {
   });
 }
 
-async function selectTier(label, date) {
+async function selectTier(label, date, strategy) {
   cards = document.querySelectorAll('.pf-tier-card');
   cards.forEach(c => c.classList.remove('border-primary', 'shadow'));
   const active = document.querySelector(`.pf-tier-card[data-label="${label}"]`);
   if (active) active.classList.add('border-primary', 'shadow');
-  const resp = await fetch(`/api/portfolio/${encodeURIComponent(label)}?date=${date}`);
+  const resp = await fetch(`/api/portfolio/${encodeURIComponent(label)}?date=${date}&strategy=${encodeURIComponent(strategy)}`);
   const data = await resp.json();
   if (!resp.ok) return;
   renderDetail(data);
@@ -115,6 +139,7 @@ function renderDetail(d) {
   const pnl = d.pnl;
   const used = pnl.initial_capital - pnl.cash_remaining;
   const util = (used / pnl.initial_capital * 100).toFixed(1);
+  const nameLabel = it => `${it.code}<br><small class="text-muted">${it.name || ''}</small>`;
   const html = `
     <h5>${d.label} <small class="text-muted">资金 ${pnl.initial_capital.toLocaleString()} 元</small></h5>
     <div class="row g-2 mb-3">
@@ -128,25 +153,25 @@ function renderDetail(d) {
     </div>
     <h6>当日计划</h6>
     <table class="table table-sm">
-      <thead><tr><th>动作</th><th>代码</th><th>价格</th><th>仓位%</th><th>止损</th><th>止盈</th><th>状态</th></tr></thead>
+      <thead><tr><th>动作</th><th>代码 / 名称</th><th>价格</th><th>仓位%</th><th>止损</th><th>止盈</th><th>状态</th></tr></thead>
       <tbody>
         ${d.plan_rows.map(r => `<tr>
-          <td>${r.action}</td><td>${r.code}</td>
-          <td>${r.plan_price.toFixed(2)}</td>
+          <td>${r.action}</td><td>${nameLabel(r)}</td>
+          <td>${(r.plan_price||0).toFixed(2)}</td>
           <td>${(r.size_pct*100).toFixed(1)}%</td>
-          <td>${r.stop_price.toFixed(2)}</td>
-          <td>${r.tp_price.toFixed(2)}</td>
+          <td>${(r.stop_price||0).toFixed(2)}</td>
+          <td>${(r.tp_price||0).toFixed(2)}</td>
           <td>${r.status}</td>
         </tr>`).join('')}
       </tbody>
     </table>
     <h6>当前持仓</h6>
     <table class="table table-sm">
-      <thead><tr><th>代码</th><th>成本</th><th>现价</th><th>股数</th><th>浮盈</th></tr></thead>
+      <thead><tr><th>代码 / 名称</th><th>成本</th><th>现价</th><th>股数</th><th>浮盈</th></tr></thead>
       <tbody>
         ${d.holdings.items.map(it => `<tr>
-          <td>${it.code}</td>
-          <td>${it.entry_price.toFixed(2)}</td>
+          <td>${nameLabel(it)}</td>
+          <td>${(it.entry_price||0).toFixed(2)}</td>
           <td>${(it.current_price||0).toFixed(2)}</td>
           <td>${it.shares}</td>
           <td class="${(it.floating_pnl||0)>=0?'text-success':'text-danger'}">
@@ -159,6 +184,7 @@ function renderDetail(d) {
 }
 
 document.getElementById('pf-date').addEventListener('change', loadPortfolio);
+document.getElementById('pf-strategy').addEventListener('change', loadPortfolio);
 window.addEventListener('DOMContentLoaded', loadPortfolio);
 """
 
@@ -366,6 +392,7 @@ __BODY__
 __FOOTER__
 <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
 <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>__CONFIG__</script>
 <script src="__ASSETS__common.js"></script>
 <script src="__ASSETS__data-source.js"></script>
@@ -1375,19 +1402,32 @@ def create_app(db_path="hs300.db", top=10):
         if capital is None:
             return jsonify({"error": f"unknown portfolio: {label}"}), 404
         date = request.args.get("date", "")
+        strategy = request.args.get("strategy", "")
         conn = open_conn(db_path)
         try:
             pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
             holdings = get_open_positions_with_unrealized(conn, portfolio=label)
+            if strategy:
+                codes = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT code FROM trade_plan "
+                    "WHERE portfolio=? AND JSON_EXTRACT(rationale_json, '$.strategy') = ?",
+                    (label, strategy),
+                ).fetchall()]
+                holdings["items"] = [it for it in holdings["items"] if it["code"] in set(codes)]
+                holdings["count"] = len(holdings["items"])
             plan_rows = []
             if date:
-                cur = conn.execute(
+                sql = (
                     "SELECT tp.*, m.name AS name FROM trade_plan tp "
                     "LEFT JOIN hs300_metadata m ON m.code = tp.code "
-                    "WHERE tp.plan_date=? AND tp.portfolio=? "
-                    "ORDER BY tp.action DESC, tp.code",
-                    (date, label),
+                    "WHERE tp.plan_date=? AND tp.portfolio=?"
                 )
+                params = [date, label]
+                if strategy:
+                    sql += " AND JSON_EXTRACT(tp.rationale_json, '$.strategy') = ?"
+                    params.append(strategy)
+                sql += " ORDER BY tp.action DESC, tp.code"
+                cur = conn.execute(sql, tuple(params))
                 cols = [d[0] for d in cur.description]
                 plan_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
             last = conn.execute(

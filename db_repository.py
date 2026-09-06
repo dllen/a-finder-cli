@@ -700,13 +700,15 @@ def get_open_positions_with_unrealized(
     sql = (
         """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
                   op.stop_price, op.tp_price, op.shares,
-                  dp.close AS close_price
+                  dp.close AS close_price,
+                  m.name AS name
            FROM open_positions op
            LEFT JOIN (
                SELECT code, close FROM daily_prices dp1
                WHERE trade_date = (SELECT MAX(trade_date) FROM daily_prices dp2
                                    WHERE dp2.code = dp1.code)
            ) dp ON dp.code = op.code
+           LEFT JOIN hs300_metadata m ON m.code = op.code
            WHERE op.status = 'open'"""
     )
     params: tuple = ()
@@ -720,7 +722,7 @@ def get_open_positions_with_unrealized(
     floating_total = 0.0
     pct_sum = 0.0
     pct_count = 0
-    for code, ed, ep, sz, sp, tp, shares, close in cur.fetchall():
+    for code, ed, ep, sz, sp, tp, shares, close, name in cur.fetchall():
         shares = shares or 0
         floating = None
         if close is not None and ep:
@@ -731,7 +733,7 @@ def get_open_positions_with_unrealized(
             pct_count += 1
         shares_total += shares
         items.append({
-            "code": code, "entry_date": ed, "entry_price": ep,
+            "code": code, "name": name, "entry_date": ed, "entry_price": ep,
             "size_pct": sz, "stop_price": sp, "tp_price": tp,
             "shares": shares, "current_price": close,
             "floating_pnl": floating,

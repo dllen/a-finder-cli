@@ -461,9 +461,11 @@ def _run_plan_build(args) -> None:
             ).fetchall()]
         finally:
             conn.close()
+        # Backfill 也走 paper_trade=True，让 open_positions 按日累积，
+        # 跨日的 current_open_count cap（5-10 持仓上限）才能生效。
         for d in dates:
             result = build_plan(d, args.db, params, slippage=slippage,
-                                paper_trade=False, include_carryover=False,
+                                paper_trade=True, include_carryover=True,
                                 portfolio=portfolio)
             print(f"backfilled {d} portfolio={portfolio}: "
                   f"picks={result.num_picks} rows={len(result.rows)}")
