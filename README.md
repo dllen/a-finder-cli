@@ -51,6 +51,11 @@ uv run a-finder ui --top 10
 uv run a-finder ui --code 600519
 uv run a-finder plan build --capital 100000            # 默认 10W，校验 5 档（5/10/20/30/50W）
 uv run a-finder plan build --capital 50000 --backfill   # 用 5W 重建历史交易计划
+uv run a-finder plan build --portfolio 10W              # 指定持仓组合 label（默认 default）
+uv run a-finder plan build-all                          # 一次性生成全部 10 档 plan（默认今日）
+uv run a-finder plan build-all --tiers 50000,200000     # 仅生成指定档位
+uv run a-finder plan build-all --backfill --since 2025-01-01   # 回填历史全档 plan
+uv run a-finder plan build-all --strategy linyuan       # 指定策略（默认 linyuan）
 uv run a-finder sync-hs300-meta --db hs300.db
 uv run a-finder meta --code 600519 --db hs300.db
 uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.db
@@ -218,6 +223,40 @@ DB=hs300.db PORT=8080 TOP=20 bash run_web.sh
 - 「重算榜单」：不联网，仅重算 `daily_picks`（走 `pick_history.run_picks` 的 `do_sync=False`）
 - 「同步行情并重算」：先增量同步沪深300行情再重算榜单（较慢，依赖网络）
 - 交易计划页 `/plan`：顶部标题带 `paper` 徽标；筛选支持「含 failed」「只显示可建仓」两个复选框（后者按当前资金档位筛掉「0 股 资金不足一手」行）+ 「档位筛选（交集）」多选下拉（勾哪几档就只保留那些档位都能建仓的票，label 显示如「5W+10W」或「不限」）；表格列包含 **代码 / 名称 / 方向 / 策略 / 计划价 / 仓位 / 股数 / 止损 / 止盈 / RR / 状态 / 理由**；理由列折叠面板里附「各档股数 5W-50W」子表，每只 buy 票一次性展示 10 档位的可建仓股数（hold/exit 不渲染），方便跨档位选股；摘要卡显示资金档位 + 已用/现金/利用率（>100% 高亮红）+ 买入合计仓位与股数；点 5W/10W/15W/20W/25W/30W/35W/40W/45W/50W 按钮即时按当前资金重算每行股数与汇总；下方「持仓跟踪」展示 open_positions 的浮动盈亏与止损/止盈预期
+
+## 持仓组合 / Portfolio Tiers
+
+按资金档位（5W-50W 共 10 档）独立跟踪 paper-trade 组合：
+
+- 每个 tier 独立 plan / open_positions / trade_events（schema 隔离）
+- 共享同一组 `daily_picks`，按 capital 等权分配
+- 累计收益 + 持仓跟踪 + drill-down 详情：`http://127.0.0.1:8000/portfolio`
+
+### 一次性生成全档 plan
+
+```bash
+uv run a-finder plan build-all                          # 一次性生成全部 10 档（默认今日）
+uv run a-finder plan build-all --db hs300.db --strategy linyuan
+uv run a-finder plan build-all --db hs300.db --tiers 50000,200000
+uv run a-finder plan build-all --db hs300.db --backfill --since 2025-01-01
+```
+
+输出格式：
+
+```
+[  0%] plan build-all starting: tiers=10
+[ 10%] 5W done picks=8
+[ 20%] 10W done picks=8
+...
+[100%] 50W done picks=8
+DONE plan_date=2026-09-07 tiers=10 ok=10/10
+```
+
+### 数据流
+
+1. workflow `daily-sync-export.yml` 每日 15:30 (北京时间) 同步 → picks → plan (default) → **plan build-all (10 tiers)** → export
+2. Flask `/api/portfolio/summary` 提供给 web 页面
+3. 静态导出到 `site/data/portfolio/{summary.json, <label>.json}` + `site/portfolio.html`
 
 ## 一键管理
 
