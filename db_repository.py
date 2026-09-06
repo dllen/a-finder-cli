@@ -524,13 +524,16 @@ def insert_open_position(
     stop_price: float,
     tp_price: float,
     shares: int = 200,
+    portfolio: str = "default",
 ) -> int:
     """Open a new paper position with a fixed share count. Returns pos_id."""
     cur = conn.execute(
         """INSERT INTO open_positions
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price, status, shares)
-        VALUES (?,?,?,?,?,?,'open',?)""",
-        (code, entry_date, entry_price, size_pct, stop_price, tp_price, shares),
+        (code, portfolio, entry_date, entry_price, size_pct, stop_price, tp_price,
+         status, shares)
+        VALUES (?,?,?,?,?,?,?,'open',?)""",
+        (code, portfolio, entry_date, entry_price, size_pct, stop_price, tp_price,
+         shares),
     )
     conn.commit()
     return cur.lastrowid
@@ -545,6 +548,7 @@ def accumulate_open_position(
     tp_price: float,
     shares_to_add: int = 200,
     entry_date: str = "",
+    portfolio: str = "default",
 ) -> int:
     """Add shares to an existing open position (weighted-average entry).
 
@@ -552,12 +556,13 @@ def accumulate_open_position(
     """
     row = conn.execute(
         "SELECT pos_id, shares, entry_price FROM open_positions "
-        "WHERE code=? AND status='open' LIMIT 1",
-        (code,),
+        "WHERE code=? AND status='open' AND portfolio=? LIMIT 1",
+        (code, portfolio),
     ).fetchone()
     if row is None:
         return insert_open_position(
-            conn, code, entry_date, fill_price, size_pct, stop_price, tp_price, shares_to_add
+            conn, code, entry_date, fill_price, size_pct, stop_price, tp_price,
+            shares_to_add, portfolio,
         )
     pos_id, old_shares, old_entry = row
     old_shares = old_shares or 0
@@ -612,14 +617,16 @@ def insert_trade_event(
     note: Optional[str] = None,
     shares: Optional[int] = None,
     pnl_amt: Optional[float] = None,
+    portfolio: str = "default",
 ) -> int:
     """Record a trade event (open/close). Returns event_id."""
     cur = conn.execute(
         """INSERT INTO trade_events
-        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt,
-         dt.datetime.utcnow().isoformat(timespec="seconds")),
+         portfolio, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (plan_date, code, event_type, price, size_pct, pnl_pct, note, shares, pnl_amt,
+         portfolio, dt.datetime.utcnow().isoformat(timespec="seconds")),
     )
     conn.commit()
     return cur.lastrowid
@@ -671,8 +678,12 @@ def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
     }
 
 
-def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
-    cur = conn.execute(
+def get_open_positions_with_unrealized(
+    conn: sqlite3.Connection,
+    *,
+    portfolio: Optional[str] = None,
+) -> Dict:
+    sql = (
         """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
                   op.stop_price, op.tp_price, op.shares,
                   dp.close AS close_price
@@ -682,9 +693,14 @@ def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
                WHERE trade_date = (SELECT MAX(trade_date) FROM daily_prices dp2
                                    WHERE dp2.code = dp1.code)
            ) dp ON dp.code = op.code
-           WHERE op.status = 'open'
-           ORDER BY op.entry_date, op.code""",
+           WHERE op.status = 'open'"""
     )
+    params: tuple = ()
+    if portfolio is not None:
+        sql += " AND op.portfolio = ?"
+        params = (portfolio,)
+    sql += " ORDER BY op.entry_date, op.code"
+    cur = conn.execute(sql, params)
     items = []
     shares_total = 0
     floating_total = 0.0
@@ -713,6 +729,69 @@ def get_open_positions_with_unrealized(conn: sqlite3.Connection) -> Dict:
         "count": len(items), "size_total": round(sum(i["size_pct"] for i in items), 4),
         "shares_total": shares_total, "floating_pnl": round(floating_total, 2),
         "avg_unrealized_pct": avg, "items": items[:3],
+    }
+
+
+def compute_portfolio_pnl(
+    conn: sqlite3.Connection,
+    portfolio: str,
+    *,
+    initial_capital: int,
+) -> Dict:
+    """Cash carry + position mark-to-market + realized/unrealized P&L + return rate."""
+    # 1. realized_pnl: Σ trade_events.pnl_amt WHERE event_type='close' AND portfolio=?
+    realized_pnl_row = conn.execute(
+        "SELECT COALESCE(SUM(pnl_amt), 0.0) FROM trade_events "
+        "WHERE event_type='close' AND portfolio=?",
+        (portfolio,),
+    ).fetchone()
+    realized_pnl = float(realized_pnl_row[0] or 0.0)
+
+    # 2. cash_remaining: initial − Σbuy_cost + Σclose_proceeds
+    buy_row = conn.execute(
+        "SELECT COALESCE(SUM(price * shares), 0.0) FROM trade_events "
+        "WHERE event_type='open' AND portfolio=?",
+        (portfolio,),
+    ).fetchone()
+    close_row = conn.execute(
+        "SELECT COALESCE(SUM(price * shares), 0.0) FROM trade_events "
+        "WHERE event_type='close' AND portfolio=?",
+        (portfolio,),
+    ).fetchone()
+    buy_cost = float(buy_row[0] or 0.0)
+    close_proceeds = float(close_row[0] or 0.0)
+    cash_remaining = round(initial_capital - buy_cost + close_proceeds, 2)
+
+    # 3. position_value + unrealized_pnl: open positions + latest close
+    pos_rows = conn.execute(
+        """SELECT op.shares, op.entry_price,
+                  (SELECT close FROM daily_prices dp
+                   WHERE dp.code = op.code
+                   ORDER BY trade_date DESC LIMIT 1) AS cur
+           FROM open_positions op WHERE op.status='open' AND op.portfolio=?""",
+        (portfolio,),
+    ).fetchall()
+    position_value = 0.0
+    cost_basis = 0.0
+    for shares, entry, cur in pos_rows:
+        if not shares or not entry:
+            continue
+        if cur is not None:
+            position_value += cur * shares
+        cost_basis += entry * shares
+    position_value = round(position_value, 2)
+    unrealized_pnl = round(position_value - cost_basis, 2)
+    total_value = round(cash_remaining + position_value, 2)
+    return_rate = round(total_value / initial_capital - 1, 6) if initial_capital else 0.0
+    return {
+        "portfolio": portfolio,
+        "initial_capital": initial_capital,
+        "cash_remaining": cash_remaining,
+        "position_value": position_value,
+        "total_value": total_value,
+        "realized_pnl": round(realized_pnl, 2),
+        "unrealized_pnl": unrealized_pnl,
+        "return_rate": return_rate,
     }
 
 
