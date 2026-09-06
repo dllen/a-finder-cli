@@ -6,9 +6,15 @@ import uuid
 from datetime import datetime as _dt_class
 
 from flask import Flask, jsonify, request
+from markupsafe import escape as _esc_html
 
 from pick_history import run_picks
 from config import CAPITAL_TIERS, DEFAULT_CAPITAL
+
+
+def esc_attr(s: str) -> str:
+    """HTML-attr-safe escape (escapes both & < > and " ' for attr context)."""
+    return _esc_html(str(s)).replace('"', '"').replace("'", '&#39;')
 
 
 PORTFOLIO_BODY = """<main class="container py-4">
@@ -23,12 +29,7 @@ PORTFOLIO_BODY = """<main class="container py-4">
       <label class="form-label mb-0">策略</label>
       <select id="pf-strategy" class="form-select form-select-sm">
         <option value="" selected>全部</option>
-        <option value="高股息+低波防御">高股息+低波防御</option>
-        <option value="震荡市精准回踩">震荡市精准回踩</option>
-        <option value="KDJ低位金叉">KDJ低位金叉</option>
-        <option value="均线突破">均线突破</option>
-        <option value="回调买入">回调买入</option>
-        <option value="量价齐升">量价齐升</option>
+        <!--STRATEGY_OPTIONS-->
       </select>
     </div>
     <div class="col-auto ms-auto small text-muted">
@@ -1357,9 +1358,23 @@ def create_app(db_path="hs300.db", top=10):
     def portfolio_page():
         from datetime import date as _date
         today = _date.today().isoformat()
-        return _page("持仓组合", "portfolio",
-                     PORTFOLIO_BODY.replace("{{today}}", today),
-                     PORTFOLIO_SCRIPT)
+        conn = open_conn(db_path)
+        try:
+            strategies = [r[0] for r in conn.execute(
+                "SELECT DISTINCT json_extract(rationale_json, '$.strategy') AS s "
+                "FROM trade_plan WHERE action='buy' AND s IS NOT NULL "
+                "ORDER BY s"
+            ).fetchall()]
+        finally:
+            conn.close()
+        options_html = "".join(
+            f'        <option value="{esc_attr(s)}">{esc_attr(s)}</option>\n'
+            for s in strategies
+        )
+        body = (PORTFOLIO_BODY
+                .replace("{{today}}", today)
+                .replace("<!--STRATEGY_OPTIONS-->", options_html))
+        return _page("持仓组合", "portfolio", body, PORTFOLIO_SCRIPT)
 
     def _portfolio_label_to_capital(label: str):
         """'10W' → 100000；None if label doesn't match a known tier."""
