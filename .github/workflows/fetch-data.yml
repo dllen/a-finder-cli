@@ -1,0 +1,60 @@
+name: fetch-data
+
+# 数据拉取 workflow：定时刷新 CI 缓存里的 hs300.db，**不部署**。
+# K 线端点在 GitHub-hosted runner 上常被 geo-block（见 utils.py 的超时不重试），
+# 因此这里 best-effort：拉到就更新缓存，拉不到用旧缓存继续。gh-pages 的
+# 权威部署由本地 build_site_data.sh --push（工作日 15:30 北京）负责。
+# 步骤须与 build_site_data.sh 保持一致（同步 → plan build → build-all → build-all --backfill）。
+on:
+  schedule:
+    # 工作日 15:30 北京 = 07:30 UTC
+    - cron: "30 7 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: fetch-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: Sync incremental + picks + plan
+        env:
+          # 与 build_site_data.sh 的 BACKFILL_ANCHOR 保持一致
+          BACKFILL_ANCHOR: "2026-08-01"
+        run: |
+          bash sync_incremental_pick.sh hs300.db 20 pick-history
+          python stock_cli.py plan build --db hs300.db --date "$(date +%F)"
+          python stock_cli.py plan build-all --db hs300.db \
+            --strategy linyuan --tiers 50000,100000,150000,200000,250000,300000,350000,400000,450000,500000
+          python stock_cli.py plan build-all --backfill --since "$BACKFILL_ANCHOR" --db hs300.db
+
+      - name: Save hs300.db to cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}

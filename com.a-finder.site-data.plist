@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  每日 15:30（本地时间）跑一次 run_local_cron.sh；周末由脚本自身跳过。
+  安装：
+    cp com.a-finder.site-data.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.a-finder.site-data.plist
+  查看：
+    launchctl print gui/$(id -u)/com.a-finder.site-data
+  卸载：
+    launchctl unload ~/Library/LaunchAgents/com.a-finder.site-data.plist
+  日志：logs/site-data.out.log / logs/site-data.err.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.a-finder.site-data</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli/run_local_cron.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>15</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli/logs/site-data.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli/logs/site-data.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

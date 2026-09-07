@@ -1,0 +1,68 @@
+name: deploy
+
+# 部署 workflow：仅当代码变更（前端 / 导出 / 计划逻辑）推到 main 时，
+# 从 CI 缓存里的 hs300.db 重建 site/ 并发布到 gh-pages。
+# 数据层的增量由 fetch-data.yml（cron）与本地 build_site_data.sh --push 负责，
+# 此处不拉 K 线——只用缓存里最新的 DB 导出静态站点。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'export_json.py'
+      - 'pick_history.py'
+      - 'plan_builder.py'
+      - 'shared_lib/**'
+      - 'strategies/**'
+      - 'view_models.py'
+      - 'formatter.py'
+      - 'static/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: Build site from cached DB
+        run: |
+          python export_json.py --db hs300.db --out site
+          cp site/index.html site/404.html
+          touch site/.nojekyll
+
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          force_orphan: true
