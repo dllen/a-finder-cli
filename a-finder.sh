@@ -127,7 +127,9 @@ push_site_to_ghpages() {
   tmp_index="$(mktemp)"
   rm -f "$tmp_index" # mktemp 产生 0 字节文件，git 会误读为损坏 index；删掉让 git 自建空 index
   rm -rf "$export_dir/.git" # site/ 若残留嵌套 .git，git add 会把 site 当 submodule（gitlink）；删掉确保打包真实文件
-  GIT_INDEX_FILE="$tmp_index" git add -f "$export_dir"
+  # 用 --work-tree 把 site/ 当作工作树根，把「内容」加到 index 根（对齐 CI 的
+  # peaceiris publish_dir:./site），而非把 site/ 当子目录 —— 否则线上站点落在 /site/。
+  GIT_INDEX_FILE="$tmp_index" git --work-tree="$export_dir" add -f .
   tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
   rm -f "$tmp_index"
   commit="$(git commit-tree "$tree" -m "update site data $(date +%F-%H:%M)")"
