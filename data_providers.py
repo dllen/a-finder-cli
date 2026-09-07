@@ -21,7 +21,7 @@ def fetch_url_text(url: str, params: Optional[Dict[str, str]] = None, referer: O
         if referer:
             headers["Referer"] = referer
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.read().decode("utf-8", errors="ignore")
 
     return retry_call(request_text)
@@ -237,7 +237,7 @@ def _fetch_sina_text(url: str) -> str:
         "Referer": "https://finance.sina.com.cn",
     }
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return resp.read().decode("gbk", errors="ignore")
 
 

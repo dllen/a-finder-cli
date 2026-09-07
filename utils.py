@@ -1,5 +1,6 @@
 import datetime as dt
 import random
+import socket
 import time
 from typing import Callable, Optional, TypeVar
 
@@ -17,6 +18,10 @@ _RETRYABLE = (
 
 
 def _is_retryable(exc: Exception) -> bool:
+    # urlopen 超时（URLError.reason 为 socket.timeout）通常意味着端点不可达而非瞬时抖动，
+    # 重试只是把单次失败成本放大数倍——直接交给上层（如 _fetch_with_retry 的外层重试）兜底。
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, socket.timeout):
+        return False
     if isinstance(exc, _RETRYABLE):
         return True
     # HTTPError 仅网络层错误（5xx、连接重置）才重试，4xx 不重试
