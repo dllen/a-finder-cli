@@ -229,6 +229,37 @@ cmd_refresh() {
   fi
 }
 
+# ============================ portfolio (补齐 portfolio 数据) ============================
+
+cmd_portfolio() {
+  # 用法: a-finder.sh portfolio [DB] [OUT] [--push]
+  # 一键补齐 /data/portfolio 各资金档位数据（累计收益对比 + 当日计划 + 当前持仓）。
+  # 依赖 trade_events / open_positions（plan build-all 的 paper trade 写库），先回补计划再导出。
+  local db="${1:-$DEFAULT_DB}"
+  local out="${2:-site}"
+  local push=0
+  for a in "$@"; do
+    if [[ "$a" == "--push" ]]; then push=1; fi
+  done
+
+  echo "=== 补齐 portfolio 数据 ==="
+  echo "db=$db out=$out push=$push"
+  echo ""
+
+  echo "[1/2] 回补交易计划（since $BACKFILL_ANCHOR）..."
+  run_cmd plan build-all --backfill --since "$BACKFILL_ANCHOR" --db "$db"
+
+  echo "[2/2] 生成 portfolio 数据到 $out/data/portfolio..."
+  run_py "$ROOT_DIR/export_json.py" --portfolio-only --db "$db" --out "$out"
+
+  echo "JSON: $(ls -1 "$out/data/portfolio/"*.json 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "$push" == "1" ]]; then
+    push_site_to_ghpages "$out"
+  else
+    echo "推送: bash a-finder.sh portfolio $db $out --push"
+  fi
+}
+
 # ============================ web (Flask app.py) ============================
 
 cmd_web() {
@@ -368,6 +399,9 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   refresh [MONTHS] [DB] [OUT] [--push]
       最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 计划回补 → 网站导出。
       计划回补只覆盖 daily_picks 已有日期；不重算历史选股（避免未来函数偏差）。
+  portfolio [DB] [OUT] [--push]
+      一键补齐 /data/portfolio 各档位数据（累计收益对比 + 当日计划 + 当前持仓）。
+      先回补计划（plan build-all --backfill）再导出 portfolio JSON。
   web {start|stop|restart|status}    环境变量 DB / PORT / TOP。Flask app.py。
   daemon {start|stop|restart|status} [cli-args]
       后台跑 a-finder 子命令（默认 overview），PID 文件管理。
@@ -384,6 +418,7 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   bash a-finder.sh plan hs300.db 2026-09-07
   bash a-finder.sh site hs300.db 20 site --push
   bash a-finder.sh refresh 3 hs300.db site --push
+  bash a-finder.sh portfolio hs300.db site --push
   DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
   bash a-finder.sh daemon start overview
   bash a-finder.sh backtest hs300.db 10 240 --tune
@@ -406,6 +441,7 @@ case "${1:-help}" in
   daily-plan)      shift; cmd_daily_plan "$@" ;;
   site)            shift; cmd_site "$@" ;;
   refresh)         shift; cmd_refresh "$@" ;;
+  portfolio)       shift; cmd_portfolio "$@" ;;
   web)             shift; cmd_web "$@" ;;
   daemon)          shift; cmd_daemon "$@" ;;
   backtest)        shift; cmd_backtest "$@" ;;

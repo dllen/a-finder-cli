@@ -256,7 +256,12 @@ def main():
     ap = argparse.ArgumentParser(description="导出静态站点（Cloudflare Pages）")
     ap.add_argument("--db", default="hs300.db")
     ap.add_argument("--out", default="site")
+    ap.add_argument("--portfolio-only", action="store_true",
+                    help="只导出 portfolio 数据（data/portfolio/*.json + portfolio.html）")
     args = ap.parse_args()
+    if args.portfolio_only:
+        export_portfolio(args.db, Path(args.out))
+        return
     raise SystemExit(export(args.db, args.out))
 
 
