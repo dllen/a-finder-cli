@@ -298,12 +298,6 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
         report(5, "跳过行情同步")
 
     report(88, "加载行情数据…")
-    stocks = build_market_from_db(db_path, min_days=221, max_days=520)
-    if not stocks:
-        report(100, "无可用行情数据")
-        return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
-
-    report(94, "计算榜单…")
     conn = open_db(db_path)
     with conn:
         from evolution.champion import ensure_champion
@@ -327,6 +321,14 @@ def run_picks(db_path: str, top: int, do_sync: bool, trade_date: Optional[str] =
         if not date:
             report(100, "无交易日期")
             return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
+
+    # 按历史时点截断行情（as_of），避免未来函数偏差：重算某日选股只用 <= 该日的 K 线。
+    stocks = build_market_from_db(db_path, min_days=221, max_days=520, as_of=date)
+    if not stocks:
+        report(100, "无可用行情数据")
+        return {"date": "", "ma": 0, "buy": 0, "signal": 0, "multi": 0}
+
+    report(94, "计算榜单…")
 
     ma_board = build_ma_picks(stocks, top, passed_strategies, ratios=board_ratios)
     buy_board = build_buy_picks(stocks, top)

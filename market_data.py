@@ -1,5 +1,5 @@
 import random
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from data_providers import fetch_hs300_constituents
 from db_repository import get_fundamentals, open_db, upsert_constituents
@@ -99,7 +99,8 @@ def build_market() -> List[Stock]:
     return market
 
 
-def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) -> List[Stock]:
+def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240,
+                         as_of: Optional[str] = None) -> List[Stock]:
     conn = open_db(db_path)
     with conn:
         cur = conn.execute("SELECT code, name FROM hs300_metadata ORDER BY code")
@@ -135,11 +136,19 @@ def build_market_from_db(db_path: str, min_days: int = 60, max_days: int = 240) 
         market: List[Stock] = []
         fundamentals = get_fundamentals(conn)
         for code in codes:
-            cur = conn.execute(
-                "SELECT close, volume, turnover, amount, pct_change FROM daily_prices "
-                "WHERE code = ? ORDER BY trade_date",
-                (code,),
-            )
+            if as_of:
+                # as_of：按历史时点截断，只取 <= as_of 的 K 线，避免未来函数偏差。
+                cur = conn.execute(
+                    "SELECT close, volume, turnover, amount, pct_change FROM daily_prices "
+                    "WHERE code = ? AND trade_date <= ? ORDER BY trade_date",
+                    (code, as_of),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT close, volume, turnover, amount, pct_change FROM daily_prices "
+                    "WHERE code = ? ORDER BY trade_date",
+                    (code,),
+                )
             series = [tuple(item) for item in cur.fetchall() if item[0] is not None]
             if len(series) < min_days:
                 continue
