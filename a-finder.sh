@@ -157,7 +157,7 @@ cmd_site() {
   echo "[3/5] 构建 10 个资金档位组合..."
   run_cmd plan build-all --db "$db" --strategy linyuan --tiers "$TIERS"
 
-  echo "[4/5] 回补历史组合（since $BACKFILL_ANCHOR）..."
+  echo "[4/5] 回补历史组合（since ${BACKFILL_ANCHOR}）..."
   run_cmd plan build-all --backfill --since "$BACKFILL_ANCHOR" --db "$db"
 
   echo "[5/5] 导出静态数据到 $out..."
@@ -207,7 +207,7 @@ cmd_refresh() {
   run_cmd sync-hs300-range --start "$start" --end "$end" --db "$db" \
     --gap-fill --concurrency 8 --rate 8 --retries 1 || echo "行情补齐失败，继续执行"
 
-  echo "[3/4] 回补交易计划（since $start）..."
+  echo "[3/4] 回补交易计划（since ${start}）..."
   run_cmd plan build-all --backfill --since "$start" --db "$db"
 
   echo "[4/4] 导出网站数据到 $out..."
