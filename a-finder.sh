@@ -125,6 +125,7 @@ push_site_to_ghpages() {
   # 全程不动工作树与当前分支（site/ 是 gitignore 的，永远不进 main）。
   local tmp_index tree commit
   tmp_index="$(mktemp)"
+  rm -f "$tmp_index" # mktemp 产生 0 字节文件，git 会误读为损坏 index；删掉让 git 自建空 index
   GIT_INDEX_FILE="$tmp_index" git add -f "$export_dir"
   tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
   rm -f "$tmp_index"
