@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'site/**'
       - '.github/workflows/daily-sync-export.yml'
   schedule:
     # 工作日 15:30（北京时间）≈ 07:30 UTC，收盘后跑
@@ -17,11 +16,14 @@ concurrency:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  # Job 1: 数据生成（仅在 schedule 或手动触发时运行）
-  generate-data:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  # 单 job：同步数据 → 构建 site/ → 直接发布到 gh-pages。
+  # site/ 是 gitignore 的构建产物，不能跨 job 通过 git checkout 传递，
+  # 因此在同一 runner 内构建并发布，无需提交回 main。
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,22 +67,6 @@ jobs:
         with:
           path: hs300.db
           key: hs300-db-${{ github.run_id }}
-
-      - name: Commit and push generated data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add site/
-          git diff --staged --quiet site/ || git commit -m "chore: update site data"
-          git push
-
-  # Job 2: 部署（generate-data push site/ 到 main 后触发，checkout 拿到最新数据再部署）
-  deploy:
-    runs-on: ubuntu-latest
-    needs: generate-data
-    if: needs.generate-data.result == 'skipped'
-    steps:
-      - uses: actions/checkout@v4
 
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
