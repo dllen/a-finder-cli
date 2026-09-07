@@ -126,11 +126,12 @@ push_site_to_ghpages() {
   local tmp_index tree commit
   tmp_index="$(mktemp)"
   rm -f "$tmp_index" # mktemp 产生 0 字节文件，git 会误读为损坏 index；删掉让 git 自建空 index
+  rm -rf "$export_dir/.git" # site/ 若残留嵌套 .git，git add 会把 site 当 submodule（gitlink）；删掉确保打包真实文件
   GIT_INDEX_FILE="$tmp_index" git add -f "$export_dir"
   tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
   rm -f "$tmp_index"
   commit="$(git commit-tree "$tree" -m "update site data $(date +%F-%H:%M)")"
-  git push --force origin "$commit:gh-pages"
+  git push --force origin "${commit}:gh-pages"
   echo "✅ gh-pages 已更新 -> $commit"
 }
 
