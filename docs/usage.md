@@ -34,6 +34,7 @@ bash a-finder.sh help
 | 命令 | 说明 |
 |---|---|
 | `site [DB] [TOP] [OUT] [--push]` | 全流程：sync-incremental → plan build → build-all → backfill → export_json。`--push` 把 `site/` orphan-push 到 gh-pages（不动工作树/当前分支） |
+| `refresh [MONTHS] [DB] [OUT] [--push]` | 最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 计划回补 → 网站导出。计划回补只覆盖 `daily_picks` 已有日期；不重算历史选股（避免未来函数偏差） |
 | `web {start\|stop\|restart\|status}` | 环境变量 `DB` / `PORT` / `TOP`。Flask `app.py`（端口 lsof 探活） |
 | `daemon {start\|stop\|restart\|status} [cli-args]` | 后台跑 `a-finder` 子命令（默认 `overview`），PID 文件管理 |
 | `cron` | launchd 入口：工作日 15:30 跑 `site --push`；周末（`date +%u >= 6`）跳过 |
@@ -52,6 +53,7 @@ bash a-finder.sh sync-incremental hs300.db 20 pick-history
 bash a-finder.sh picks --no-sync
 bash a-finder.sh plan hs300.db 2026-09-07
 bash a-finder.sh site hs300.db 20 site --push
+bash a-finder.sh refresh 3 hs300.db site --push
 DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
 bash a-finder.sh daemon start overview
 bash a-finder.sh backtest hs300.db 10 240 --tune

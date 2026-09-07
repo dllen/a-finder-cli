@@ -175,6 +175,56 @@ cmd_site() {
   fi
 }
 
+# ============================ refresh (最近 N 月一键重刷) ============================
+
+cmd_refresh() {
+  # 用法: a-finder.sh refresh [MONTHS] [DB] [OUT] [--push]
+  # 一键重刷最近 MONTHS 个月：行情补齐 → 计划回补 → 网站导出（可选推送 gh-pages）。
+  # 注意：计划回补只覆盖 daily_picks 已有日期；不重算历史选股（避免未来函数偏差）。
+  local months="${1:-3}"
+  local db="${2:-$DEFAULT_DB}"
+  local out="${3:-site}"
+  local push=0
+  for a in "$@"; do
+    if [[ "$a" == "--push" ]]; then push=1; fi
+  done
+
+  # 起点：今天 - MONTHS 个月（GNU / BSD date 双兼容）
+  local start end
+  end="$(date +%F)"
+  if ! start="$(date -d "$end -$months months" +%F 2>/dev/null)"; then
+    start="$(date -v-${months}m +%F)"
+  fi
+
+  echo "=== 最近 $months 个月数据重刷 ==="
+  echo "start=$start end=$end db=$db out=$out push=$push"
+  echo ""
+
+  echo "[1/4] 刷新元数据..."
+  run_cmd sync-hs300-meta --db "$db" || echo "元数据同步失败，继续执行"
+
+  echo "[2/4] 补齐行情 $start ~ $end..."
+  run_cmd sync-hs300-range --start "$start" --end "$end" --db "$db" \
+    --gap-fill --concurrency 8 --rate 8 --retries 1 || echo "行情补齐失败，继续执行"
+
+  echo "[3/4] 回补交易计划（since $start）..."
+  run_cmd plan build-all --backfill --since "$start" --db "$db"
+
+  echo "[4/4] 导出网站数据到 $out..."
+  run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
+
+  cp "$out/index.html" "$out/404.html"
+  touch "$out/.nojekyll"
+  echo "HTML: $(ls -1 "$out"/*.html 2>/dev/null | wc -l | tr -d ' ')  JSON: $(ls -1 "$out/data/"*.json 2>/dev/null | wc -l | tr -d ' ')"
+
+  if [[ "$push" == "1" ]]; then
+    push_site_to_ghpages "$out"
+  else
+    echo "预览: cd $out && python3 -m http.server 8000"
+    echo "推送: bash a-finder.sh refresh $months $db $out --push"
+  fi
+}
+
 # ============================ web (Flask app.py) ============================
 
 cmd_web() {
@@ -311,6 +361,9 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   site [DB] [TOP] [OUT] [--push]
       全流程：sync-incremental → plan build → build-all → backfill
       → export_json。--push 把 site/ orphan-push 到 gh-pages。
+  refresh [MONTHS] [DB] [OUT] [--push]
+      最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 计划回补 → 网站导出。
+      计划回补只覆盖 daily_picks 已有日期；不重算历史选股（避免未来函数偏差）。
   web {start|stop|restart|status}    环境变量 DB / PORT / TOP。Flask app.py。
   daemon {start|stop|restart|status} [cli-args]
       后台跑 a-finder 子命令（默认 overview），PID 文件管理。
@@ -326,6 +379,7 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   bash a-finder.sh picks --no-sync
   bash a-finder.sh plan hs300.db 2026-09-07
   bash a-finder.sh site hs300.db 20 site --push
+  bash a-finder.sh refresh 3 hs300.db site --push
   DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
   bash a-finder.sh daemon start overview
   bash a-finder.sh backtest hs300.db 10 240 --tune
@@ -347,6 +401,7 @@ case "${1:-help}" in
   plan-all)        shift; cmd_plan_all "$@" ;;
   daily-plan)      shift; cmd_daily_plan "$@" ;;
   site)            shift; cmd_site "$@" ;;
+  refresh)         shift; cmd_refresh "$@" ;;
   web)             shift; cmd_web "$@" ;;
   daemon)          shift; cmd_daemon "$@" ;;
   backtest)        shift; cmd_backtest "$@" ;;
