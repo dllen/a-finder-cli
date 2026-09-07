@@ -1,6 +1,8 @@
 -- trade_plan UNIQUE 加入 params_hash，使得同一 (plan_date, portfolio, code, action)
 -- 下可以并存多个策略的 plan 行（每个策略因 params_hash 中含 strategy 而相异）。
 -- UNIQUE 重建需要先临时表换名。
+-- UNIQUE 重建需要先临时表换名。DROP IF EXISTS 保证失败后可重跑。
+DROP TABLE IF EXISTS trade_plan_new;
 CREATE TABLE trade_plan_new (
     plan_id     INTEGER PRIMARY KEY AUTOINCREMENT,
     plan_date   TEXT    NOT NULL,
@@ -27,7 +29,7 @@ INSERT INTO trade_plan_new
    params_hash, created_at, shares)
 SELECT plan_id, plan_date, portfolio, code, action, plan_price, size_pct,
        stop_price, tp_price, rr_ratio, status, reason, rationale_json,
-       params_hash, created_at, shares
+       params_hash, created_at, COALESCE(shares, 0)
   FROM trade_plan;
 
 DROP TABLE trade_plan;
