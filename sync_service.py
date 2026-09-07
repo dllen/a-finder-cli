@@ -107,6 +107,17 @@ def _covered_range(min_date: Optional[str], max_date: Optional[str], start: dt.d
     return min_dt <= start and max_dt >= end
 
 
+def _segment_has_weekday(seg_start: dt.date, seg_end: dt.date) -> bool:
+    """段内是否含至少一个工作日（周一~周五）。纯周末段无交易日可拉，
+    且东财/腾讯对纯非交易日区间可能返回 HTTP 501，应直接跳过。"""
+    d = seg_start
+    while d <= seg_end:
+        if d.weekday() < 5:
+            return True
+        d += dt.timedelta(days=1)
+    return False
+
+
 def _build_gap_segments(existing_dates: List[str], start: dt.date, end: dt.date) -> List[Tuple[str, str]]:
     if not existing_dates:
         return [(date_to_str(start), date_to_str(end))]
@@ -122,11 +133,13 @@ def _build_gap_segments(existing_dates: List[str], start: dt.date, end: dt.date)
         if current > prev + dt.timedelta(days=1):
             seg_start = prev + dt.timedelta(days=1)
             seg_end = current - dt.timedelta(days=1)
-            segments.append((date_to_str(seg_start), date_to_str(seg_end)))
+            if _segment_has_weekday(seg_start, seg_end):
+                segments.append((date_to_str(seg_start), date_to_str(seg_end)))
         prev = current
     if prev < end:
         seg_start = prev + dt.timedelta(days=1)
-        segments.append((date_to_str(seg_start), date_to_str(end)))
+        if _segment_has_weekday(seg_start, end):
+            segments.append((date_to_str(seg_start), date_to_str(end)))
     return segments
 
 
