@@ -77,8 +77,7 @@ function tierCard(t, idx) {
 async function loadPortfolio() {
   const date = document.getElementById('pf-date').value;
   const strategy = document.getElementById('pf-strategy').value;
-  const resp = await fetch(`/api/portfolio/summary?date=${date}&strategy=${encodeURIComponent(strategy)}`);
-  const data = await resp.json();
+  const data = await dsFetchPortfolioSummary(date, strategy);
   const cards = document.getElementById('pf-tier-cards');
   cards.innerHTML = data.tiers.map((t, i) => tierCard(t, i)).join('');
   cards.querySelectorAll('.pf-tier-card').forEach(el => {
@@ -129,10 +128,12 @@ async function selectTier(label, date, strategy) {
   cards.forEach(c => c.classList.remove('border-primary', 'shadow'));
   const active = document.querySelector(`.pf-tier-card[data-label="${label}"]`);
   if (active) active.classList.add('border-primary', 'shadow');
-  const resp = await fetch(`/api/portfolio/${encodeURIComponent(label)}?date=${date}&strategy=${encodeURIComponent(strategy)}`);
-  const data = await resp.json();
-  if (!resp.ok) return;
-  renderDetail(data);
+  try {
+    const data = await dsFetchPortfolioDetail(label, date, strategy);
+    renderDetail(data);
+  } catch (e) {
+    /* 未知档位 / 网络失败：静默忽略 */
+  }
 }
 
 function renderDetail(d) {
@@ -186,7 +187,16 @@ function renderDetail(d) {
 
 document.getElementById('pf-date').addEventListener('change', loadPortfolio);
 document.getElementById('pf-strategy').addEventListener('change', loadPortfolio);
-window.addEventListener('DOMContentLoaded', loadPortfolio);
+window.addEventListener('DOMContentLoaded', function () {
+  if (isStatic()) {
+    // 静态模式只有最新日期 + 全部策略，隐藏日期/策略选择器
+    var d = document.getElementById('pf-date');
+    var s = document.getElementById('pf-strategy');
+    if (d) d.closest('.col-auto').style.display = 'none';
+    if (s) s.closest('.col-auto').style.display = 'none';
+  }
+  loadPortfolio();
+});
 """
 
 

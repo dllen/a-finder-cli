@@ -42,6 +42,18 @@ function dsFetchHoldings() {
     : $.getJSON('/api/holdings');
 }
 
+function dsFetchPortfolioSummary(date, strategy) {
+  return isStatic()
+    ? $.getJSON(dsPath('data/portfolio/summary.json'))
+    : $.getJSON('/api/portfolio/summary', { date: date, strategy: strategy });
+}
+
+function dsFetchPortfolioDetail(label, date, strategy) {
+  return isStatic()
+    ? $.getJSON(dsPath('data/portfolio/' + label + '.json'))
+    : $.getJSON('/api/portfolio/' + encodeURIComponent(label), { date: date, strategy: strategy });
+}
+
 function dsPicksHref() { return isStatic() ? 'index.html' : '/'; }
 function dsPlanHref() { return isStatic() ? 'plan.html' : '/plan'; }
 
