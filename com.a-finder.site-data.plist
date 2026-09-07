@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  每日 15:30（本地时间）跑一次 run_local_cron.sh；周末由脚本自身跳过。
+  每日 15:30（本地时间）跑一次 a-finder.sh cron；周末由脚本自身跳过。
   安装：
     cp com.a-finder.site-data.plist ~/Library/LaunchAgents/
     launchctl load ~/Library/LaunchAgents/com.a-finder.site-data.plist
@@ -18,7 +18,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli/run_local_cron.sh</string>
+        <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli/a-finder.sh</string>
+        <string>cron</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/shichaopeng/Work/self-dir/projects/a-finder-cli</string>

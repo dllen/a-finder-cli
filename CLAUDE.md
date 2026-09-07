@@ -47,12 +47,13 @@ python3 ma_backtest.py --db hs300.db --top 10 --days 240 [--tune|--walk-forward|
 uv run pytest tests/                           # full suite
 uv run pytest tests/test_plan_builder.py -k share_lots   # single test / filter
 
-# Web dashboard / lifecycle
-bash run_web.sh                                # Flask on http://127.0.0.1:8000 (env: DB/PORT/TOP)
-bash manage.sh {start|stop|restart|status} [cli-args]
-bash sync_range.sh 2025-01-01 2026-03-12 hs300.db --gap-fill
-bash sync_incremental_pick.sh hs300.db 15 picks --limit 100
-bash build_site_data.sh [db] [top] [out]       # 本地一键生成网站数据（同步+选股+计划+组合+导出）
+# Web dashboard / lifecycle (unified entry: bash a-finder.sh help)
+bash a-finder.sh web {start|stop|restart|status}      # Flask on http://127.0.0.1:8000 (env: DB/PORT/TOP)
+bash a-finder.sh daemon {start|stop|restart|status} [cli-args]
+bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --gap-fill
+bash a-finder.sh sync-incremental hs300.db 15 picks --limit 100
+bash a-finder.sh site [db] [top] [out] [--push]        # 本地一键生成网站数据（同步+选股+计划+组合+导出+可选推送 gh-pages）
+bash a-finder.sh cron                                  # launchd 入口（工作日 15:30 跑 site --push）
 ```
 
 ## Architecture
@@ -68,14 +69,14 @@ Layered modules (top-level flat modules + a few packages):
 - **Plan / risk** — `plan_builder.build_plan` builds the daily `trade_plan` rows. Capital tiers and risk constants are in `config.py`: `CAPITAL_TIERS = [50000, 100000, 150000, 200000, 250000, 300000, 350000, 400000, 450000, 500000]` (10 tiers), `DEFAULT_CAPITAL = 100000`, `MAX_POSITIONS = 8`, plus `RR_TARGET`, `MAX_SINGLE`, `MAX_TOTAL`, `SLIPPAGE`, `STOP_ATR_MULT`. `risk_manager.RiskManager` + `market_regime` are re-exported through `shared_lib` so `plan_builder` and `ma_backtest` share one implementation — never re-implement price/sizing logic locally.
 - **Strategy evolution** — `evolution/` (`service`, `champion`, `allocator`, `labeling`, `attribution`). Mirrored to schema via `db/migrations/2026_08_27_strategy_evolution.sql`.
 - **Views** — `view_models` builds row tuples from `Stock`/`scores`; `formatter.format_table/format_lines` renders CLI tables. `pick_history.run_picks` (with `do_sync=False` flag) is what the web "重算榜单" button calls.
-- **Web** — `app.py` (Flask) serves `static/` + a single-page dashboard (`static/dashboard.js`, `static/common.js`, `static/data-source.js`) and JSON API. `web_server.py` is a separate legacy `http.server` dashboard reading `site/data/*.json` produced by `export_json.py` for the static export path. The web app pulls `daily_picks` (picks page) and `trade_plan` (plan page); summary aggregates are always over the full plan, not the filtered view.
+- **Web** — `app.py` (Flask) serves `static/` + a single-page dashboard (`static/dashboard.js`, `static/common.js`, `static/data-source.js`) and JSON API. The web app pulls `daily_picks` (picks page) and `trade_plan` (plan page); summary aggregates are always over the full plan, not the filtered view.
 - **Shared plan/backtest** — `shared_lib/strategy.py` exposes `PlanRow`, `params_hash`, `compute_plan_prices` and re-exports `RiskManager`, `PositionConfig`, `default_candidate_config`. Treat it as the single source of truth — both `plan_builder` and `ma_backtest` import from here.
 
 ## Conventions
 
 - Configurable defaults only via `config.py` (capital tiers, risk constants, sync sleep). New tier values require updating `config.CAPITAL_TIERS` and the CLI validator.
 - SQLite is the only DB; no ORM. Repository code in `db_repository.py` is the only place that issues raw SQL for domain tables — CLI/UI layers go through it.
-- Logs land in `logs/fetch_success.log` and `logs/fetch_failed.log` during sync; web log is `web.log`; daemonized CLI log is `a-finder.log` (via `manage.sh`).
+- Logs land in `logs/fetch_success.log` and `logs/fetch_failed.log` during sync; web log is `web.log`; daemonized CLI log is `a-finder.log` (via `a-finder.sh daemon`).
 - New strategies: drop a detector in `strategies/`, register in `strategies/__init__.STRATEGIES`. For factor strategies, extend `multi_factor_base.py`.
 - New schema columns: add a `db/migrations/<YYYY_MM_DD>_<name>.sql` file; do not edit `db_schema.py` for already-deployed DBs.
 

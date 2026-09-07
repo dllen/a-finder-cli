@@ -133,26 +133,26 @@ python3 ma_backtest.py --db hs300.db --top 10 --days 240 --search-quota   # 搜�
 ## 区间同步一键运行
 
 ```bash
-bash sync_range.sh
-bash sync_range.sh 2025-01-01 2026-03-12 hs300.db --concurrency 6 --rate 8 --retries 4 --backoff 0.6
-bash sync_range.sh 2025-01-01 2026-03-12 hs300.db --gap-fill
-bash sync_range.sh 2025-01-01 2026-03-12 hs300.db --retry-gaps
+bash a-finder.sh sync-range
+bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --concurrency 6 --rate 8 --retries 4 --backoff 0.6
+bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --gap-fill
+bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --retry-gaps
 ```
 
 ## 元数据 + 行情一键更新
 
 ```bash
-bash sync_all.sh
-bash sync_all.sh 2025-01-01 2026-03-12 hs300.db
-bash sync_all.sh 2025-01-01 2026-03-12 hs300.db --concurrency 6 --rate 8 --retries 4 --backoff 0.6
+bash a-finder.sh sync-all
+bash a-finder.sh sync-all 2025-01-01 2026-09-07 hs300.db
+bash a-finder.sh sync-all 2025-01-01 2026-09-07 hs300.db --concurrency 6 --rate 8 --retries 4 --backoff 0.6
 ```
 
 ## 增量更新 + 选股一键运行
 
 ```bash
-bash sync_incremental_pick.sh
-bash sync_incremental_pick.sh hs300.db 20 ma-picks
-bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
+bash a-finder.sh sync-incremental
+bash a-finder.sh sync-incremental hs300.db 20 ma-picks
+bash a-finder.sh sync-incremental hs300.db 15 picks --limit 100 --log-level INFO
 ```
 
 参数说明：
@@ -160,7 +160,7 @@ bash sync_incremental_pick.sh hs300.db 15 picks --limit 100 --log-level INFO
 - 第 1 个参数：数据库路径，默认 `hs300.db`
 - 第 2 个参数：选股数量 top，默认 `10`
 - 第 3 个参数：选股模式，支持 `pick-history` / `picks` / `ma-picks`，默认 `pick-history`（写入 `daily_picks` 表供看板/静态站点使用）
-- 第 4 个及之后参数：透传给 `sync-hs300 --mode incremental`，可直接传 `--limit`、`--log-level` 等同步参数
+- 第 4 个及之后参数：`picks`/`ma-picks` 模式下透传给对应 `a-finder` 子命令（如 `--limit`、`--log-level`）；`pick-history` 模式忽略
 
 ## 林园策略 / LinYuan
 
@@ -213,8 +213,8 @@ shares = floor(capital × size_pct / (price × 100)) × 100
 Flask 后端 + Bootstrap/jQuery（CDN）单页看板，展示每日选股、涨跌表现与历史胜率统计：
 
 ```bash
-bash run_web.sh                    # 默认 http://127.0.0.1:8000
-DB=hs300.db PORT=8080 TOP=20 bash run_web.sh
+bash a-finder.sh web start                    # 默认 http://127.0.0.1:8000
+DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
 ```
 
 - 日期选择：下拉框列出可用交易日，默认最新交易日（选股页取 `daily_picks`，计划页取 `trade_plan`）
@@ -254,15 +254,15 @@ DONE plan_date=2026-09-07 tiers=10 ok=10/10
 
 ### 数据流
 
-1. workflow `daily-sync-export.yml` 每日 15:30 (北京时间) 同步 → picks → plan (default) → **plan build-all (10 tiers)** → export
+1. 本地 `a-finder.sh site --push`（launchd 工作日 15:30）同步 → picks → plan → **plan build-all (10 tiers)** → export → 推送 gh-pages；CI `fetch-data.yml` 仅刷新缓存 DB（不部署）
 2. Flask `/api/portfolio/summary` 提供给 web 页面
 3. 静态导出到 `site/data/portfolio/{summary.json, <label>.json}` + `site/portfolio.html`
 
 ## 一键管理
 
 ```bash
-bash manage.sh status
-bash manage.sh start overview
-bash manage.sh stop
-bash manage.sh restart picks --top 5
+bash a-finder.sh daemon status
+bash a-finder.sh daemon start overview
+bash a-finder.sh daemon stop
+bash a-finder.sh daemon restart picks --top 5
 ```

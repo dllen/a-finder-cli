@@ -2,7 +2,7 @@ name: deploy
 
 # 部署 workflow：仅当代码变更（前端 / 导出 / 计划逻辑）推到 main 时，
 # 从 CI 缓存里的 hs300.db 重建 site/ 并发布到 gh-pages。
-# 数据层的增量由 fetch-data.yml（cron）与本地 build_site_data.sh --push 负责，
+# 数据层的增量由 fetch-data.yml（cron）与本地 a-finder.sh site --push 负责，
 # 此处不拉 K 线——只用缓存里最新的 DB 导出静态站点。
 on:
   push:
