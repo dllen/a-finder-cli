@@ -140,22 +140,36 @@ def _read_open_positions(conn, *, portfolio: str = "default") -> List[Dict[str, 
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def _lookup_current_prices(conn, codes: List[str]) -> Dict[str, float]:
+def _lookup_current_prices(conn, codes: List[str], as_of: Optional[str] = None) -> Dict[str, float]:
     """Last close from daily_prices for each code. ponytail: hand-rolled since
-    schema is small; switch to dedicated helper if used outside plan_builder."""
+    schema is small; switch to dedicated helper if used outside plan_builder.
+
+    as_of: 回补历史日期时，只取 <= as_of 的收盘价（避免用未来价格判定平仓）。
+    """
     if not codes:
         return {}
     placeholders = ",".join("?" for _ in codes)
     # SQLite supports window functions in 3.25+; DBs created by this project
     # always are. Latest close per code.
-    cur = conn.execute(
-        f"""SELECT code, close FROM (
-            SELECT code, close, ROW_NUMBER() OVER (
-                PARTITION BY code ORDER BY trade_date DESC
-            ) AS rn FROM daily_prices WHERE code IN ({placeholders})
-        ) WHERE rn = 1""",
-        codes,
-    )
+    if as_of:
+        cur = conn.execute(
+            f"""SELECT code, close FROM (
+                SELECT code, close, ROW_NUMBER() OVER (
+                    PARTITION BY code ORDER BY trade_date DESC
+                ) AS rn FROM daily_prices
+                WHERE code IN ({placeholders}) AND trade_date <= ?
+            ) WHERE rn = 1""",
+            tuple(codes) + (as_of,),
+        )
+    else:
+        cur = conn.execute(
+            f"""SELECT code, close FROM (
+                SELECT code, close, ROW_NUMBER() OVER (
+                    PARTITION BY code ORDER BY trade_date DESC
+                ) AS rn FROM daily_prices WHERE code IN ({placeholders})
+            ) WHERE rn = 1""",
+            codes,
+        )
     return {r[0]: r[1] for r in cur.fetchall()}
 
 
@@ -459,7 +473,7 @@ def build_plan(
         # to 0 in build-all mode.
         opens = _read_open_positions(conn, portfolio=portfolio)
         codes = list({o["code"] for o in opens})
-        current_prices = _lookup_current_prices(conn, codes)
+        current_prices = _lookup_current_prices(conn, codes, as_of=plan_date)
     finally:
         conn.close()
 
