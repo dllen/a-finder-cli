@@ -1454,7 +1454,16 @@ def create_app(db_path="hs300.db", top=10):
                 sql += " ORDER BY tp.action DESC, tp.code"
                 cur = conn.execute(sql, tuple(params))
                 cols = [d[0] for d in cur.description]
-                plan_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                # 回补第二轮按 strategy 写了重复的 (code, action) 行（价格/仓位/止损止盈
+                # 完全相同，仅 strategy 标签不同），当日计划只保留每个 (code, action) 一行。
+                seen = set()
+                plan_rows = []
+                for r in rows:
+                    key = (r.get("code"), r.get("action"))
+                    if key not in seen:
+                        seen.add(key)
+                        plan_rows.append(r)
             last = conn.execute(
                 "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio=?",
                 (label,),

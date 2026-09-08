@@ -127,7 +127,16 @@ def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = Non
                 (latest, label),
             )
             cols = [d[0] for d in cur.description]
-            plan_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            # 回补第二轮按 strategy 写了重复的 (code, action) 行（价格/仓位/止损止盈
+            # 完全相同，仅 strategy 标签不同），当日计划只保留每个 (code, action) 一行。
+            seen = set()
+            plan_rows = []
+            for r in rows:
+                key = (r.get("code"), r.get("action"))
+                if key not in seen:
+                    seen.add(key)
+                    plan_rows.append(r)
             tiers.append({
                 "label": label,
                 "capital": capital,
