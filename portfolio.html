@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>持仓组合</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Crect%20x%3D%224%22%20y%3D%229%22%20width%3D%222.4%22%20height%3D%228%22%20rx%3D%220.6%22%20fill%3D%22%235b8def%22%2F%3E%3Crect%20x%3D%228.6%22%20y%3D%225%22%20width%3D%222.4%22%20height%3D%2212%22%20rx%3D%220.6%22%20fill%3D%22%2334c98e%22%2F%3E%3Crect%20x%3D%2213.2%22%20y%3D%2211%22%20width%3D%222.4%22%20height%3D%226%22%20rx%3D%220.6%22%20fill%3D%22%23ef6c6c%22%2F%3E%3Crect%20x%3D%2217.8%22%20y%3D%223%22%20width%3D%222.4%22%20height%3D%2214%22%20rx%3D%220.6%22%20fill%3D%22%2334c98e%22%2F%3E%3Cpath%20d%3D%22M3%2019%20L21%208%22%20stroke%3D%22%238896a6%22%20stroke-width%3D%221.3%22%20stroke-dasharray%3D%223%202%22%20fill%3D%22none%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css">
+<style>:root{
+  --brand:#16263a;
+  --brand-2:#1f3350;
+  --accent:#2f6f9f;
+  --bg:#f5f6f8;
+  --surface:#ffffff;
+  --border:#e3e6eb;
+  --text:#1a2332;
+  --muted:#66707c;
+}
+html{font-size:15px}
+@media (min-width:768px){html{font-size:16px}}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+    "Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  line-height:1.5;
+  min-height:100vh;display:flex;flex-direction:column;
+}
+main{flex:1 0 auto;width:100%}
+.app-nav{background:var(--brand);}
+.app-nav .navbar-brand{
+  display:flex;align-items:center;gap:.5rem;color:#fff;font-weight:600;font-size:1.05rem;
+}
+.app-nav .navbar-brand:hover{color:#fff}
+.brand-logo{width:1.5rem;height:1.5rem;flex:none}
+.app-nav .nav-link{color:#c6d0dc;padding:.6rem .75rem}
+.app-nav .nav-link:hover{color:#fff}
+.app-nav .nav-link.active{color:#fff;font-weight:600}
+.navbar-toggler{border-color:rgba(255,255,255,.25);padding:.4rem .55rem}
+.navbar-toggler:focus{box-shadow:0 0 0 .15rem rgba(255,255,255,.25)}
+.navbar-toggler-icon{background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.85%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e")}
+.app-footer{border-top:1px solid var(--border);color:var(--muted);font-size:.85rem;background:var(--surface)}
+.page-header{display:flex;flex-direction:column;gap:.25rem;margin-bottom:1rem}
+@media (min-width:768px){.page-header{flex-direction:row;align-items:baseline;justify-content:space-between;gap:1rem}}
+.page-title{font-weight:600}
+.filter-toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:1rem}
+.filter-group{display:flex;align-items:center;gap:.5rem}
+.filter-toolbar .form-control{min-height:2.5rem}
+.filter-toolbar .form-select{min-width:9rem;width:auto;min-height:2.5rem}
+.filter-toolbar .form-control[type="search"]{flex:1 1 auto;min-width:12rem}
+.filter-toolbar .btn{white-space:nowrap}
+.filter-toolbar .form-check{padding-top:.25rem}
+@media (max-width:767px){
+  .filter-toolbar{flex-direction:column;align-items:stretch}
+  .filter-group{align-self:flex-start}
+  .filter-toolbar .form-control[type="search"]{width:100%}
+  .filter-toolbar .btn,.filter-toolbar .form-check{align-self:flex-start}
+}
+.section-title{font-size:1rem;font-weight:600;margin-top:1.25rem;margin-bottom:.5rem}
+@media (min-width:768px){.section-title{font-size:1.05rem;margin-top:1.5rem}}
+.app-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:.5rem;
+  overflow:hidden;
+}
+.app-card .app-table{margin-bottom:0}
+.app-table{width:100%;border-collapse:collapse}
+.app-table thead th{
+  position:sticky;top:0;z-index:1;
+  background:#fbfcfd;color:var(--muted);font-weight:600;font-size:.75rem;
+  text-transform:uppercase;letter-spacing:.02em;
+  border-bottom:1px solid var(--border);padding:.55rem .65rem;white-space:nowrap;
+}
+@media (min-width:768px){.app-table thead th{padding:.6rem .75rem;font-size:.8rem}}
+.app-table tbody td{padding:.55rem .65rem;vertical-align:middle;border-bottom:1px solid #eef1f4}
+@media (min-width:768px){.app-table tbody td{padding:.65rem .75rem}}
+.app-table tbody tr:last-child td{border-bottom:none}
+.app-table tbody tr:hover{background:#f6f9fc}
+.app-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.app-table th.num{text-align:right}
+.app-table td.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem;white-space:nowrap}
+.app-table tbody tr.row-hot{background:#fdecea}
+.app-table tbody tr.row-hot:hover{background:#fbdcd8}
+.app-table tbody tr.row-warm{background:#fff4e0}
+.app-table tbody tr.row-warm:hover{background:#fceccc}
+.app-table tbody tr.row-mild{background:#f7faf7}
+.app-table tbody tr.row-mild:hover{background:#eef4ee}
+.score-chip{display:inline-block;min-width:2.6rem;text-align:right;font-variant-numeric:tabular-nums}
+.app-table thead th.sortable{cursor:pointer;user-select:none}
+.app-table thead th.sortable:hover{color:var(--text)}
+.app-table thead th.sorted{color:var(--accent)}
+.legend-item{display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--muted)}
+@media (min-width:768px){.legend-item{font-size:.85rem}}
+.sw{display:inline-block;width:.9rem;height:.9rem;border-radius:.25rem;border:1px solid rgba(0,0,0,.06)}
+.sw-hot{background:#fdecea}
+.sw-warm{background:#fff4e0}
+.sw-mild{background:#f7faf7}
+.sw-neutral{background:#ffffff;border-color:var(--border)}
+.rank-badge{
+  display:inline-flex;min-width:1.6rem;height:1.6rem;align-items:center;justify-content:center;
+  border-radius:.35rem;background:#eef2f6;color:var(--muted);font-size:.75rem;font-weight:600;
+}
+@media (min-width:768px){.rank-badge{min-width:1.7rem;height:1.7rem;font-size:.8rem}}
+.band-hot{background:#fdecea}
+.band-warm{background:#fff4e0}
+.band-mild{background:#f7faf7}
+.band-neutral{background:#ffffff}
+.pick-card,.plan-card{padding:.85rem .8rem;border-bottom:1px solid #eef1f4}
+.pick-card:last-child,.plan-card:last-child{border-bottom:none}
+@media (min-width:768px){.pick-card,.plan-card{padding:.65rem .75rem}}
+.card-header-row{display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;min-height:1.8rem}
+.card-header-row .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.95rem}
+.card-title-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-score{font-weight:600;font-size:1rem;color:var(--accent)}
+.kv-grid{display:grid;grid-template-columns:3.8rem 1fr;gap:.35rem .5rem;font-size:.9rem;align-items:baseline}
+.kv-grid .k{color:var(--muted);font-size:.85rem;text-align:right}
+.kv-grid .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv-grid .v.wrap{white-space:normal}
+.kv-grid .num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;text-align:right}
+.empty-state{text-align:center;color:var(--muted);padding:2.5rem 1rem}
+.skeleton{position:relative;overflow:hidden;background:#eef1f4;border-radius:.35rem}
+.skeleton::after{
+  content:"";position:absolute;inset:0;
+  transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);
+  animation:shimmer 1.2s infinite;
+}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+.skeleton-row{height:2.4rem;margin:.5rem 0}
+.skeleton-table{padding:1rem}
+.log-scroll{max-height:12rem;overflow-y:auto}
+.form-label{font-weight:500;margin-bottom:0}
+.summary-card .card-body{display:flex;flex-wrap:wrap;gap:.35rem .9rem}
+.dashboard-card .card-body{min-height:4.5rem}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-md app-nav"><div class="container"><a class="navbar-brand" href="/"><svg class="brand-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="4" y="9" width="2.4" height="8" rx="0.6" fill="#5b8def"/><rect x="8.6" y="5" width="2.4" height="12" rx="0.6" fill="#34c98e"/><rect x="13.2" y="11" width="2.4" height="6" rx="0.6" fill="#ef6c6c"/><rect x="17.8" y="3" width="2.4" height="14" rx="0.6" fill="#34c98e"/><path d="M3 19 L21 8" stroke="#8896a6" stroke-width="1.3" stroke-dasharray="3 2"/></svg><span>每日机会</span></a><button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#appNav" aria-controls="appNav" aria-expanded="false" aria-label="切换导航"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="appNav"><div class="navbar-nav ms-auto"><a class="nav-link" data-nav="picks" href="/">每日机会</a><a class="nav-link active" data-nav="portfolio" href="/portfolio">持仓组合</a><a class="nav-link" data-nav="plan" href="/plan">交易计划</a></div></div></div></nav>
+<main class="container py-4">
+  <h2 class="mb-3">持仓组合 <small class="text-muted fs-6">[paper]</small></h2>
+
+  <div class="row g-2 align-items-end mb-3">
+    <div class="col-auto">
+      <label class="form-label mb-0">日期</label>
+      <input type="date" id="pf-date" class="form-control form-control-sm" value="2026-09-11">
+    </div>
+    <div class="col-auto">
+      <label class="form-label mb-0">策略</label>
+      <select id="pf-strategy" class="form-select form-select-sm">
+        <option value="" selected>全部</option>
+        <!--STRATEGY_OPTIONS-->
+      </select>
+    </div>
+    <div class="col-auto ms-auto small text-muted">
+      <span class="me-2">基准：所有 tier 共用同一组 daily_picks；按 capital 等权分配</span>
+    </div>
+  </div>
+
+  <h5 class="mt-4">资金档位</h5>
+  <div class="d-flex flex-row overflow-auto pb-2 gap-2" id="pf-tier-cards"></div>
+
+  <h5 class="mt-4">累计收益对比</h5>
+  <div style="position:relative; height:280px;">
+    <canvas id="pf-returns-chart"></canvas>
+  </div>
+
+  <div id="pf-detail" class="mt-4"></div>
+</main>
+<footer class="app-footer"><div class="container d-flex flex-column flex-md-row justify-content-between align-items-center py-3 gap-1"><span>&copy; 2026 每日机会</span><span>沪深300 选股与交易计划 &middot; 数据仅供参考，不构成投资建议</span></div></footer>
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>window.APP_MODE='static'; window.DATA_PREFIX='';</script>
+<script src="static/common.js"></script>
+<script src="static/data-source.js"></script>
+<script src="static/dashboard.js"></script>
+<script>
+
+window.PORTFOLIO_PAGE = true;
+const TIER_PALETTE = [
+  '#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa',
+  '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#c084fc',
+];
+
+function tierCard(t, idx) {
+  const color = TIER_PALETTE[idx % TIER_PALETTE.length];
+  const sign = t.return_rate >= 0 ? '+' : '';
+  return `
+    <div class="card pf-tier-card" data-label="${t.label}" style="min-width:120px; cursor:pointer; border-left: 4px solid ${color};">
+      <div class="card-body p-2 text-center">
+        <div class="fw-bold fs-5" style="color:${color};">${t.label}</div>
+        <div class="small text-muted">${(t.capital/10000).toFixed(0)}万</div>
+        <div class="fs-6 mt-1 ${t.return_rate>=0?'text-success':'text-danger'}">
+          ${sign}${(t.return_rate*100).toFixed(2)}%
+        </div>
+        <div class="small text-muted">
+          ¥${t.total_value.toFixed(0)}
+        </div>
+      </div>
+    </div>`;
+}
+
+async function loadPortfolio() {
+  const date = document.getElementById('pf-date').value;
+  const strategy = document.getElementById('pf-strategy').value;
+  const data = await dsFetchPortfolioSummary(date, strategy);
+  const cards = document.getElementById('pf-tier-cards');
+  cards.innerHTML = data.tiers.map((t, i) => tierCard(t, i)).join('');
+  cards.querySelectorAll('.pf-tier-card').forEach(el => {
+    el.addEventListener('click', () => selectTier(el.dataset.label, date, strategy));
+  });
+  drawReturnsChart(data.tiers);
+  if (data.tiers.length) selectTier('10W', date, strategy);
+}
+
+function drawReturnsChart(tiers) {
+  const ctx = document.getElementById('pf-returns-chart').getContext('2d');
+  if (window._pfChart) window._pfChart.destroy();
+  const palette = [
+    '#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa',
+    '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#c084fc',
+  ];
+  window._pfChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: tiers.map(t => t.label),
+      datasets: [{
+        label: '累计收益率',
+        data: tiers.map(t => +(t.return_rate * 100).toFixed(2)),
+        backgroundColor: tiers.map((_, i) => palette[i % palette.length]),
+        borderColor: tiers.map((_, i) => palette[i % palette.length]),
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.parsed.y.toFixed(2)}%`,
+          },
+        },
+      },
+      scales: {
+        y: { ticks: { callback: v => v + '%' } },
+      },
+    },
+  });
+}
+
+async function selectTier(label, date, strategy) {
+  cards = document.querySelectorAll('.pf-tier-card');
+  cards.forEach(c => c.classList.remove('border-primary', 'shadow'));
+  const active = document.querySelector(`.pf-tier-card[data-label="${label}"]`);
+  if (active) active.classList.add('border-primary', 'shadow');
+  try {
+    const data = await dsFetchPortfolioDetail(label, date, strategy);
+    renderDetail(data);
+  } catch (e) {
+    /* 未知档位 / 网络失败：静默忽略 */
+  }
+}
+
+function renderDetail(d) {
+  const detail = document.getElementById('pf-detail');
+  const pnl = d.pnl;
+  const used = pnl.initial_capital - pnl.cash_remaining;
+  const util = (used / pnl.initial_capital * 100).toFixed(1);
+  const nameLabel = it => `${it.code}<br><small class="text-muted">${it.name || ''}</small>`;
+  const html = `
+    <h5>${d.label} <small class="text-muted">资金 ${pnl.initial_capital.toLocaleString()} 元</small></h5>
+    <div class="row g-2 mb-3">
+      <div class="col-auto"><span class="badge bg-secondary">已用 ¥${used.toLocaleString()}</span></div>
+      <div class="col-auto"><span class="badge bg-info">现金 ¥${pnl.cash_remaining.toLocaleString()}</span></div>
+      <div class="col-auto"><span class="badge bg-warning text-dark">利用率 ${util}%</span></div>
+      <div class="col-auto"><span class="badge ${pnl.unrealized_pnl>=0?'bg-success':'bg-danger'}">
+        未实现 ¥${pnl.unrealized_pnl.toFixed(0)}
+      </span></div>
+      <div class="col-auto"><span class="badge bg-dark">已实现 ¥${pnl.realized_pnl.toFixed(0)}</span></div>
+    </div>
+    <h6>当日计划</h6>
+    <table class="table table-sm">
+      <thead><tr><th>动作</th><th>代码 / 名称</th><th>价格</th><th>仓位%</th><th>止损</th><th>止盈</th><th>状态</th></tr></thead>
+      <tbody>
+        ${d.plan_rows.map(r => `<tr>
+          <td>${r.action}</td><td>${nameLabel(r)}</td>
+          <td>${(r.plan_price||0).toFixed(2)}</td>
+          <td>${(r.size_pct*100).toFixed(1)}%</td>
+          <td>${(r.stop_price||0).toFixed(2)}</td>
+          <td>${(r.tp_price||0).toFixed(2)}</td>
+          <td>${r.status}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <h6>当前持仓</h6>
+    <table class="table table-sm">
+      <thead><tr><th>代码 / 名称</th><th>成本</th><th>现价</th><th>股数</th><th>浮盈</th></tr></thead>
+      <tbody>
+        ${d.holdings.items.map(it => `<tr>
+          <td>${nameLabel(it)}</td>
+          <td>${(it.entry_price||0).toFixed(2)}</td>
+          <td>${(it.current_price||0).toFixed(2)}</td>
+          <td>${it.shares}</td>
+          <td class="${(it.floating_pnl||0)>=0?'text-success':'text-danger'}">
+            ¥${(it.floating_pnl||0).toFixed(0)}
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  detail.innerHTML = html;
+}
+
+document.getElementById('pf-date').addEventListener('change', loadPortfolio);
+document.getElementById('pf-strategy').addEventListener('change', loadPortfolio);
+window.addEventListener('DOMContentLoaded', function () {
+  if (isStatic()) {
+    // 静态模式只有最新日期 + 全部策略，隐藏日期/策略选择器
+    var d = document.getElementById('pf-date');
+    var s = document.getElementById('pf-strategy');
+    if (d) d.closest('.col-auto').style.display = 'none';
+    if (s) s.closest('.col-auto').style.display = 'none';
+  }
+  loadPortfolio();
+});
+
+</script>
+</body>
+</html>
