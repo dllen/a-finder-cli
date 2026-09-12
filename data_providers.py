@@ -122,6 +122,67 @@ def fetch_daily_kline_tencent(code: str, start_date: str, end_date: str) -> tupl
     return rows, name
 
 
+def fetch_daily_kline_sina(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    # 新浪不复权日 K：字段 {day, open, high, low, close, volume}，成交量单位「股」→ /100 转「手」。
+    # 作为东财 push2his / 腾讯 fqkline 同时限流时的备源（不复权，与东财 fqt=0 口径一致）。
+    # 注意：该接口只认 datalen（最近 N 根），不认 start/end，故按 start 距今自然日估算覆盖量后过滤。
+    import datetime as dt
+    symbol = code_to_tencent_symbol(code)  # sh/sz 前缀，新浪同款
+    url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+
+    def _parse(s: str) -> dt.date:
+        if len(s) == 8 and s.isdigit():
+            return dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        return dt.datetime.strptime(s, "%Y-%m-%d").date()
+
+    start = _parse(start_date)
+    end = _parse(end_date)
+    days_back = (dt.date.today() - start).days
+    datalen = min(2000, max(30, int(days_back * 0.72) + 30))
+
+    params = {"symbol": symbol, "scale": "240", "ma": "no", "datalen": str(datalen)}
+    data = fetch_url_json(url, params, referer="https://finance.sina.com.cn")
+    if not isinstance(data, list):
+        return [], ""
+    rows = []
+    for entry in data:
+        day = str(entry.get("day") or "")
+        try:
+            d = dt.date.fromisoformat(day)
+        except ValueError:
+            continue
+        if start <= d <= end:
+            rows.append(
+                PriceRow(
+                    code=code,
+                    trade_date=day,
+                    open_price=float(entry.get("open") or 0),
+                    close_price=float(entry.get("close") or 0),
+                    high_price=float(entry.get("high") or 0),
+                    low_price=float(entry.get("low") or 0),
+                    volume=float(entry.get("volume") or 0) / 100.0,
+                    amount=0.0,
+                    amplitude=0.0,
+                    pct_change=0.0,
+                    change=0.0,
+                    turnover=0.0,
+                )
+            )
+    return rows, ""
+
+
+def _fetch_daily_kline_fallback(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    # 东财主源失败后的备源链：新浪不复权 → 腾讯 qfq 前复权。
+    for fetcher in (fetch_daily_kline_sina, fetch_daily_kline_tencent):
+        try:
+            rows, name = fetcher(code, start_date, end_date)
+            if rows:
+                return rows, name
+        except Exception:
+            continue
+    return [], ""
+
+
 def fetch_daily_kline_with_name(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
     url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = {
@@ -137,12 +198,12 @@ def fetch_daily_kline_with_name(code: str, start_date: str, end_date: str) -> tu
     try:
         data = fetch_url_json(url, params, referer)
     except Exception:
-        return fetch_daily_kline_tencent(code, start_date, end_date)
+        return _fetch_daily_kline_fallback(code, start_date, end_date)
     payload = data.get("data") if isinstance(data, dict) else None
     kline_data = payload.get("klines") if isinstance(payload, dict) else None
     name = str(payload.get("name") or "").strip() if payload else ""
     if not kline_data:
-        return fetch_daily_kline_tencent(code, start_date, end_date)
+        return _fetch_daily_kline_fallback(code, start_date, end_date)
     rows = []
     for entry in kline_data:
         parts = entry.split(",")
