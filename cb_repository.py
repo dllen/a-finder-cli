@@ -2,6 +2,11 @@
 
 只操作 `cb_` 前缀的表，与股票体系（daily_picks / trade_plan / open_positions）
 完全隔离。所有函数接受一个已打开的 sqlite3.Connection。
+
+写入约定：每个写函数都是原子的。sqlite3 的 executemany 逐行插入，批次
+中途违反约束时前面的行已落库、后面的行没有；若不显式回滚，连接会停留在
+「半成品」状态，调用方后续任意一次 commit() 都会把坏状态持久化。
+因此所有写函数统一 try/except → rollback() → raise。
 """
 from __future__ import annotations
 
@@ -50,23 +55,27 @@ def upsert_cb_universe_rows(
         )
     if not data:
         return 0
-    conn.executemany(
-        """INSERT INTO cb_universe
-           (trade_date, code, name, stock_code, stock_name, price, convert_price,
-            convert_value, premium_rate, stock_price, rating, issue_size, listed,
-            updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(trade_date, code) DO UPDATE SET
-             name=excluded.name, stock_code=excluded.stock_code,
-             stock_name=excluded.stock_name, price=excluded.price,
-             convert_price=excluded.convert_price,
-             convert_value=excluded.convert_value,
-             premium_rate=excluded.premium_rate, stock_price=excluded.stock_price,
-             rating=excluded.rating, issue_size=excluded.issue_size,
-             listed=excluded.listed, updated_at=excluded.updated_at""",
-        data,
-    )
-    conn.commit()
+    try:
+        conn.executemany(
+            """INSERT INTO cb_universe
+               (trade_date, code, name, stock_code, stock_name, price, convert_price,
+                convert_value, premium_rate, stock_price, rating, issue_size, listed,
+                updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(trade_date, code) DO UPDATE SET
+                 name=excluded.name, stock_code=excluded.stock_code,
+                 stock_name=excluded.stock_name, price=excluded.price,
+                 convert_price=excluded.convert_price,
+                 convert_value=excluded.convert_value,
+                 premium_rate=excluded.premium_rate, stock_price=excluded.stock_price,
+                 rating=excluded.rating, issue_size=excluded.issue_size,
+                 listed=excluded.listed, updated_at=excluded.updated_at""",
+            data,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return len(data)
 
 
@@ -106,20 +115,24 @@ def upsert_cb_factors_rows(
         )
     if not data:
         return 0
-    conn.executemany(
-        """INSERT INTO cb_factors
-           (trade_date, code, bond_floor, ytm, year_left, redeem_dist, put_dist,
-            adj_count, redeem_status, factor_json, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(trade_date, code) DO UPDATE SET
-             bond_floor=excluded.bond_floor, ytm=excluded.ytm,
-             year_left=excluded.year_left, redeem_dist=excluded.redeem_dist,
-             put_dist=excluded.put_dist, adj_count=excluded.adj_count,
-             redeem_status=excluded.redeem_status,
-             factor_json=excluded.factor_json, updated_at=excluded.updated_at""",
-        data,
-    )
-    conn.commit()
+    try:
+        conn.executemany(
+            """INSERT INTO cb_factors
+               (trade_date, code, bond_floor, ytm, year_left, redeem_dist, put_dist,
+                adj_count, redeem_status, factor_json, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(trade_date, code) DO UPDATE SET
+                 bond_floor=excluded.bond_floor, ytm=excluded.ytm,
+                 year_left=excluded.year_left, redeem_dist=excluded.redeem_dist,
+                 put_dist=excluded.put_dist, adj_count=excluded.adj_count,
+                 redeem_status=excluded.redeem_status,
+                 factor_json=excluded.factor_json, updated_at=excluded.updated_at""",
+            data,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return len(data)
 
 
@@ -143,7 +156,11 @@ def replace_cb_picks(
     trade_date: str,
     rows: Iterable[Dict[str, Any]],
 ) -> int:
-    """覆盖写入某日榜单。先删该日旧行，再插入新行。"""
+    """覆盖写入某日榜单。先删该日旧行，再插入新行。
+
+    整个替换是原子的：任一行插入失败（含同日同 code 触发唯一索引）
+    则整体回滚，旧榜单完整保留，连接回到干净状态。
+    """
     now = _now()
     data = []
     for r in rows:
@@ -160,17 +177,21 @@ def replace_cb_picks(
                 _as_json(r.get("factor_counts")), now,
             )
         )
-    conn.execute("DELETE FROM cb_picks WHERE trade_date=?", (trade_date,))
-    if data:
-        conn.executemany(
-            """INSERT INTO cb_picks
-               (trade_date, rank, code, name, price, total_score, a_score, b_score,
-                c_score, size_pct, shares, stop_price, tp_price, reason, risk_note,
-                factor_counts, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            data,
-        )
-    conn.commit()
+    try:
+        conn.execute("DELETE FROM cb_picks WHERE trade_date=?", (trade_date,))
+        if data:
+            conn.executemany(
+                """INSERT INTO cb_picks
+                   (trade_date, rank, code, name, price, total_score, a_score, b_score,
+                    c_score, size_pct, shares, stop_price, tp_price, reason, risk_note,
+                    factor_counts, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                data,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return len(data)
 
 
@@ -196,24 +217,28 @@ def upsert_cb_position(
     code = str(row.get("code") or "").strip()
     if not code:
         raise ValueError("cb_position requires code")
-    conn.execute(
-        """INSERT INTO cb_positions
-           (code, name, stock_code, entry_date, entry_price, shares,
-            stop_price, tp_price, note, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(code) DO UPDATE SET
-             name=excluded.name, stock_code=excluded.stock_code,
-             entry_date=excluded.entry_date, entry_price=excluded.entry_price,
-             shares=excluded.shares, stop_price=excluded.stop_price,
-             tp_price=excluded.tp_price, note=excluded.note,
-             updated_at=excluded.updated_at""",
-        (
-            code, row.get("name"), row.get("stock_code"), row.get("entry_date"),
-            row.get("entry_price"), int(row.get("shares") or 0),
-            row.get("stop_price"), row.get("tp_price"), row.get("note"), _now(),
-        ),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            """INSERT INTO cb_positions
+               (code, name, stock_code, entry_date, entry_price, shares,
+                stop_price, tp_price, note, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(code) DO UPDATE SET
+                 name=excluded.name, stock_code=excluded.stock_code,
+                 entry_date=excluded.entry_date, entry_price=excluded.entry_price,
+                 shares=excluded.shares, stop_price=excluded.stop_price,
+                 tp_price=excluded.tp_price, note=excluded.note,
+                 updated_at=excluded.updated_at""",
+            (
+                code, row.get("name"), row.get("stock_code"), row.get("entry_date"),
+                row.get("entry_price"), int(row.get("shares") or 0),
+                row.get("stop_price"), row.get("tp_price"), row.get("note"), _now(),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def get_cb_positions(
@@ -225,5 +250,9 @@ def get_cb_positions(
 
 
 def delete_cb_position(conn: sqlite3.Connection, code: str) -> None:
-    conn.execute("DELETE FROM cb_positions WHERE code=?", (code,))
-    conn.commit()
+    try:
+        conn.execute("DELETE FROM cb_positions WHERE code=?", (code,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
