@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 from pathlib import Path
 
@@ -33,35 +32,27 @@ from db_repository import (
     compute_portfolio_pnl,
 )
 from app import (
-    _page,
-    PAGE_BODY,
-    PLAN_BODY,
-    PAGE_SCRIPT,
-    PLAN_SCRIPT,
-    PORTFOLIO_BODY,
-    PORTFOLIO_SCRIPT,
     list_dates,
     picks_for_date,
     _dt_class,
-    _TIER_FILTER_OPTIONS,
 )
 from config import CAPITAL_TIERS
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
-# 静态页去掉写入类操作按钮（重算/同步/生成 plan/含 failed）。
-_WRITE_BTN = re.compile(
-    r'<button[^>]*write-control[^>]*>.*?</button>',
-    re.S,
-)
-_WRITE_CHECK = re.compile(
-    r'<div[^>]*write-control[^>]*>.*?</div>',
-    re.S,
-)
 
-
-def _strip_write_controls(body: str) -> str:
-    return _WRITE_CHECK.sub("", _WRITE_BTN.sub("", body))
+def _render_static_page(template_name: str, **kwargs) -> str:
+    """Render a Jinja2 template in static mode (no url_for, relative paths)."""
+    from jinja2 import Environment, FileSystemLoader
+    env = Environment(loader=FileSystemLoader(str(Path(__file__).parent / "templates")))
+    # In static mode, url_for doesn't work — provide a simple replacement
+    env.globals['url_for'] = lambda endpoint, **kw: f"static/{kw.get('filename', '')}"
+    return env.get_template(template_name).render(
+        app_mode="static",
+        data_prefix="",
+        show_write_controls=False,
+        **kwargs,
+    )
 
 
 def _cleanup_stale_date_files(data_dir: Path, pick_dates, plan_dates) -> None:
@@ -173,10 +164,10 @@ def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = Non
 
     # 静态页
     (out_dir / "portfolio.html").write_text(
-        _page("持仓组合", "portfolio",
-              PORTFOLIO_BODY.replace("{{today}}", latest),
-              PORTFOLIO_SCRIPT,
-              config=STATIC_CONFIG, assets="static/"),
+        _render_static_page("portfolio.html",
+            today=latest,
+            strategy_options="",
+            year=_dt_class.now().year),
         encoding="utf-8",
     )
 
@@ -228,33 +219,50 @@ def export(db_path: str, out_dir: str) -> int:
     _cleanup_stale_date_files(data_dir, pick_dates, plan_dates)
 
     # 静态页默认日期 = 最新可用数据日期（fallback 到今天仅用于展示占位）
-    # 注意：无需 fallback —— 只要有任意一天的 picks 数据就用它
     today = _dt_class.now().strftime("%Y-%m-%d")
     picks_default = pick_dates[0] if pick_dates else today
     plan_default = plan_dates[0] if plan_dates else today
 
+    # Generate tier filter options for plan page
+    tier_filter_options = "".join(
+        f'<li><label class="dropdown-item"><input type="checkbox" class="form-check-input me-1 tier-filter-cb" value="{c}"> {c // 10000}W</label></li>'
+        for c in CAPITAL_TIERS
+    )
+
     (out / "index.html").write_text(
-        _page("每日机会", "picks",
-              _strip_write_controls(PAGE_BODY).replace("{{today}}", picks_default),
-              PAGE_SCRIPT, config=STATIC_CONFIG, assets="static/"),
+        _render_static_page("picks.html", today=picks_default, year=_dt_class.now().year),
         encoding="utf-8",
     )
     (out / "plan.html").write_text(
-        _page("每日 Plan", "plan",
-              _strip_write_controls(PLAN_BODY)
-                  .replace("{{today}}", plan_default)
-                  .replace("{{tier_filter}}", _TIER_FILTER_OPTIONS),
-              PLAN_SCRIPT, config=STATIC_CONFIG, assets="static/"),
+        _render_static_page("plan.html",
+            today=plan_default,
+            capital_tiers=CAPITAL_TIERS,
+            tier_filter_options=tier_filter_options,
+            year=_dt_class.now().year),
         encoding="utf-8",
     )
 
     # 404 回退到首页（Pages SPA 惯例），避免陈旧副本
     shutil.copy(out / "index.html", out / "404.html")
 
-    # Static assets
+    # Static assets: copy JS modules, CSS, vendor libs, favicon
     src_static = Path(__file__).parent / "static"
-    for f in ("common.js", "data-source.js", "dashboard.js"):
-        shutil.copy(src_static / f, static_dir / f)
+    # JS modules
+    dst_js = static_dir / "js"
+    dst_js.mkdir(exist_ok=True)
+    for f in (src_static / "js").glob("*.js"):
+        shutil.copy(f, dst_js / f.name)
+    # CSS
+    dst_css = static_dir / "css"
+    dst_css.mkdir(exist_ok=True)
+    shutil.copy(src_static / "css" / "app.css", dst_css / "app.css")
+    # Vendor libs
+    dst_vendor = static_dir / "vendor"
+    dst_vendor.mkdir(exist_ok=True)
+    for f in (src_static / "vendor").glob("*"):
+        shutil.copy(f, dst_vendor / f.name)
+    # Favicon
+    shutil.copy(src_static / "favicon.svg", static_dir / "favicon.svg")
 
     print(f"导出完成：picks={len(pick_dates)} plan={len(plan_dates)} → {out}")
     export_portfolio(db_path, out)
