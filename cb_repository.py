@@ -6,7 +6,13 @@
 写入约定：每个写函数都是原子的。sqlite3 的 executemany 逐行插入，批次
 中途违反约束时前面的行已落库、后面的行没有；若不显式回滚，连接会停留在
 「半成品」状态，调用方后续任意一次 commit() 都会把坏状态持久化。
-因此所有写函数统一 try/except → rollback() → raise。
+
+回滚范围：失败时只回滚本函数自己的写入（SAVEPOINT 作用域），
+调用方在本连接上更早的未提交写入不受影响。
+
+提交范围：写函数末尾的 conn.commit() 提交的是整个连接上的事务，
+因此调用方更早的未提交写入也会一并被提交——这是本项目
+「每次写入自行提交」约定（与 db_repository.py 一致）的固有行为。
 """
 from __future__ import annotations
 
@@ -25,6 +31,43 @@ def _as_json(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return value
+
+
+def _as_listed(value: Any) -> int:
+    """把 listed 归一化为 0/1。
+
+    注意不能用 `1 if value else 0`：字符串 "0" 是真值，会被误判为已上市。
+    """
+    if value in (True, 1, "1", "true", "True"):
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 写入原语
+# ---------------------------------------------------------------------------
+
+_SAVEPOINT = "cb_write"
+
+
+def _begin(conn: sqlite3.Connection) -> None:
+    """开启一个保存点，作为本函数写入的回滚边界。"""
+    conn.execute(f"SAVEPOINT {_SAVEPOINT}")
+
+
+def _rollback_to(conn: sqlite3.Connection) -> None:
+    """回滚到保存点：只撤销本函数自己的写入。
+
+    不使用裸 rollback()——那会撤销整个事务，连带把调用方更早的未提交
+    写入一并丢掉。ROLLBACK TO 之后必须再 RELEASE，否则保存点仍然定义着。
+    """
+    conn.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
+    conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+
+
+def _release(conn: sqlite3.Connection) -> None:
+    """释放保存点。"""
+    conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +92,13 @@ def upsert_cb_universe_rows(
                 r.get("name"), r.get("stock_code"), r.get("stock_name"),
                 r.get("price"), r.get("convert_price"), r.get("convert_value"),
                 r.get("premium_rate"), r.get("stock_price"), r.get("rating"),
-                r.get("issue_size"), 1 if r.get("listed") else 0,
+                r.get("issue_size"), _as_listed(r.get("listed")),
                 now,
             )
         )
     if not data:
         return 0
+    _begin(conn)
     try:
         conn.executemany(
             """INSERT INTO cb_universe
@@ -72,9 +116,10 @@ def upsert_cb_universe_rows(
                  listed=excluded.listed, updated_at=excluded.updated_at""",
             data,
         )
+        _release(conn)
         conn.commit()
     except Exception:
-        conn.rollback()
+        _rollback_to(conn)
         raise
     return len(data)
 
@@ -115,6 +160,7 @@ def upsert_cb_factors_rows(
         )
     if not data:
         return 0
+    _begin(conn)
     try:
         conn.executemany(
             """INSERT INTO cb_factors
@@ -129,9 +175,10 @@ def upsert_cb_factors_rows(
                  factor_json=excluded.factor_json, updated_at=excluded.updated_at""",
             data,
         )
+        _release(conn)
         conn.commit()
     except Exception:
-        conn.rollback()
+        _rollback_to(conn)
         raise
     return len(data)
 
@@ -160,6 +207,7 @@ def replace_cb_picks(
 
     整个替换是原子的：任一行插入失败（含同日同 code 触发唯一索引）
     则整体回滚，旧榜单完整保留，连接回到干净状态。
+    回滚只影响本函数的写入，调用方更早的未提交写入不受影响。
     """
     now = _now()
     data = []
@@ -167,9 +215,12 @@ def replace_cb_picks(
         code = str(r.get("code") or "").strip()
         if not code:
             continue
+        rank = r.get("rank")
+        if rank is None:
+            raise ValueError(f"cb_picks row requires rank: code={code!r}")
         data.append(
             (
-                trade_date, int(r.get("rank") or 0), code, r.get("name"),
+                trade_date, int(rank), code, r.get("name"),
                 r.get("price"), r.get("total_score"), r.get("a_score"),
                 r.get("b_score"), r.get("c_score"), r.get("size_pct"),
                 r.get("shares"), r.get("stop_price"), r.get("tp_price"),
@@ -177,6 +228,7 @@ def replace_cb_picks(
                 _as_json(r.get("factor_counts")), now,
             )
         )
+    _begin(conn)
     try:
         conn.execute("DELETE FROM cb_picks WHERE trade_date=?", (trade_date,))
         if data:
@@ -188,9 +240,10 @@ def replace_cb_picks(
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 data,
             )
+        _release(conn)
         conn.commit()
     except Exception:
-        conn.rollback()
+        _rollback_to(conn)
         raise
     return len(data)
 
@@ -217,6 +270,16 @@ def upsert_cb_position(
     code = str(row.get("code") or "").strip()
     if not code:
         raise ValueError("cb_position requires code")
+    # entry_date / entry_price / shares 是 NOT NULL 列。其中 shares=0 能通过
+    # NOT NULL 检查，但 0 股持仓在语义上无效（会破坏退出/风险预警），
+    # 故与 code 一并显式校验，缺失时抛 ValueError。
+    for field in ("entry_date", "entry_price", "shares"):
+        if row.get(field) is None:
+            raise ValueError(f"cb_position requires {field}")
+    shares = int(row["shares"])
+    if shares <= 0:
+        raise ValueError("cb_position requires shares > 0")
+    _begin(conn)
     try:
         conn.execute(
             """INSERT INTO cb_positions
@@ -231,13 +294,14 @@ def upsert_cb_position(
                  updated_at=excluded.updated_at""",
             (
                 code, row.get("name"), row.get("stock_code"), row.get("entry_date"),
-                row.get("entry_price"), int(row.get("shares") or 0),
+                row.get("entry_price"), shares,
                 row.get("stop_price"), row.get("tp_price"), row.get("note"), _now(),
             ),
         )
+        _release(conn)
         conn.commit()
     except Exception:
-        conn.rollback()
+        _rollback_to(conn)
         raise
 
 
@@ -250,9 +314,11 @@ def get_cb_positions(
 
 
 def delete_cb_position(conn: sqlite3.Connection, code: str) -> None:
+    _begin(conn)
     try:
         conn.execute("DELETE FROM cb_positions WHERE code=?", (code,))
+        _release(conn)
         conn.commit()
     except Exception:
-        conn.rollback()
+        _rollback_to(conn)
         raise
