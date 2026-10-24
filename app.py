@@ -5,7 +5,7 @@ import urllib.parse
 import uuid
 from datetime import datetime as _dt_class
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 from markupsafe import escape as _esc_html
 
 from pick_history import run_picks
@@ -1180,22 +1180,20 @@ def create_app(db_path="hs300.db", top=10):
     @app.get("/")
     def index():
         from datetime import date as _date
-        today = _date.today().isoformat()
-        return _page(
-            "每日机会", "picks",
-            PAGE_BODY.replace("{{today}}", today),
-            PAGE_SCRIPT,
-        )
+        return render_template("picks.html",
+            today=_date.today().isoformat(),
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
 
     @app.get("/plan")
     def plan_page():
         from datetime import date as _date
-        today = _date.today().isoformat()
-        return _page(
-            "每日 Plan", "plan",
-            PLAN_BODY.replace("{{today}}", today).replace("{{tier_filter}}", _TIER_FILTER_OPTIONS),
-            PLAN_SCRIPT,
-        )
+        return render_template("plan.html",
+            today=_date.today().isoformat(),
+            capital_tiers=CAPITAL_TIERS,
+            tier_filter_options=_TIER_FILTER_OPTIONS,
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
 
     @app.get("/api/dates")
     def dates():
@@ -1381,10 +1379,11 @@ def create_app(db_path="hs300.db", top=10):
             f'        <option value="{esc_attr(s)}">{esc_attr(s)}</option>\n'
             for s in strategies
         )
-        body = (PORTFOLIO_BODY
-                .replace("{{today}}", today)
-                .replace("<!--STRATEGY_OPTIONS-->", options_html))
-        return _page("持仓组合", "portfolio", body, PORTFOLIO_SCRIPT)
+        return render_template("portfolio.html",
+            today=today,
+            strategy_options=options_html,
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
 
     def _portfolio_label_to_capital(label: str):
         """'10W' → 100000；None if label doesn't match a known tier."""
