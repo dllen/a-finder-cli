@@ -1,5 +1,6 @@
 import argparse
-from typing import Dict, List, Optional
+import datetime as dt
+from typing import Any, Dict, List, Optional
 
 from config import CAPITAL_TIERS
 from domain_models import Stock
@@ -297,6 +298,36 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--retries", type=int, default=2)
     si.add_argument("--backoff", type=float, default=1.0)
 
+    cbp = subparsers.add_parser(
+        "cb-picks",
+        help="可转债策略：多因子打分生成每日转债榜单（债底/股性/条款三组）",
+    )
+    cbp.add_argument("--top", type=int, default=20)
+    cbp.add_argument("--db", type=str, default="hs300.db")
+    cbp.add_argument("--capital", type=float, default=100000.0)
+    cbp.add_argument("--weights", type=str, default=None,
+                     help="组权重覆盖，如 a=0.5,b=0.25,c=0.25")
+    cbp.add_argument("--min-premium", type=float, default=None)
+    cbp.add_argument("--max-premium", type=float, default=None)
+    cbp.add_argument("--concurrency", type=int, default=4)
+    cbp.add_argument("--rate", type=float, default=6.0)
+    cbp.add_argument("--dry-run", action="store_true")
+
+    cba = subparsers.add_parser("cb-alerts", help="可转债持仓退出预警（强赎/止损/回售/止盈）")
+    cba.add_argument("--db", type=str, default="hs300.db")
+    cba.add_argument("--json", action="store_true")
+
+    cbadd = subparsers.add_parser("cb-add", help="登记可转债持仓")
+    cbadd.add_argument("code", type=str)
+    cbadd.add_argument("--shares", type=int, required=True)
+    cbadd.add_argument("--price", type=float, required=True)
+    cbadd.add_argument("--date", type=str, default=None)
+    cbadd.add_argument("--db", type=str, default="hs300.db")
+    cbadd.add_argument("--note", type=str, default="")
+
+    cbpos = subparsers.add_parser("cb-positions", help="查看可转债持仓")
+    cbpos.add_argument("--db", type=str, default="hs300.db")
+
     return parser
 
 
@@ -378,6 +409,14 @@ def run_cli(args: argparse.Namespace, stocks: List[Stock], scores: Dict[str, flo
         _run_sync_fundamentals_history(args)
     elif args.command == "sync-industry":
         _run_sync_industry(args)
+    elif args.command == "cb-picks":
+        _run_cb_picks(args)
+    elif args.command == "cb-alerts":
+        _run_cb_alerts(args)
+    elif args.command == "cb-add":
+        _run_cb_add(args)
+    elif args.command == "cb-positions":
+        _run_cb_positions(args)
     else:
         build_parser().print_help()
 
@@ -624,3 +663,190 @@ def _run_sync_industry(args) -> None:
         backoff=args.backoff,
         progress=_progress,
     ))
+
+
+# ---------------------------------------------------------------------------
+# 可转债策略 CLI handlers
+# ---------------------------------------------------------------------------
+
+def _parse_weights(spec: Optional[str]) -> Optional[Dict[str, float]]:
+    """解析 'a=0.5,b=0.25,c=0.25' → {'a':0.5,'b':0.25,'c':0.25}。"""
+    if not spec:
+        return None
+    out: Dict[str, float] = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"invalid weight spec: {part!r}")
+        k, v = part.split("=", 1)
+        k = k.strip().lower()
+        if k not in ("a", "b", "c"):
+            raise ValueError(f"unknown weight group: {k!r}")
+        out[k] = float(v)
+    if not out:
+        raise ValueError("empty weight spec")
+    return out
+
+
+def _run_cb_picks(args) -> None:
+    from cb_pipeline import build_cb_picks
+
+    def _progress(pct: int, msg: str) -> None:
+        print(f"[{pct:3d}%] {msg}")
+
+    weights = _parse_weights(args.weights)
+    premium_range = None
+    if args.min_premium is not None or args.max_premium is not None:
+        from config import CB_FILTERS as _CBF
+        premium_range = (
+            args.min_premium if args.min_premium is not None else _CBF["premium_min"],
+            args.max_premium if args.max_premium is not None else _CBF["premium_max"],
+        )
+    result = build_cb_picks(
+        args.db,
+        top_n=args.top,
+        capital=args.capital,
+        weights=weights,
+        concurrency=args.concurrency,
+        rate=args.rate,
+        premium_range=premium_range,
+        dry_run=args.dry_run,
+        progress=_progress,
+    )
+    if result.get("warning"):
+        print(f"[warn] {result['warning']}")
+    if not result["ok"]:
+        print("[error] 无可用转债数据")
+        return
+
+    picks = result["picks"]
+    print(f"# 转债榜单 {dt.date.today().isoformat()}  "
+          f"(全市场 {result['universe']} 只, 硬剔除 {len(result['dropped'])} 只, "
+          f"榜单 {len(picks)} 只)")
+    headers = ["排名", "代码", "名称", "现价", "总分", "A", "B", "C", "建议"]
+    rows = []
+    for p in picks:
+        rows.append([
+            str(p["rank"]), p["code"], p["name"], f"{p['price']:.2f}",
+            f"{p['total_score']:.1f}",
+            f"{p['a_score']:.0f}" if p["a_score"] is not None else "-",
+            f"{p['b_score']:.0f}" if p["b_score"] is not None else "-",
+            f"{p['c_score']:.0f}" if p["c_score"] is not None else "-",
+            f"买 {p['shares']}张",
+        ])
+    print(format_table(headers, rows))
+    for p in picks:
+        bits = [f"  {p['rank']}. {p['code']} {p['name']}"]
+        if p.get("reason"):
+            bits.append(f"     理由: {p['reason']}")
+        if p.get("risk_note"):
+            bits.append(f"     风险: {p['risk_note']}")
+        print("\n".join(bits))
+
+
+def _run_cb_alerts(args) -> None:
+    import json as _json
+
+    from cb_data_provider import fetch_redeem_status_map, fetch_universe_snapshot
+    from cb_repository import get_cb_positions
+    from db_repository import open_db
+    from strategies.convertible import evaluate_alerts
+
+    conn = open_db(args.db)
+    try:
+        positions = get_cb_positions(conn)
+    finally:
+        conn.close()
+    if not positions:
+        msg = "当前无转债持仓"
+        print(_json.dumps({"alerts": []}, ensure_ascii=False) if args.json else msg)
+        return
+
+    universe = {r["code"]: r for r in fetch_universe_snapshot()}
+    redeem_map = fetch_redeem_status_map()
+
+    quotes: Dict[str, Dict[str, Any]] = {}
+    for code in {p["code"] for p in positions}:
+        u = universe.get(code) or {}
+        rd = redeem_map.get(code) or {}
+        cp = u.get("convert_price")
+        sp = u.get("stock_price")
+        trig = rd.get("redeem_price")
+        redeem_dist = None
+        if trig and sp and sp > 0:
+            redeem_dist = round((trig / sp - 1.0) * 100.0, 4)
+        quotes[code] = {
+            "price": u.get("price"),
+            "redeem_status": rd.get("redeem_status") or "",
+            "redeem_dist": redeem_dist,
+            "premium_rate": u.get("premium_rate"),
+            "stock_price": sp,
+            "convert_price": cp,
+        }
+
+    alerts = evaluate_alerts(positions, quotes)
+    if args.json:
+        print(_json.dumps({"alerts": alerts}, ensure_ascii=False, indent=2))
+        return
+    if not alerts:
+        print("无预警：持仓全部正常")
+        return
+    headers = ["级别", "代码", "名称", "现价", "持仓", "提示"]
+    rows = [[a["level_label"], a["code"], a["name"],
+             f"{a['price']:.2f}" if a["price"] is not None else "-",
+             f"{a['shares']}张", a["message"]] for a in alerts]
+    print(format_table(headers, rows))
+
+
+def _run_cb_add(args) -> None:
+    from cb_data_provider import fetch_bond_detail
+    from cb_repository import upsert_cb_position
+    from config import CB_RISK
+    from db_repository import open_db
+
+    entry_date = args.date or dt.date.today().isoformat()
+    detail = fetch_bond_detail(args.code)
+    price = args.price
+    stop = round(price * (1 - CB_RISK["stop_loss_pct"]), 4)
+    tp = round(price * (1 + CB_RISK["take_profit_pct"]), 4)
+    conn = open_db(args.db)
+    try:
+        upsert_cb_position(conn, {
+            "code": args.code,
+            "name": detail.get("name") or args.code,
+            "stock_code": "",
+            "entry_date": entry_date,
+            "entry_price": price,
+            "shares": args.shares,
+            "stop_price": stop,
+            "tp_price": tp,
+            "note": args.note,
+        })
+    finally:
+        conn.close()
+    print(f"已登记持仓 {args.code} {detail.get('name') or ''} "
+          f"{args.shares}张 @ {price:.2f} 止损 {stop:.2f} 止盈 {tp:.2f}")
+
+
+def _run_cb_positions(args) -> None:
+    from cb_repository import get_cb_positions
+    from db_repository import open_db
+
+    conn = open_db(args.db)
+    try:
+        positions = get_cb_positions(conn)
+    finally:
+        conn.close()
+    if not positions:
+        print("当前无转债持仓")
+        return
+    headers = ["代码", "名称", "建仓日", "成本", "张数", "止损", "止盈", "备注"]
+    rows = [[p["code"], p["name"] or "", p["entry_date"] or "",
+             f"{p['entry_price']:.2f}" if p["entry_price"] else "-",
+             str(p["shares"]),
+             f"{p['stop_price']:.2f}" if p["stop_price"] else "-",
+             f"{p['tp_price']:.2f}" if p["tp_price"] else "-",
+             p["note"] or ""] for p in positions]
+    print(format_table(headers, rows))
