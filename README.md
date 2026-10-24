@@ -68,6 +68,12 @@ uv run a-finder linyuan-picks --top 20
 uv run a-finder linyuan-picks --top 20 --dry-run
 uv run a-finder sync-industry --db hs300.db
 uv run a-finder sync-fundamentals-history --db hs300.db --concurrency 6 --rate 5
+
+# 可转债策略（独立转债仓，不走 plan_builder）
+uv run a-finder cb-picks --top 20 [--dry-run] [--weights a=0.5,b=0.25,c=0.25]
+uv run a-finder cb-add 113059 --shares 50 --price 108.5
+uv run a-finder cb-positions
+uv run a-finder cb-alerts [--json]
 ```
 
 日志输出：
@@ -181,6 +187,42 @@ uv run a-finder linyuan-picks --top 20                          # 跑林园策�
 ```
 
 输出落在终端表格；`--dry-run` 仅打印候选不写库。
+
+## 可转债策略 / Convertible Bond（独立转债仓）
+
+与股票体系完全隔离：独立 `cb_` 前缀表、独立风控参数、不经过 `plan_builder`。转债整手为 **10 张（面值 100 元）**。
+
+```bash
+# 每日榜单：债底 40% / 股性 30% / 条款 30% 三组因子加权打分
+uv run a-finder cb-picks --top 20
+uv run a-finder cb-picks --top 20 --dry-run                  # 只打印不落库
+uv run a-finder cb-picks --top 20 --weights a=0.5,b=0.25,c=0.25   # 调权重
+
+# 持仓登记 + 退出预警（强赎/止损/回售/止盈）
+uv run a-finder cb-add 113059 --shares 50 --price 108.5
+uv run a-finder cb-positions
+uv run a-finder cb-alerts
+uv run a-finder cb-alerts --json
+```
+
+**因子构成**（每组内等权，缺失因子按剩余因子重新归一化，不填 0）：
+
+| 组 | 权重 | 因子 |
+|---|---|---|
+| 债底防守 | 40% | 纯债价值保护、债现价、到期税前收益、信用评级、剩余年限 |
+| 股性进攻 | 30% | 转股溢价率、平价度、跟涨弹性*、正股20日动量* |
+| 条款风险 | 30% | 强赎触发距离、回售触发距离、下修次数 |
+
+\* 跟涨弹性与正股20日动量第一期无数据源，**不参与计分**（B 组按剩余 2 因子）。
+
+**硬性剔除**（风险闸门，命中即出局）：已公告强赎 / 强赎距离<3% / 评级含B·CC·C / 正股ST / 剩余规模<0.5亿 / 转股价值<60 / 债现价∉[80,200]
+
+**风控**：单只上限15%、最多10只、止损-8%、止盈+20%、10张整手。
+榜单附**入选理由**（自动）与**风险提示**（剩余规模偏小 / 转股价值偏低 / 已进入回售区）。
+
+数据源：akshare `bond_zh_cov`（全市场清单）→ `bond_zh_cov_info`（单只条款，裸 6 位代码）→ `bond_cb_redeem_jsl`（强赎状态）。单源失败降级读当日快照，全失败告警。
+
+**本期不做**：转债回测（历史行情无可靠全量源）、自动交易（只记录持仓+预警）、盘中盯盘。
 
 ## 交易计划 / Trade Plan
 
