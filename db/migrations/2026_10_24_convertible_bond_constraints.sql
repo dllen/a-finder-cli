@@ -1,9 +1,16 @@
 -- db/migrations/2026_10_24_convertible_bond_constraints.sql
 -- 可转债 schema 约束加固：修复已应用 2026_10_24_convertible_bond.sql 的存量库。
--- SQLite 无法用 ALTER 添加 NOT NULL，故 cb_positions 采用重建表方式；
--- cb_picks 的同日同 code 唯一约束用 UNIQUE INDEX 实现，无需重建。
+--
+-- 目标：让「已应用旧版迁移的存量库」与「全新库」收敛到完全一致的 schema
+--（列名 / 类型 / notnull 标志 / pk 位置 / 索引集合均一致）。
+--
+-- 旧版迁移的 cb_universe / cb_factors / cb_picks 键列缺少 NOT NULL，
+-- 新版原始迁移里才有。SQLite 3.54 支持 ALTER COLUMN ... SET NOT NULL，
+-- 且该语句会保留既有索引与数据，因此无需重建表；
+-- 仅 cb_positions 因需把已有行的 NULL 补成默认值而采用重建方式。
 
 -- 1) cb_positions：entry_date / entry_price / shares 补 NOT NULL
+--    （重建：存量脏数据需用 COALESCE 兜底才能装进 NOT NULL 列）
 CREATE TABLE IF NOT EXISTS cb_positions_new (
     code        TEXT PRIMARY KEY,
     name        TEXT,
@@ -37,12 +44,32 @@ ALTER TABLE cb_positions_new RENAME TO cb_positions;
 
 -- cb_positions 上无索引；如后续新增索引，在此一并重建。
 
--- 2) cb_universe：listed 补 NOT NULL（SQLite 支持 ALTER COLUMN SET NOT NULL）
+-- 2) cb_universe：键列补 NOT NULL + listed 补 NOT NULL
+--    先清 NULL，否则 ALTER 会因存量 NULL 报错。
+UPDATE cb_universe SET trade_date = '' WHERE trade_date IS NULL;
+UPDATE cb_universe SET code = '' WHERE code IS NULL;
+ALTER TABLE cb_universe ALTER COLUMN trade_date SET NOT NULL;
+ALTER TABLE cb_universe ALTER COLUMN code SET NOT NULL;
 UPDATE cb_universe SET listed = 0 WHERE listed IS NULL;
 ALTER TABLE cb_universe ALTER COLUMN listed SET NOT NULL;
 
--- 3) cb_picks：同日同 code 唯一（防止同一天重复推荐同一只债）
+-- 3) cb_factors：键列补 NOT NULL
+UPDATE cb_factors SET trade_date = '' WHERE trade_date IS NULL;
+UPDATE cb_factors SET code = '' WHERE code IS NULL;
+ALTER TABLE cb_factors ALTER COLUMN trade_date SET NOT NULL;
+ALTER TABLE cb_factors ALTER COLUMN code SET NOT NULL;
+
+-- 4) cb_picks：trade_date / rank / code 补 NOT NULL
+--    索引在 ALTER 后自动保留，无需重建。
+UPDATE cb_picks SET trade_date = '' WHERE trade_date IS NULL;
+UPDATE cb_picks SET rank = 0 WHERE rank IS NULL;
+UPDATE cb_picks SET code = '' WHERE code IS NULL;
+ALTER TABLE cb_picks ALTER COLUMN trade_date SET NOT NULL;
+ALTER TABLE cb_picks ALTER COLUMN rank SET NOT NULL;
+ALTER TABLE cb_picks ALTER COLUMN code SET NOT NULL;
+
+-- 5) cb_picks：同日同 code 唯一（防止同一天重复推荐同一只债）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cb_picks_date_code ON cb_picks(trade_date, code);
 
--- 4) cb_factors：补 code 索引
+-- 6) cb_factors：补 code 索引
 CREATE INDEX IF NOT EXISTS idx_cb_factors_code ON cb_factors(code);
