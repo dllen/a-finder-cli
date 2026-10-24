@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set active_page = "plan" %}
+{% block title %}每日 Plan{% endblock %}
+
+{% block body %}
+<main class="container py-4">
+  <div class="page-header">
+    <h1 class="h3 mb-0 page-title">交易计划 <span class="badge bg-secondary align-middle">paper</span></h1>
+  </div>
+
+  {% include 'components/dashboard_cards.html' %}
+
+  <div class="filter-toolbar">
+    <div class="filter-group">
+      <label class="form-label" for="d">日期</label>
+      <select id="d" class="form-select"></select>
+    </div>
+    <div class="filter-group">
+      <label class="form-label" for="capital-group">资金</label>
+      <div id="capital-group" class="btn-group btn-group-sm flex-wrap" role="group" aria-label="资金档位">
+        {% for tier in capital_tiers %}
+        <button type="button" class="btn btn-outline-primary capital-btn" data-capital="{{ tier }}">{{ (tier/10000)|int }}W</button>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="form-label d-inline-block align-baseline mb-0">档位筛选（交集）</label>
+      <button type="button" id="tier-filter-help" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+              data-bs-toggle="popover" data-bs-trigger="hover focus" data-bs-html="true"
+              data-bs-placement="right"
+              data-bs-title="档位筛选（交集）"
+              data-bs-content="勾选多档时，只保留在 <b>所有</b> 选中档位下都能建仓的票。空选 = 不限。"
+              aria-label="档位筛选说明">?</button>
+      <div class="dropdown d-inline-block ms-1" id="tier-filter-dd">
+        <button id="tier-filter-btn" class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <span id="tier-filter-label">不限</span>
+        </button>
+        <ul class="dropdown-menu p-2" aria-labelledby="tier-filter-btn">{{ tier_filter_options|safe }}</ul>
+      </div>
+    </div>
+    <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称" aria-label="快速筛选">
+    <button id="btn-build" class="btn btn-primary write-control">生成 plan</button>
+    <div class="form-check write-control"><input id="include-failed" type="checkbox" class="form-check-input">
+      <label for="include-failed" class="form-check-label">含 failed</label></div>
+    <div class="form-check"><input id="only-affordable" type="checkbox" class="form-check-input">
+      <label for="only-affordable" class="form-check-label">只显示可建仓</label></div>
+  </div>
+
+  {% include 'components/status_bar.html' %}
+  <div id="board"></div>
+
+  <h2 class="section-title mt-4">持仓跟踪</h2>
+  <div id="holdings"></div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/plan.js') }}"></script>
+{% endblock %}

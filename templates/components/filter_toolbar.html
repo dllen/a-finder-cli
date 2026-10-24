@@ -1,0 +1,11 @@
+<div class="filter-toolbar">
+  <div class="filter-group">
+    <label class="form-label" for="d">日期</label>
+    <select id="d" class="form-select"></select>
+  </div>
+  <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选">
+  {% if show_write_controls|default(true) %}
+  <button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button>
+  <button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button>
+  {% endif %}
+</div>

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% set active_page = "picks" %}
+{% block title %}每日机会{% endblock %}
+
+{% block body %}
+<main class="container py-4">
+  <div class="page-header">
+    <h1 class="h3 mb-0 page-title">每日机会</h1>
+    <span class="text-muted small" id="page-date">日期：{{ today }}</span>
+  </div>
+
+  {% include 'components/dashboard_cards.html' %}
+  {% include 'components/filter_toolbar.html' %}
+  {% include 'components/status_bar.html' %}
+  <div id="board"></div>
+
+  <h2 class="section-title mt-4">策略胜率统计 <small class="text-muted">基于历史标注样本</small></h2>
+  <div id="stats"></div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/picks.js') }}"></script>
+{% endblock %}

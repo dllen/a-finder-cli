@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% set active_page = "portfolio" %}
+{% block title %}持仓组合{% endblock %}
+
+{% block body %}
+<main class="container py-4">
+  <h2 class="mb-3">持仓组合 <small class="text-muted fs-6">[paper]</small></h2>
+
+  <div class="row g-2 align-items-end mb-3">
+    <div class="col-auto">
+      <label class="form-label mb-0">日期</label>
+      <input type="date" id="pf-date" class="form-control form-control-sm" value="{{ today }}">
+    </div>
+    <div class="col-auto">
+      <label class="form-label mb-0">策略</label>
+      <select id="pf-strategy" class="form-select form-select-sm">
+        <option value="" selected>全部</option>
+        {{ strategy_options|safe }}
+      </select>
+    </div>
+    <div class="col-auto ms-auto small text-muted">
+      <span class="me-2">基准：所有 tier 共用同一组 daily_picks；按 capital 等权分配</span>
+    </div>
+  </div>
+
+  <h5 class="mt-4">资金档位</h5>
+  <div class="d-flex flex-row overflow-auto pb-2 gap-2" id="pf-tier-cards"></div>
+
+  <h5 class="mt-4">累计收益对比</h5>
+  <div style="position:relative; height:280px;">
+    <canvas id="pf-returns-chart"></canvas>
+  </div>
+
+  <div id="pf-detail" class="mt-4"></div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/portfolio.js') }}"></script>
+{% endblock %}
