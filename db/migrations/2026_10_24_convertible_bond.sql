@@ -12,8 +12,9 @@ CREATE TABLE IF NOT EXISTS cb_universe (
     premium_rate   REAL,
     stock_price    REAL,
     rating         TEXT,
+    -- issue_size: 发行规模（亿元），来源 akshare 发行规模，为剩余规模的近似
     issue_size     REAL,
-    listed         INTEGER DEFAULT 0,
+    listed         INTEGER DEFAULT 0 NOT NULL,
     updated_at     TEXT,
     PRIMARY KEY (trade_date, code)
 );
@@ -58,9 +59,9 @@ CREATE TABLE IF NOT EXISTS cb_positions (
     code        TEXT PRIMARY KEY,
     name        TEXT,
     stock_code  TEXT,
-    entry_date  TEXT,
-    entry_price REAL,
-    shares      INTEGER,
+    entry_date  TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    shares      INTEGER NOT NULL,
     stop_price  REAL,
     tp_price    REAL,
     note        TEXT,
@@ -68,4 +69,6 @@ CREATE TABLE IF NOT EXISTS cb_positions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cb_picks_date ON cb_picks(trade_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cb_picks_date_code ON cb_picks(trade_date, code);
 CREATE INDEX IF NOT EXISTS idx_cb_universe_code ON cb_universe(code);
+CREATE INDEX IF NOT EXISTS idx_cb_factors_code ON cb_factors(code);

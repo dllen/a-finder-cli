@@ -31,7 +31,7 @@ CB_FILTERS = {
     "premium_max": 40.0,        # 转股溢价率上限 (%)
     "price_min": 80.0,          # 债现价下限
     "price_max": 200.0,         # 债现价上限
-    "min_issue_size": 0.5,      # 剩余规模下限（亿元）
+    "min_issue_size": 0.5,      # 发行规模下限（亿元）
     "min_convert_value": 60.0,  # 转股价值下限
     "redeem_dist_min": 3.0,     # 强赎触发距离下限 (%)
     "exclude_ratings": ("B", "CC", "C"),  # 评级含这些子串即剔除
@@ -44,6 +44,7 @@ CB_RISK = {
     "stop_loss_pct": 0.08,    # 止损 -8%
     "take_profit_pct": 0.20,  # 止盈 +20%
     "lot_size": 10,           # 整手：10 张 = 面值 1000 元
-    "min_price": 80.0,
-    "max_price": 200.0,
+    # 价格区间与 CB_FILTERS 同源，避免两处漂移
+    "min_price": CB_FILTERS["price_min"],
+    "max_price": CB_FILTERS["price_max"],
 }
