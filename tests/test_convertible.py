@@ -262,6 +262,20 @@ def test_score_below_min_factors_is_excluded():
     assert all(sum(x["factor_counts"].values()) >= CB_FILTERS["min_factors"] for x in thin)
 
 
+def test_score_bond_partial_weights_no_keyerror():
+    # 部分权重（如 --weights b=0.5,c=0.5）不应 KeyError
+    rows = [_u(premium_rate=8.0, convert_value=97.0)]
+    f = {"bond_floor": 1.02, "ytm": 1.5, "year_left": 3.0}
+    s = score_bond(rows[0], f, weights={"b": 0.5, "c": 0.5})
+    assert s["total_score"] is not None
+    # 只给 a 组权重
+    s2 = score_bond(rows[0], f, weights={"a": 1.0})
+    assert s2["total_score"] is not None
+    # 空 dict → 退化为等权
+    s3 = score_bond(rows[0], f, weights={})
+    assert s3["total_score"] is not None
+
+
 # ---------------------------------------------------------------------------
 # Task 5: 因子派生 + 仓位计算
 # ---------------------------------------------------------------------------

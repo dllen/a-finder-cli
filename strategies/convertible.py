@@ -387,8 +387,14 @@ def score_bond(
             "raw_factors": {}, "factor_counts": {"a": a_n, "b": b_n, "c": c_n},
         }
 
-    wsum = sum(weights[k] for k in live)
-    total = sum(weights[k] * v[0] for k, v in live.items()) / wsum
+    # 支持部分权重（如 --weights b=0.5,c=0.5）：缺失的组权重取 0，
+    # 只对实际有分的组做归一化。
+    wsum = sum(weights.get(k, 0.0) for k in live)
+    if wsum <= 0:
+        # 所有存活组的权重都是 0 → 退化为等权
+        total = sum(v[0] for v in live.values()) / len(live)
+    else:
+        total = sum(weights.get(k, 0.0) * v[0] for k, v in live.items()) / wsum
 
     factors: Dict[str, Any] = {}
     for k, detail in (("a", a_detail), ("b", b_detail), ("c", c_detail)):
