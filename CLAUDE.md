@@ -69,6 +69,14 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
 
+# CI 自动部署 Worker（deploy-worker.yml）
+- `.github/workflows/deploy-worker.yml`：`worker/**` 或 `wrangler.toml` 推送到 main 时自动部署
+  Cloudflare Worker（D1 建表幂等 → 可选同步 DECIDE_* secrets → wrangler deploy → health 自检）。
+- 需要 GitHub Secrets：`CLOUDFLARE_API_TOKEN`（Workers Scripts:Edit + D1:Edit）、`CLOUDFLARE_ACCOUNT_ID`。
+- `DECIDE_USER/PASSWORD/SECRET` 三个 GitHub Secrets 可选：wrangler deploy 不会删除已有 secrets，
+  仅新建或轮换凭据时才配置（且必须三个同时设置，否则报错——防止空值静默覆盖）。
+- 本地 `scripts/deploy-worker.sh` 仍可用于首次交互式部署或排障。
+
 ## Architecture
 
 Entry: `stock_cli.py` → `cli_layer.build_parser/run_cli` (argparse, formatting, Textual UI). Most analysis subcommands take `stocks` (list of `Stock` from `domain_models`) preloaded from local SQLite via `market_data.build_market_from_db` or freshly via `market_data.build_market` (network), then scored through `analysis_service.get_scores`.
