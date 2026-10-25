@@ -63,6 +63,10 @@ function showLoginForm() {
 function renderSummary(c) {
   const el = $('decide-summary');
   if (!el) return;
+  // 防御：字段缺失时显示 0/— 而不是 undefined
+  const n = v => (v == null ? 0 : v);
+  const pending = c.pending_build || [];
+  const devs = c.deviations || [];
   const card = (title, value, sub, cls) => `
     <div class="col">
       <div class="card shadow-sm h-100 ${cls || ''}">
@@ -74,15 +78,15 @@ function renderSummary(c) {
       </div>
     </div>`;
   el.innerHTML =
-    card('股票占用', money(c.stock_used), `${c.actual_count} 只`) +
-    card('转债占用', money(c.cb_used), `${c.cb_count} 只`) +
-    card('现金余额', money(c.cash), c.cash < 0 ? '已超配' : '可用',
-         c.cash < 0 ? 'text-danger' : '') +
-    card('持仓数', c.actual_count, `计划 ${c.plan_count} 只`) +
-    (c.actual_count === 0 && (c.pending_build || []).length
-      ? card('待建仓', c.pending_build.length, '尚未录入持仓', 'border-info')
-      : card('偏差', c.deviations.length,
-          `危险 ${c.danger_count || 0} · 警告 ${c.warn_count || 0} · 提示 ${c.info_count || 0}`,
+    card('股票占用', money(c.stock_used), `${n(c.actual_count)} 只`) +
+    card('转债占用', money(c.cb_used), `${n(c.cb_count)} 只`) +
+    card('现金余额', money(c.cash), n(c.cash) < 0 ? '已超配' : '可用',
+         n(c.cash) < 0 ? 'text-danger' : '') +
+    card('持仓数', n(c.actual_count), `计划 ${n(c.plan_count)} 只`) +
+    (n(c.actual_count) === 0 && pending.length
+      ? card('待建仓', pending.length, '尚未录入持仓', 'border-info')
+      : card('偏差', devs.length,
+          `危险 ${n(c.danger_count)} · 警告 ${n(c.warn_count)} · 提示 ${n(c.info_count)}`,
           c.danger_count ? 'border-danger' : ''));
 }
 
@@ -161,9 +165,10 @@ function renderComparison(c) {
   if (!el) return;
   const devs = c.deviations || [];
   const pending = c.pending_build || [];
+  const actualCount = c.actual_count == null ? 0 : c.actual_count;
 
   // 空仓：展示待建仓清单（不是"漏买"偏差）
-  if (!c.actual_count && pending.length) {
+  if (actualCount === 0 && pending.length) {
     let html = `<div class="alert alert-info py-2 mb-2">
       当前空仓，以下 ${pending.length} 只是今日计划买入的标的 —— 这是<strong>待建仓清单</strong>，录入了实际持仓后才会开始对照。
     </div>`;

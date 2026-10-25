@@ -252,3 +252,37 @@ class TestDecideConfigExport:
         assert "pending_build" not in snap
         assert "rows" in snap
         assert "skipped" in snap
+
+
+class TestDecideUndefinedGuard:
+    """回归：fetchDecidePlan 无参时不能拼出 decide-undefined.json，
+    renderSummary 缺字段时不能显示 undefined。"""
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_fetch_plan_reads_dates_when_no_date(self):
+        src = self._js("api.js")
+        assert "decide-dates.json" in src
+        # 静态分支必须先从 dates 取最新，再拼文件名
+        seg = src.split("export async function fetchDecidePlan")[1].split("export ")[0]
+        assert "decide-dates.json" in seg
+        assert "decide-' + d" in seg or "decide-2026" not in seg
+
+    def test_render_summary_has_undefined_guard(self):
+        src = self._js("decide.js")
+        seg = src.split("function renderSummary")[1].split("function ")[0]
+        # 不应出现裸插值 ${c.xxx}
+        assert "${c.actual_count}" not in seg
+        assert "${c.plan_count}" not in seg
+        assert "n(c.actual_count)" in seg
+        assert "n(c.plan_count)" in seg
+
+    def test_no_undefined_literal_in_decide_js(self):
+        src = self._js("decide.js")
+        assert "${c.actual_count}" not in src
+        assert "计划 ${c.plan_count}" not in src

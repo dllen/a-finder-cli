@@ -156,10 +156,26 @@ if (isStatic()) {
 // 10w 决策台
 // ---------------------------------------------------------------------------
 
-export function fetchDecidePlan(date) {
+export function fetchDecideDates() {
   return isStatic()
-    ? getJSON(dsPath('data/decide-' + date + '.json'))
-    : getJSON('/api/decide/plan', { date });
+    ? getJSON(dsPath('data/decide-dates.json'))
+    : getJSON('/api/decide/plan');
+}
+
+export async function fetchDecidePlan(date) {
+  if (!isStatic()) {
+    return getJSON('/api/decide/plan', { date });
+  }
+  // 静态站：没有 date 时先从 decide-dates.json 取最新，避免拼出 decide-undefined.json
+  let d = date;
+  if (!d) {
+    const datesRes = await getJSON(dsPath('data/decide-dates.json'));
+    d = (datesRes && datesRes.dates && datesRes.dates[0]) || '';
+  }
+  if (!d) return { date: '', rows: [], skipped: [], dates: [] };
+  const plan = await getJSON(dsPath('data/decide-' + d + '.json'));
+  const datesRes = await getJSON(dsPath('data/decide-dates.json')).catch(() => ({ dates: [d] }));
+  return Object.assign({ dates: datesRes.dates || [d] }, plan);
 }
 
 export function fetchDecidePositions() {
