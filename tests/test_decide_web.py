@@ -309,3 +309,35 @@ class TestSetStatusContainer:
     def test_decide_js_uses_decide_status(self):
         src = self._js("decide.js")
         assert "'decide-status'" in src, "decide.js 的 setStatus 应指向 #decide-status"
+
+
+class TestLoginModal:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_no_prompt_in_decide_js(self):
+        """禁用浏览器原生弹窗。"""
+        src = self._js("decide.js")
+        assert "prompt(" not in src
+        assert "alert(" not in src
+
+    def test_login_modal_fields(self, client):
+        body = client.get("/decide").data.decode("utf-8")
+        assert 'id="login-modal"' in body
+        assert 'id="login-user"' in body
+        assert 'id="login-pass"' in body
+        assert 'id="login-error"' in body
+
+    def test_login_passes_both_credentials(self):
+        src = self._js("decide.js")
+        assert "loginDecide(user, password)" in src
+
+    def test_api_login_signature(self):
+        src = self._js("api.js")
+        assert "export function loginDecide(user, password)" in src
+        assert "body: JSON.stringify({ user, password })" in src

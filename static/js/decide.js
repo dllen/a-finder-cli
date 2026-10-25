@@ -26,34 +26,87 @@ function money(v) {
 // ---------------------------------------------------------------------------
 
 let AUTHED = false;
+let CURRENT_USER = '';
 let CFG = null;
 
 function renderAuthBar() {
   const el = $('decide-auth');
   if (!el) return;
   if (AUTHED) {
-    el.innerHTML = `<div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-0">
-      <span>已登录，可录入 / 编辑持仓。</span>
+    el.innerHTML = `<div class="d-flex align-items-center gap-2 small">
+      <span class="text-success">👤 <strong>${esc(CURRENT_USER || '已登录')}</strong></span>
+      <span class="text-muted">可录入 / 编辑持仓</span>
       <button id="btn-logout" class="btn btn-sm btn-outline-secondary ms-auto">登出</button>
     </div>`;
   } else {
-    el.innerHTML = `<div class="alert alert-secondary d-flex align-items-center gap-2 py-2 mb-0">
-      <span>只读模式。持仓存在云端，登录后可录入 / 编辑。</span>
+    el.innerHTML = `<div class="d-flex align-items-center gap-2 small">
+      <span class="text-muted">只读模式 · 持仓存于云端</span>
       <button id="btn-login" class="btn btn-sm btn-primary ms-auto">登录</button>
     </div>`;
   }
 }
 
-function showLoginForm() {
-  const pwd = prompt('输入决策台密码');
-  if (!pwd) return;
-  loginDecide(pwd)
-    .then(() => {
-      AUTHED = true;
-      renderAuthBar();
-      loadAll();
-    })
-    .catch(e => setStatus('登录失败：' + (e.error || e.status), 'alert-danger', 'decide-status'));
+function _modal() {
+  const el = document.getElementById('login-modal');
+  if (!el) return null;
+  if (window.bootstrap && window.bootstrap.Modal) {
+    return window.bootstrap.Modal.getOrCreateInstance(el);
+  }
+  return null;
+}
+
+function openLoginModal() {
+  const errEl = $('login-error');
+  if (errEl) { errEl.classList.add('d-none'); errEl.textContent = ''; }
+  const pass = $('login-pass');
+  if (pass) pass.value = '';
+  const m = _modal();
+  if (m) {
+    m.show();
+    setTimeout(() => { const u = $('login-user'); if (u) u.focus(); }, 250);
+  }
+}
+
+function closeLoginModal() {
+  const m = _modal();
+  if (m) m.hide();
+}
+
+function showLoginError(msg) {
+  const errEl = $('login-error');
+  if (!errEl) return;
+  errEl.textContent = msg;
+  errEl.classList.remove('d-none');
+}
+
+async function submitLogin(ev) {
+  if (ev) ev.preventDefault();
+  const userEl = $('login-user');
+  const passEl = $('login-pass');
+  const btn = $('login-submit');
+  if (!userEl || !passEl) return;
+  const user = userEl.value.trim();
+  const password = passEl.value;
+  const errEl = $('login-error');
+  if (errEl) { errEl.classList.add('d-none'); errEl.textContent = ''; }
+  if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+  try {
+    const res = await loginDecide(user, password);
+    AUTHED = true;
+    CURRENT_USER = (res && res.user) || user;
+    closeLoginModal();
+    renderAuthBar();
+    await loadAll();
+  } catch (err) {
+    const msg = err && err.status === 401
+      ? '用户名或密码错误'
+      : ('无法连接服务器' + (err && err.status ? `（HTTP ${err.status}）` : '') + ' —— Worker 可能尚未部署');
+    showLoginError(msg);
+    passEl.value = '';
+    passEl.focus();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +389,10 @@ async function loadAll() {
       fetchDecideAuthState().catch(() => ({ authed: false })),
     ]);
     if (cfgRes) CFG = cfgRes;
-    if (authRes && typeof authRes.authed === 'boolean') AUTHED = authRes.authed;
+    if (authRes && typeof authRes.authed === 'boolean') {
+      AUTHED = authRes.authed;
+      CURRENT_USER = authRes.user || '';
+    }
     renderAuthBar();
 
     fillDateOptions(planRes.dates || []);
@@ -374,11 +430,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const btn = $('decide-refresh');
   if (btn) btn.addEventListener('click', loadAll);
 
+  const form = $('login-form');
+  if (form) form.addEventListener('submit', submitLogin);
+
   document.addEventListener('click', async e => {
-    if (e.target.closest('#btn-login')) { showLoginForm(); return; }
+    if (e.target.closest('#btn-login')) { openLoginModal(); return; }
     if (e.target.closest('#btn-logout')) {
       await logoutDecide().catch(() => {});
       AUTHED = false;
+      CURRENT_USER = '';
       renderAuthBar();
       loadAll();
       return;

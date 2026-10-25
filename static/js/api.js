@@ -225,11 +225,11 @@ export function deleteDecidePosition(code, isCb) {
   );
 }
 
-export function loginDecide(password) {
+export function loginDecide(user, password) {
   return reqJSON(API_BASE + '/api/decide/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ user, password }),
   });
 }
 

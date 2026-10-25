@@ -1,0 +1,29 @@
+<div class="modal fade" id="login-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content">
+      <form id="login-form" autocomplete="on">
+        <div class="modal-header py-2">
+          <h6 class="modal-title">登录决策台</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <div id="login-error" class="alert alert-danger py-2 mb-2 d-none" role="alert"></div>
+          <div class="mb-2">
+            <label class="form-label mb-1 small" for="login-user">用户名</label>
+            <input id="login-user" class="form-control form-control-sm"
+                   autocomplete="username" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label mb-1 small" for="login-pass">密码</label>
+            <input id="login-pass" type="password" class="form-control form-control-sm"
+                   autocomplete="current-password" required>
+          </div>
+        </div>
+        <div class="modal-footer py-2">
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-sm btn-primary" id="login-submit">登录</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
