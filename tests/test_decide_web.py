@@ -406,3 +406,28 @@ class TestStrategyColumn:
         snap = json.load(open(os.path.join(out, "data", "decide-2026-10-25.json"), encoding="utf-8"))
         assert snap["rows"]
         assert all("strategy" in r for r in snap["rows"])
+
+
+class TestOneClickState:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_positions_state_var(self):
+        assert "let POSITIONS = []" in self._js("decide.js")
+
+    def test_worker_ok_state_var(self):
+        assert "let WORKER_OK" in self._js("decide.js")
+
+    def test_held_codes_judgement(self):
+        src = self._js("decide.js")
+        assert "heldCodeSet" in src
+        assert "isHeldRow" in src
+
+    def test_positions_synced_from_loadall(self):
+        src = self._js("decide.js")
+        assert "POSITIONS = posRes.rows" in src or "POSITIONS = (posRes.rows" in src

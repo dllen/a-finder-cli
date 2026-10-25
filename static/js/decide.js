@@ -28,6 +28,10 @@ function money(v) {
 let AUTHED = false;
 let CURRENT_USER = '';
 let CFG = null;
+let POSITIONS = [];              // 实际持仓（供「已持有」判定）
+let WORKER_OK = true;            // Worker 可用性（决定建仓按钮是否可点）
+let PENDING_PLAN_ROW = null;     // 未登录时记住待建仓的 plan 行
+let LAST_PLAN_ROWS = [];         // 最近一次渲染的 plan 行（供行内建仓取数）
 
 function renderAuthBar() {
   const el = $('decide-auth');
@@ -146,6 +150,18 @@ function renderSummary(c) {
 // ---------------------------------------------------------------------------
 // 今日执行清单
 // ---------------------------------------------------------------------------
+
+function heldCodeSet() {
+  return new Set((POSITIONS || []).map(p => String(p.code)));
+}
+
+function isHeldRow(planRow, heldSet) {
+  return heldSet.has(String(planRow.code));
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function renderPlan(date, plan) {
   const el = $('decide-plan');
@@ -416,8 +432,12 @@ async function loadAll() {
       fetchDecidePlan().catch(() => ({ date: '', rows: [], dates: [] })),
       fetchDecidePositionsRemote().catch(() => ({ rows: [], cb_rows: [] })),
       fetchDecideConfig().catch(() => null),
-      fetchDecideAuthState().catch(() => ({ authed: false })),
+      fetchDecideAuthState().then(
+        r => { WORKER_OK = true; return r; },
+        () => { WORKER_OK = false; return { authed: false }; },
+      ),
     ]);
+    POSITIONS = posRes.rows || [];
     if (cfgRes) CFG = cfgRes;
     if (authRes && typeof authRes.authed === 'boolean') {
       AUTHED = authRes.authed;
