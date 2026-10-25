@@ -426,3 +426,38 @@ class SourceHealthTracker:
         else:
             return []
         return rows
+
+
+def fetch_daily_kline_smart(
+    code: str,
+    start_date: str,
+    end_date: str,
+    tracker: SourceHealthTracker,
+) -> tuple:
+    """按 tracker 优先级依次尝试各数据源。
+
+    第一个返回非空行的源胜出。每次成功/失败都反馈给 tracker。
+    所有可用源都失败时返回 ([], "")。
+    """
+    for source in tracker.get_ordered_sources():
+        if not tracker.is_available(source):
+            continue
+        try:
+            if source == "eastmoney":
+                rows, name = fetch_daily_kline_with_name(code, start_date, end_date)
+            elif source == "sina":
+                rows, name = fetch_daily_kline_sina(code, start_date, end_date)
+            elif source == "tencent":
+                rows, name = fetch_daily_kline_tencent(code, start_date, end_date)
+            else:
+                continue
+
+            if rows:
+                tracker.record_success(source)
+                return rows, name
+            else:
+                tracker.record_failure(source)
+        except Exception:
+            tracker.record_failure(source)
+
+    return [], ""

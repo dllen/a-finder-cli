@@ -113,3 +113,79 @@ class TestThreadSafety:
             t.join()
 
         assert len(errors) == 0, f"Thread errors: {errors}"
+
+
+from data_providers import fetch_daily_kline_smart
+
+
+class TestFetchDailyKlineSmart:
+
+    def _make_tracker_with_priority(self, available_sources):
+        """构造一个 tracker，只有 available_sources 中的源可用。"""
+        tracker = SourceHealthTracker()
+        for s in tracker.SOURCES:
+            tracker._health[s]["available"] = s in available_sources
+        tracker._ordered = [
+            s for s in tracker.SOURCES if s in available_sources
+        ] + [s for s in tracker.SOURCES if s not in available_sources]
+        return tracker
+
+    def test_skips_unavailable_source(self):
+        """eastmoney 不可用 → 直接调 sina，不调 eastmoney。"""
+        tracker = self._make_tracker_with_priority(["sina", "tencent"])
+        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+             patch("data_providers.fetch_daily_kline_sina") as mock_sina:
+            mock_sina.return_value = ([MagicMock()], "茅台")
+            rows, name = fetch_daily_kline_smart(
+                "600519", "20261001", "20261024", tracker
+            )
+        mock_em.assert_not_called()
+        mock_sina.assert_called_once()
+        assert len(rows) > 0
+
+    def test_falls_through_on_first_source_failure(self):
+        """第一个可用源失败 → 自动尝试下一个。"""
+        tracker = self._make_tracker_with_priority(
+            ["eastmoney", "sina", "tencent"]
+        )
+        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+             patch("data_providers.fetch_daily_kline_sina") as mock_sina:
+            mock_em.side_effect = ConnectionError("blocked")
+            mock_sina.return_value = ([MagicMock()], "茅台")
+            rows, name = fetch_daily_kline_smart(
+                "600519", "20261001", "20261024", tracker
+            )
+        assert len(rows) > 0
+        assert tracker._health["eastmoney"]["fail_count"] == 1
+
+    def test_all_sources_fail_returns_empty(self):
+        """所有源都失败 → 返回 ([], '')。"""
+        tracker = self._make_tracker_with_priority(
+            ["eastmoney", "sina", "tencent"]
+        )
+        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+             patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
+             patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
+            mock_em.side_effect = Exception("fail")
+            mock_sina.side_effect = Exception("fail")
+            mock_tx.side_effect = Exception("fail")
+            rows, name = fetch_daily_kline_smart(
+                "600519", "20261001", "20261024", tracker
+            )
+        assert rows == []
+        assert name == ""
+
+    def test_empty_rows_counts_as_failure_and_falls_through(self):
+        """源返回空列表 → 视为失败，尝试下一个源。"""
+        tracker = self._make_tracker_with_priority(
+            ["eastmoney", "sina"]
+        )
+        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+             patch("data_providers.fetch_daily_kline_sina") as mock_sina:
+            mock_em.return_value = ([], "")  # 空 = 失败
+            mock_sina.return_value = ([MagicMock()], "茅台")
+            rows, name = fetch_daily_kline_smart(
+                "600519", "20261001", "20261024", tracker
+            )
+        assert len(rows) > 0
+        mock_sina.assert_called_once()
