@@ -307,12 +307,30 @@ def create_app(db_path="hs300.db", top=10):
             ago = (_dt_class.now() - parsed).total_seconds() / 3600
             last["ago_hours"] = round(ago, 1)
             last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
+
+        # 可转债摘要（只读 DB，不触网）
+        from cb_repository import get_cb_positions
+        conn2 = open_conn(db_path)
+        try:
+            cb_date = _cb_latest_pick_date(conn2)
+            cb_picks_count = conn2.execute(
+                "SELECT COUNT(*) FROM cb_picks WHERE trade_date=?", (cb_date,)
+            ).fetchone()[0] if cb_date else 0
+            cb_positions_count = len(get_cb_positions(conn2))
+        finally:
+            conn2.close()
+
         return jsonify({
             "last_refresh": last,
             "today_plan": today,
             "open_positions": opens,
             "pnl_5d": pnl,
             "holdings_summary": hd["summary"],
+            "cb": {
+                "picks_count": cb_picks_count,
+                "positions_count": cb_positions_count,
+                "latest_date": cb_date,
+            },
         })
 
     # ------------------------------------------------------------------
@@ -451,6 +469,14 @@ def create_app(db_path="hs300.db", top=10):
         return render_template("portfolio.html",
             today=today,
             strategy_options=options_html,
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
+
+    @app.get("/cb")
+    def cb_page():
+        from datetime import date as _date
+        return render_template("cb.html",
+            today=_date.today().isoformat(),
             app_mode="api", data_prefix="",
             year=_date.today().year)
 

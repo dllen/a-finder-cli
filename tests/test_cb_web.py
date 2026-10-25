@@ -154,3 +154,41 @@ class TestCbApi:
         a = data["alerts"][0]
         assert a["code"] == "113059"
         assert a["level"] == "emergency"
+
+
+class TestCbTemplates:
+
+    def test_cb_page_renders(self, client):
+        resp = client.get("/cb")
+        assert resp.status_code == 200
+        body = resp.data.decode("utf-8")
+        assert "可转债" in body
+        assert "转债榜单" in body
+        assert "持仓" in body
+        assert "预警" in body
+
+    def test_cb_page_no_jquery_no_cdn(self, client):
+        body = client.get("/cb").data.decode("utf-8").lower()
+        assert "jquery" not in body
+        assert "bootcdn" not in body
+        assert "cdn.jsdelivr" not in body
+
+    def test_cb_page_loads_es6_module(self, client):
+        body = client.get("/cb").data.decode("utf-8")
+        assert 'type="module"' in body
+        assert "js/cb.js" in body
+
+    def test_nav_has_cb_link(self, client):
+        body = client.get("/").data.decode("utf-8")
+        assert 'data-nav="cb"' in body
+        assert "可转债" in body
+
+    def test_dashboard_includes_cb_summary(self, client):
+        resp = client.get("/api/dashboard")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "cb" in data
+        cb = data["cb"]
+        assert cb["picks_count"] == 1
+        assert cb["positions_count"] == 1
+        assert cb["latest_date"] == "2026-10-25"
