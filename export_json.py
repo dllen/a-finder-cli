@@ -254,9 +254,9 @@ def _export_decide_data(conn, data_dir: Path) -> None:
 
     for d in dates:
         picks = [
-            dict(zip(["rank", "code", "name", "buy", "stop", "target", "score"], r))
+            dict(zip(["rank", "code", "name", "buy", "stop", "target", "score", "strategy"], r))
             for r in conn.execute(
-                "SELECT rank, code, name, buy, stop, target, score "
+                "SELECT rank, code, name, buy, stop, target, score, strategy "
                 "FROM daily_picks WHERE kind='买入信号' AND date=? ORDER BY rank",
                 (d,),
             )

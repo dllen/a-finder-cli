@@ -375,3 +375,34 @@ class TestRenderAllSplit:
         body = client.get("/decide").data.decode("utf-8")
         assert "row-cols-md-3" in body
         assert "row-cols-xl-5" in body
+
+
+class TestStrategyColumn:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_plan_table_has_strategy_header(self):
+        src = self._js("decide.js")
+        assert "<th>策略</th>" in src
+
+    def test_plan_renders_strategy(self):
+        src = self._js("decide.js")
+        assert "r.strategy" in src
+
+    def test_api_plan_rows_carry_strategy(self, client):
+        data = client.get("/api/decide/plan").get_json()
+        assert data["rows"], "测试库应有 plan 行"
+        assert all("strategy" in r for r in data["rows"])
+
+    def test_export_plan_carries_strategy(self, plan_db, tmp_path):
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(plan_db, out)
+        snap = json.load(open(os.path.join(out, "data", "decide-2026-10-25.json"), encoding="utf-8"))
+        assert snap["rows"]
+        assert all("strategy" in r for r in snap["rows"])

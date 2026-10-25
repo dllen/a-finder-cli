@@ -58,7 +58,7 @@ def build_plan_from_picks(
       - 股数按一手 100 股向下取整
       - 买不起一手的高价股跳过（顺延下一名），并记录 skipped
 
-    picks: daily_picks 里 kind='买入信号' 的行，含 rank/code/name/buy/stop/target/score
+    picks: daily_picks 里 kind='买入信号' 的行，含 rank/code/name/buy/stop/target/score/strategy
     """
     cfg = config or PORTFOLIO_10W
     total_capital = float(cfg["total_capital"])
@@ -85,6 +85,7 @@ def build_plan_from_picks(
             skipped.append({
                 "code": str(p.get("code")),
                 "name": p.get("name") or str(p.get("code")),
+                "strategy": p.get("strategy"),
                 "buy": round(price, 2),
                 "lot_cost": round(price * LOT_SIZE, 2),
                 "reason": f"一手需 ¥{price * LOT_SIZE:,.0f}，超单票上限 ¥{target_amount:,.0f}",
@@ -101,6 +102,7 @@ def build_plan_from_picks(
             "tp_price": _num(p.get("target")),
             "score": _num(p.get("score")),
             "rank": _num(p.get("rank")),
+            "strategy": p.get("strategy"),
         })
 
     planned = sum(r["amount"] for r in rows)

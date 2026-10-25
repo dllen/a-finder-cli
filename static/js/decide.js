@@ -167,13 +167,14 @@ function renderPlan(date, plan) {
   </div>`;
 
   html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
-    '<th>排名</th><th>代码</th><th>名称</th><th class="num">计划价</th><th class="num">股数</th>' +
+    '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th class="num">计划价</th><th class="num">股数</th>' +
     '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th><th class="num">评分</th>' +
     '</tr></thead><tbody>';
   rows.forEach(r => {
     html += `<tr><td><span class="rank-badge">${r.rank == null ? '' : r.rank}</span></td>` +
       `<td class="code">${esc(r.code)}</td>` +
       `<td>${esc(r.name || '—')}</td>` +
+      `<td><span class="badge bg-light text-dark border">${esc(r.strategy || '—')}</span></td>` +
       `<td class="num">${fmt(r.plan_price)}</td>` +
       `<td class="num">${r.shares ?? '—'}</td>` +
       `<td class="num">${money(r.amount)}</td>` +
@@ -191,6 +192,7 @@ function renderPlan(date, plan) {
       `<span class="card-title-text">${esc(r.name || '')}</span>` +
       `<span class="score-chip">${r.score == null ? '—' : r.score.toFixed(0)}</span></div>` +
       `<div class="kv-grid">` +
+        `<span class="k">策略</span><span class="v wrap">${esc(r.strategy || '—')}</span>` +
         `<span class="k">计划价</span><span class="v num">${fmt(r.plan_price)}</span>` +
         `<span class="k">股数</span><span class="v num">${r.shares ?? '—'}（${money(r.amount)}）</span>` +
         `<span class="k">止损</span><span class="v num">${fmt(r.stop_price)}</span>` +

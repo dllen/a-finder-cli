@@ -377,3 +377,37 @@ class TestBuildPlanFromPicks:
                  self._pick(2, "600002", 10.0)]
         r = build_plan_from_picks(picks)
         assert [x["code"] for x in r["rows"]] == ["600001", "600002", "600003"]
+
+
+class TestStrategyPassthrough:
+    """待建仓清单要带出每只票的策略（均线突破/动量突破/回调买入）。"""
+
+    def _pick(self, rank, code, buy, strategy='回调买入', score=50.0):
+        return {
+            "rank": rank, "code": code, "name": f"股{code}",
+            "buy": buy, "stop": round(buy * 0.9, 2),
+            "target": round(buy * 1.2, 2), "score": score,
+            "strategy": strategy,
+        }
+
+    def test_rows_include_strategy(self):
+        from decide_service import build_plan_from_picks
+        r = build_plan_from_picks([
+            self._pick(1, "600000", 10.0, "动量突破"),
+            self._pick(2, "600001", 12.0, "回调买入"),
+        ])
+        assert r["rows"][0]["strategy"] == "动量突破"
+        assert r["rows"][1]["strategy"] == "回调买入"
+
+    def test_skipped_include_strategy(self):
+        from decide_service import build_plan_from_picks
+        r = build_plan_from_picks([self._pick(1, "301269", 200.0, "均线突破")])
+        assert r["rows"] == []
+        assert r["skipped"][0]["strategy"] == "均线突破"
+
+    def test_missing_strategy_is_none(self):
+        from decide_service import build_plan_from_picks
+        p = self._pick(1, "600000", 10.0)
+        p.pop("strategy")
+        r = build_plan_from_picks([p])
+        assert r["rows"][0]["strategy"] is None
