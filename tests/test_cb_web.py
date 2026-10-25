@@ -192,3 +192,36 @@ class TestCbTemplates:
         assert cb["picks_count"] == 1
         assert cb["positions_count"] == 1
         assert cb["latest_date"] == "2026-10-25"
+
+
+class TestCbJs:
+
+    def _js(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", "cb.js",
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_cb_js_exists_and_is_module(self):
+        src = self._js()
+        assert "import" in src
+        assert "export function" in src
+
+    def test_cb_js_imports_cb_fetchers(self):
+        src = self._js()
+        for fn in ("fetchCbPicks", "fetchCbPositions", "fetchCbAlerts", "fetchCbDates"):
+            assert fn in src, f"未使用 {fn}"
+
+    def test_cb_js_has_no_jquery(self):
+        src = self._js()
+        assert "$(" not in src
+        assert "$.getJSON" not in src
+        assert ".html(" not in src
+
+    def test_cb_js_renders_three_sections(self):
+        src = self._js()
+        assert "cb-summary" in src
+        assert "cb-alerts" in src
+        assert "cb-positions" in src
+        assert "cb-board" in src
