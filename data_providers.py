@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 import urllib.parse
 import urllib.request
 from typing import Dict, List, Optional
@@ -319,3 +320,109 @@ def _fetch_province_from_eastmoney(code: str) -> str:
     except Exception:
         pass
     return ""
+
+
+class SourceHealthTracker:
+    """跟踪各数据源的可用性，动态调整优先级。
+
+    同步开始前用探针股票测试各源（probe），同步过程中持续记录
+    失败次数（record_failure），超过阈值自动降级到列表末尾。
+    """
+
+    SOURCES = ["eastmoney", "sina", "tencent"]
+    PROBE_CODES = ["600519"]  # 贵州茅台：流动性好、不会退市
+    MAX_CONSECUTIVE_FAILURES = 3
+
+    def __init__(self) -> None:
+        self._health: Dict[str, Dict] = {
+            name: {"available": True, "fail_count": 0}
+            for name in self.SOURCES
+        }
+        self._ordered: List[str] = list(self.SOURCES)
+        self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # probe
+    # ------------------------------------------------------------------
+
+    def probe(self) -> None:
+        """同步开始前，用探针股票测试各源，建立初始优先级。"""
+        results: Dict[str, bool] = {}
+        for source in self.SOURCES:
+            try:
+                rows = self._try_source(
+                    source, self.PROBE_CODES[0], "20261001", "20261010"
+                )
+                results[source] = bool(rows)
+            except Exception:
+                results[source] = False
+
+        available = [s for s in self.SOURCES if results.get(s)]
+        unavailable = [s for s in self.SOURCES if not results.get(s)]
+
+        with self._lock:
+            self._ordered = available + unavailable
+            for s in available:
+                self._health[s]["available"] = True
+                self._health[s]["fail_count"] = 0
+            for s in unavailable:
+                self._health[s]["available"] = False
+                self._health[s]["fail_count"] = 0
+
+    # ------------------------------------------------------------------
+    # query
+    # ------------------------------------------------------------------
+
+    def get_ordered_sources(self) -> List[str]:
+        """返回当前优先级排序的源列表（副本）。"""
+        with self._lock:
+            return self._ordered.copy()
+
+    def is_available(self, source: str) -> bool:
+        """查询某源当前是否可用。"""
+        with self._lock:
+            return self._health.get(source, {}).get("available", False)
+
+    # ------------------------------------------------------------------
+    # mutation
+    # ------------------------------------------------------------------
+
+    def record_success(self, source: str) -> None:
+        """记录成功，重置 fail_count。"""
+        with self._lock:
+            if source in self._health:
+                self._health[source]["fail_count"] = 0
+                self._health[source]["available"] = True
+
+    def record_failure(self, source: str) -> None:
+        """记录失败；连续失败超阈值则降级到列表末尾。"""
+        with self._lock:
+            if source not in self._health:
+                return
+            self._health[source]["fail_count"] += 1
+            if (
+                self._health[source]["fail_count"]
+                >= self.MAX_CONSECUTIVE_FAILURES
+            ):
+                self._health[source]["available"] = False
+                if source in self._ordered:
+                    self._ordered.remove(source)
+                    self._ordered.append(source)
+
+    # ------------------------------------------------------------------
+    # internal
+    # ------------------------------------------------------------------
+
+    def _try_source(
+        self, source: str, code: str, start: str, end: str
+    ) -> List[PriceRow]:
+        """用指定源获取数据，返回行列表（空=失败）。"""
+        if source == "eastmoney":
+            rows, _ = fetch_daily_kline_with_name(code, start, end)
+        elif source == "sina":
+            rows, _ = fetch_daily_kline_sina(code, start, end)
+        elif source == "tencent":
+            rows, _ = fetch_daily_kline_tencent(code, start, end)
+        else:
+            return []
+        return rows
