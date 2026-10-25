@@ -232,7 +232,7 @@ def _export_decide_data(conn, data_dir: Path) -> None:
     数据源是 daily_picks 的「买入信号」榜单（报告第 3 章），不是 trade_plan
     的 10W 档位——后者是多策略叠加的 23-26 只，合计超本金 2.5 倍。
     """
-    from decide_service import build_plan_from_picks, compare_plan_vs_actual
+    from decide_service import build_plan_from_picks
     from real_position_repository import get_real_cb_positions, get_real_positions
 
     dates = [
@@ -243,15 +243,7 @@ def _export_decide_data(conn, data_dir: Path) -> None:
     ]
     json.dump({"dates": dates}, (data_dir / "decide-dates.json").open("w"), ensure_ascii=False)
 
-    prices = {}
-    for code, close in conn.execute(
-        "SELECT d.code, d.close FROM daily_prices d "
-        "JOIN (SELECT code, MAX(trade_date) AS md FROM daily_prices GROUP BY code) x "
-        "ON d.code = x.code AND d.trade_date = x.md"
-    ):
-        if close is not None:
-            prices[code] = float(close)
-
+    # 降级用：Worker 不可用时前端仍可只读展示本地 SQLite 的持仓快照
     actual_rows = get_real_positions(conn)
     cb_rows = get_real_cb_positions(conn)
     json.dump(
@@ -270,18 +262,17 @@ def _export_decide_data(conn, data_dir: Path) -> None:
             )
         ]
         built = build_plan_from_picks(picks)
-        snap = compare_plan_vs_actual(built["rows"], actual_rows, cb_rows, prices)
-        snap["date"] = d
-        snap["rows"] = built["rows"]
-        snap["skipped"] = built["skipped"]
-        snap["target_amount"] = built["target_amount"]
-        snap["planned_amount"] = built["planned_amount"]
-        snap["stock_capital"] = built["stock_capital"]
-        snap["remaining_stock_cash"] = built["remaining_stock_cash"]
+        # 只导 plan；对比结果由前端 decide_compare.js 实时算（持仓在 D1，随时可变）
         json.dump(
-            snap, (data_dir / f"decide-{d}.json").open("w"),
+            {"date": d, **built},
+            (data_dir / f"decide-{d}.json").open("w"),
             ensure_ascii=False, default=str,
         )
+
+    # 前端对比用的配置（PORTFOLIO_10W），保证前后端规则同源
+    (data_dir / "decide-config.json").write_text(
+        json.dumps(PORTFOLIO_10W, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = None) -> None:

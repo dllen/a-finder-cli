@@ -170,8 +170,10 @@ class TestDecideExport:
         with open(os.path.join(data_dir, "decide-2026-10-25.json"), encoding="utf-8") as f:
             snap = json.load(f)
         assert snap["date"] == "2026-10-25"
-        assert "deviations" in snap
-        assert "cash" in snap
+        assert snap["rows"]
+        assert "skipped" in snap
+        # 对比结果改由前端 decide_compare.js 实时算，快照只含 plan
+        assert "deviations" not in snap
 
         html = open(os.path.join(out, "decide.html"), encoding="utf-8").read()
         assert "决策台" in html
@@ -224,3 +226,29 @@ class TestWorkerIntegrationJs:
         cfg = resp.get_json()
         assert cfg["total_capital"] == 100000.0
         assert cfg["max_positions"] == 8
+
+
+class TestDecideConfigExport:
+
+    def test_export_writes_decide_config(self, plan_db, tmp_path):
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(plan_db, out)
+        cfg_path = os.path.join(out, "data", "decide-config.json")
+        assert os.path.exists(cfg_path)
+        cfg = json.load(open(cfg_path, encoding="utf-8"))
+        assert cfg["total_capital"] == 100000.0
+        assert cfg["max_positions"] == 8
+        assert cfg["max_single_weight"] == 0.10
+
+    def test_plan_snapshot_excludes_comparison(self, plan_db, tmp_path):
+        """对比改由前端算，快照不再含 deviations。"""
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(plan_db, out)
+        snap_path = os.path.join(out, "data", "decide-2026-10-25.json")
+        snap = json.load(open(snap_path, encoding="utf-8"))
+        assert "deviations" not in snap
+        assert "pending_build" not in snap
+        assert "rows" in snap
+        assert "skipped" in snap
