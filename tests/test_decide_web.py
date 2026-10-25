@@ -431,3 +431,31 @@ class TestOneClickState:
     def test_positions_synced_from_loadall(self):
         src = self._js("decide.js")
         assert "POSITIONS = posRes.rows" in src or "POSITIONS = (posRes.rows" in src
+
+
+class TestPlanActionColumn:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_action_column_header(self):
+        assert "<th>操作</th>" in self._js("decide.js")
+
+    def test_held_button_disabled(self):
+        src = self._js("decide.js")
+        assert "data-open" in src
+        assert "已持有" in src
+        assert "disabled" in src
+
+    def test_all_positions_button(self):
+        src = self._js("decide.js")
+        assert "全部建仓" in src
+        assert 'id="btn-open-all"' in src
+
+    def test_worker_down_disables(self):
+        src = self._js("decide.js")
+        assert "WORKER_OK" in src

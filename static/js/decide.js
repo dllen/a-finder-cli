@@ -163,6 +163,16 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function openButton(planRow, heldSet, workerReady) {
+  const code = esc(planRow.code);
+  if (heldSet.has(String(planRow.code))) {
+    return `<button class="btn btn-sm btn-outline-secondary" disabled ` +
+      `title="已在持仓中，如需修改请到下方持仓区">已持有</button>`;
+  }
+  const dis = workerReady ? '' : ' disabled title="写入服务未部署"';
+  return `<button class="btn btn-sm btn-outline-success" data-open="${code}"${dis}>建仓</button>`;
+}
+
 function renderPlan(date, plan) {
   const el = $('decide-plan');
   if (!el) return;
@@ -173,18 +183,27 @@ function renderPlan(date, plan) {
     return;
   }
 
-  // 汇总条：目标单票 / 计划合计 / 剩余股票现金
+  // 汇总条：目标单票 / 计划合计 / 剩余股票现金 + 全部建仓
+  const heldSet = heldCodeSet();
+  const toOpen = rows.filter(r => !isHeldRow(r, heldSet));
+  const allBtn = toOpen.length
+    ? `<button id="btn-open-all" class="btn btn-sm btn-success ms-auto"`
+      + `${WORKER_OK ? '' : ' disabled title="写入服务未部署"'}`
+      + `>全部建仓 (${toOpen.length})</button>`
+    : '<button class="btn btn-sm btn-outline-secondary ms-auto" disabled>全部已持有</button>';
+
   let html = `<div class="d-flex flex-wrap gap-3 align-items-center mb-2 small">
     <span>目标单票 <strong>${money(plan.target_amount)}</strong></span>
     <span>计划合计 <strong>${money(plan.planned_amount)}</strong></span>
     <span>股票仓 <strong>${money(plan.stock_capital)}</strong></span>
     <span class="${(plan.remaining_stock_cash || 0) < 0 ? 'text-danger' : 'text-muted'}">
       剩余 <strong>${money(plan.remaining_stock_cash)}</strong></span>
+    ${allBtn}
   </div>`;
 
   html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
     '<th>排名</th><th>代码</th><th>名称</th><th>策略</th><th class="num">计划价</th><th class="num">股数</th>' +
-    '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th><th class="num">评分</th>' +
+    '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th><th class="num">评分</th><th>操作</th>' +
     '</tr></thead><tbody>';
   rows.forEach(r => {
     html += `<tr><td><span class="rank-badge">${r.rank == null ? '' : r.rank}</span></td>` +
@@ -196,7 +215,8 @@ function renderPlan(date, plan) {
       `<td class="num">${money(r.amount)}</td>` +
       `<td class="num">${fmt(r.stop_price)}</td>` +
       `<td class="num">${fmt(r.tp_price)}</td>` +
-      `<td class="num">${r.score == null ? '—' : r.score.toFixed(1)}</td></tr>`;
+      `<td class="num">${r.score == null ? '—' : r.score.toFixed(1)}</td>` +
+      `<td>${openButton(r, heldSet, WORKER_OK)}</td></tr>`;
   });
   html += '</tbody></table></div>';
 
@@ -213,7 +233,9 @@ function renderPlan(date, plan) {
         `<span class="k">股数</span><span class="v num">${r.shares ?? '—'}（${money(r.amount)}）</span>` +
         `<span class="k">止损</span><span class="v num">${fmt(r.stop_price)}</span>` +
         `<span class="k">止盈</span><span class="v num">${fmt(r.tp_price)}</span>` +
-      `</div></div>`;
+      `</div>` +
+      `<div class="mt-2">${openButton(r, heldSet, WORKER_OK)}</div>` +
+      `</div>`;
   });
   html += '</div>';
 
