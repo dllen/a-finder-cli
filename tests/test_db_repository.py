@@ -188,6 +188,7 @@ def test_get_today_plan_summary_failed_hold_exit_excluded_from_action_count():
 
 
 def test_get_last_refresh_returns_max_updated_at():
+    """最新交易日的 picks 胜出，updated_at 取该日期自身的写入时间。"""
     import tempfile
     from db_repository import open_db, get_last_refresh
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -205,15 +206,44 @@ def test_get_last_refresh_returns_max_updated_at():
         r = get_last_refresh(conn)
         assert r["date"] == "2026-08-18"
         assert r["updated_at"] == "2026-08-18 12:00:00"
-        # newer row wins
+        # 更新的一天胜出（按 date 排序）
         conn.execute(
             "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
-            "VALUES ('2026-08-17', 1, '均线', '000001', '2026-08-18 14:00:00')"
+            "VALUES ('2026-08-19', 1, '均线', '000001', '2026-08-19 09:00:00')"
         )
         conn.commit()
         r = get_last_refresh(conn)
-        assert r["updated_at"] == "2026-08-18 14:00:00"
-        assert r["date"] == "2026-08-17"
+        assert r["date"] == "2026-08-19"
+        assert r["updated_at"] == "2026-08-19 09:00:00"
+    finally:
+        conn.close()
+
+
+def test_get_last_refresh_prefers_newest_picks_date():
+    """批量回填后，最新交易日应胜出，而非最后写入的历史日期。
+
+    回填 396 天时按日期降序写入，最后写入的是最早那一天，
+    若按 updated_at 排序，dashboard 会显示 2025-08-28 而非最新交易日。
+    """
+    import tempfile
+    from db_repository import open_db, get_last_refresh
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    conn = open_db(path)
+    try:
+        # 最新交易日先写，旧日期后写（回填降序的典型情况）
+        conn.execute(
+            "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+            "VALUES ('2026-10-23', 1, '均线', '600519', '2026-10-25T12:42:35')"
+        )
+        conn.execute(
+            "INSERT INTO daily_picks (date, rank, kind, code, updated_at) "
+            "VALUES ('2025-08-28', 1, '均线', '000001', '2026-10-25T12:44:28')"
+        )
+        conn.commit()
+        r = get_last_refresh(conn)
+        assert r["date"] == "2026-10-23", "应返回最新交易日，而非最后写入的旧日期"
+        assert r["updated_at"] == "2026-10-25T12:42:35"
     finally:
         conn.close()
 

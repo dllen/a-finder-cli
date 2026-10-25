@@ -647,7 +647,13 @@ def insert_trade_event(
 
 
 def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
-    """Return the most recently updated daily_picks row: {date, updated_at}. None if empty.
+    """Return the latest picks date and when it was computed: {date, updated_at}.
+
+    Picks the row for the NEWEST trade date, and reports that row's own
+    updated_at. Ordering by updated_at instead would report whichever date
+    happened to be written last — after a batch backfill (which writes dates
+    in descending order) that is the OLDEST date, making the dashboard show a
+    stale date next to a "fresh" badge.
 
     Rows with empty updated_at (legacy or not-yet-populated) are ignored so the
     dashboard's freshness logic only sees real timestamps.
@@ -655,7 +661,7 @@ def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
     cur = conn.execute(
         "SELECT date, updated_at FROM daily_picks "
         "WHERE updated_at != '' "
-        "ORDER BY updated_at DESC, date DESC LIMIT 1"
+        "ORDER BY date DESC, updated_at DESC LIMIT 1"
     )
     row = cur.fetchone()
     if row is None:
