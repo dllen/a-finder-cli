@@ -215,9 +215,11 @@ class TestCbJs:
 
     def test_cb_js_has_no_jquery(self):
         src = self._js()
-        assert "$(" not in src
+        # jQuery 专属写法不应出现；$ 是 dom.js 导出的 getElementById 别名，不算 jQuery
         assert "$.getJSON" not in src
         assert ".html(" not in src
+        assert "jQuery" not in src
+        assert "$.ajax" not in src
 
     def test_cb_js_renders_three_sections(self):
         src = self._js()
