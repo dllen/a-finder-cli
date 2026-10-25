@@ -490,3 +490,33 @@ class TestPositionForm:
 
     def test_no_prompt_still(self):
         assert "prompt(" not in self._js("decide.js")
+
+
+class TestBulkOpen:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_bulk_function_exists(self):
+        assert "function openAllPositions" in self._js("decide.js")
+
+    def test_uses_allsettled(self):
+        assert "Promise.allSettled" in self._js("decide.js")
+
+    def test_bulk_confirmation_modal(self):
+        src = self._js("decide.js")
+        assert "bulk-modal" in src
+        assert "确认全部建仓" in src
+
+    def test_worker_down_hint(self):
+        src = self._js("decide.js")
+        assert "写入服务未部署" in src
+        assert "deploy-worker.sh" in src
+
+    def test_result_summary(self):
+        src = self._js("decide.js")
+        assert "成功" in src and "失败" in src

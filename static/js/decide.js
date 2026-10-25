@@ -272,6 +272,12 @@ function renderPlan(date, plan) {
     </div>`;
   }
 
+  if (!WORKER_OK) {
+    html = `<div class="alert alert-warning py-2 small mb-2">
+      ⚠ 写入服务未部署，无法建仓。请在本地终端运行
+      <code>bash scripts/deploy-worker.sh</code>
+    </div>` + html;
+  }
   el.innerHTML = html;
 }
 
@@ -496,6 +502,90 @@ function openPositionForm(opts) {
   });
 }
 
+function openAllPositions() {
+  const heldSet = heldCodeSet();
+  const targets = (LAST_PLAN_ROWS || []).filter(r => !isHeldRow(r, heldSet));
+  if (!targets.length) {
+    setStatus('没有待建仓的标的（全部已持有）', 'alert-info', 'decide-status');
+    return;
+  }
+
+  const stale = document.getElementById('bulk-modal');
+  if (stale) stale.remove();
+
+  const total = targets.reduce((s, r) => s + (r.amount || 0), 0);
+  const rowsHtml = targets.map(r =>
+    `<tr><td class="code">${esc(r.code)}</td><td>${esc(r.name || '—')}</td>` +
+    `<td class="num">${r.shares}</td><td class="num">${fmt(r.plan_price)}</td>` +
+    `<td class="num">${money(r.amount)}</td></tr>`
+  ).join('');
+
+  document.body.insertAdjacentHTML('beforeend',
+    `<div class="modal fade" id="bulk-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+        <div class="modal-header py-2">
+          <h6 class="modal-title">全部建仓：${targets.length} 只</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <div id="bulk-error" class="alert alert-danger py-2 mb-2 d-none" role="alert"></div>
+          <div class="table-responsive">
+            <table class="app-table"><thead><tr>
+              <th>代码</th><th>名称</th><th class="num">股数</th>
+              <th class="num">成本价</th><th class="num">金额</th>
+            </tr></thead><tbody>${rowsHtml}</tbody></table>
+          </div>
+          <div class="small text-muted mt-2">
+            合计 <strong>${targets.length}</strong> 只 · <strong>${money(total)}</strong>
+            · 按计划价与计划股数提交（如需改价请用行内按钮）
+          </div>
+        </div>
+        <div class="modal-footer py-2">
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="button" class="btn btn-sm btn-success" id="bulk-confirm">确认全部建仓</button>
+        </div>
+      </div></div>
+    </div>`);
+
+  const modalEl = document.getElementById('bulk-modal');
+  const modal = (window.bootstrap && window.bootstrap.Modal)
+    ? window.bootstrap.Modal.getOrCreateInstance(modalEl) : null;
+  if (modal) modal.show();
+  else { modalEl.classList.add('show'); modalEl.style.display = 'block'; }
+
+  document.getElementById('bulk-confirm').addEventListener('click', async () => {
+    const btn = document.getElementById('bulk-confirm');
+    if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+
+    const payloads = targets.map(r => ({
+      code: r.code, name: r.name, is_cb: false,
+      shares: r.shares, entry_price: r.plan_price,
+      stop_price: r.stop_price, entry_date: todayISO(),
+    }));
+    const results = await Promise.allSettled(payloads.map(postDecidePosition));
+
+    const okCount = results.filter(x => x.status === 'fulfilled').length;
+    const failed = results
+      .map((x, i) => ({ res: x, row: targets[i] }))
+      .filter(o => o.res.status === 'rejected');
+
+    if (modal) modal.hide(); else modalEl.remove();
+
+    if (!failed.length) {
+      setStatus(`已建仓 ${okCount} 只，合计 ${money(total)}`, 'alert-success', 'decide-status');
+    } else if (okCount === 0) {
+      const first = failed[0].res.reason || {};
+      setStatus(`全部建仓失败：${first.error || first.status || '未知错误'}`,
+        'alert-danger', 'decide-status');
+    } else {
+      const detail = failed.map(o => esc(o.row.code)).join('、');
+      setStatus(`成功 ${okCount} 笔，失败 ${failed.length} 笔（${detail}），可重试`,
+        'alert-warning', 'decide-status');
+    }
+    loadAll();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 加载
 // ---------------------------------------------------------------------------
@@ -599,6 +689,11 @@ document.addEventListener('DOMContentLoaded', () => {
       CURRENT_USER = '';
       renderAuthBar();
       loadAll();
+      return;
+    }
+    if (e.target.closest('#btn-open-all')) {
+      if (!AUTHED) { PENDING_PLAN_ROW = '__ALL__'; openLoginModal(); return; }
+      openAllPositions();
       return;
     }
     const openBtn = e.target.closest('[data-open]');
