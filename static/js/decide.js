@@ -1,7 +1,12 @@
 // 10w 决策台：今日执行清单 + 执行对照 + 实际持仓录入
 
-import { fetchDecidePlan, fetchDecidePositions, fetchDecideComparison, isStatic } from './api.js';
+import {
+  fetchDecidePlan, fetchDecideConfig,
+  fetchDecidePositionsRemote, postDecidePosition, deleteDecidePosition,
+  loginDecide, logoutDecide, fetchDecideAuthState, isStatic,
+} from './api.js';
 import { $, fmt, esc, setStatus } from './dom.js';
+import { computeComparison } from './decide_compare.js';
 
 const SEV_CLS = { danger: 'bg-danger', warn: 'bg-warning text-dark', info: 'bg-info text-dark' };
 const SEV_LABEL = { danger: '危险', warn: '警告', info: '提示' };
@@ -14,6 +19,41 @@ const KIND_LABEL = {
 
 function money(v) {
   return v == null ? '—' : '¥' + Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+}
+
+// ---------------------------------------------------------------------------
+// 登录态
+// ---------------------------------------------------------------------------
+
+let AUTHED = false;
+let CFG = null;
+
+function renderAuthBar() {
+  const el = $('decide-auth');
+  if (!el) return;
+  if (AUTHED) {
+    el.innerHTML = `<div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-0">
+      <span>已登录，可录入 / 编辑持仓。</span>
+      <button id="btn-logout" class="btn btn-sm btn-outline-secondary ms-auto">登出</button>
+    </div>`;
+  } else {
+    el.innerHTML = `<div class="alert alert-secondary d-flex align-items-center gap-2 py-2 mb-0">
+      <span>只读模式。持仓存在云端，登录后可录入 / 编辑。</span>
+      <button id="btn-login" class="btn btn-sm btn-primary ms-auto">登录</button>
+    </div>`;
+  }
+}
+
+function showLoginForm() {
+  const pwd = prompt('输入决策台密码');
+  if (!pwd) return;
+  loginDecide(pwd)
+    .then(() => {
+      AUTHED = true;
+      renderAuthBar();
+      loadAll();
+    })
+    .catch(e => setStatus('登录失败：' + (e.error || e.status), 'alert-danger'));
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +240,19 @@ function positionsTable(rows, opts) {
 function renderPositions(rows, cbRows) {
   const stockEl = $('decide-positions');
   const cbEl = $('decide-cb-positions');
+  const editable = AUTHED || !isStatic();
   if (stockEl) {
-    stockEl.innerHTML = positionsTable(rows, { emptyText: '暂无实际持仓，点上方按钮添加' });
-    if (!isStatic()) {
+    stockEl.innerHTML = positionsTable(rows, { emptyText: '暂无实际持仓，点下方按钮添加', readonly: !editable });
+    if (editable) {
       stockEl.insertAdjacentHTML('beforeend',
         `<div class="mt-2"><button id="add-position" class="btn btn-sm btn-outline-primary">＋ 添加持仓</button></div>`);
     }
   }
   if (cbEl) {
-    cbEl.innerHTML = positionsTable(cbRows, { emptyText: '暂无转债持仓', isCb: true, readonly: isStatic() });
-    if (!isStatic()) {
+    cbEl.innerHTML = positionsTable(cbRows, {
+      emptyText: '暂无转债持仓', isCb: true, readonly: !editable,
+    });
+    if (editable) {
       cbEl.insertAdjacentHTML('beforeend',
         `<div class="mt-2"><button id="add-cb-position" class="btn btn-sm btn-outline-primary">＋ 添加转债</button></div>`);
     }
@@ -255,14 +298,10 @@ function showAddForm(isCb) {
       const v = inp.value.trim();
       payload[k] = v === '' ? null : (inp.type === 'number' ? Number(v) : v);
     });
-    const resp = await fetch('/api/decide/positions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      setStatus('保存失败：' + (err.error || resp.status), 'alert-danger');
+    try {
+      await postDecidePosition(payload);
+    } catch (err) {
+      setStatus('保存失败：' + (err.error || err.status), 'alert-danger');
       return;
     }
     modal.remove();
@@ -285,17 +324,39 @@ function fillDateOptions(dates) {
 async function loadAll() {
   setStatus('加载中…', 'alert-info');
   try {
-    const planRes = await fetchDecidePlan().catch(() => ({ date: '', rows: [], dates: [] }));
+    const [planRes, posRes, cfgRes, authRes] = await Promise.all([
+      fetchDecidePlan().catch(() => ({ date: '', rows: [], dates: [] })),
+      fetchDecidePositionsRemote().catch(() => ({ rows: [], cb_rows: [] })),
+      fetchDecideConfig().catch(() => null),
+      fetchDecideAuthState().catch(() => ({ authed: false })),
+    ]);
+    if (cfgRes) CFG = cfgRes;
+    if (authRes && typeof authRes.authed === 'boolean') AUTHED = authRes.authed;
+    renderAuthBar();
+
     fillDateOptions(planRes.dates || []);
     const date = ($('decide-date') && $('decide-date').value) || planRes.date || '';
 
-    const cmpRes = await fetchDecideComparison(date).catch(() => ({ deviations: [] }));
-    const posRes = await fetchDecidePositions().catch(() => ({ rows: [], cb_rows: [] }));
+    // 静态站无实时行情：用 plan 的计划价近似最新价（止损/止盈判定用）
+    const prices = {};
+    (planRes.rows || []).forEach(r => {
+      if (r.plan_price != null) prices[r.code] = r.plan_price;
+    });
+
+    const cmp = CFG
+      ? computeComparison(
+          planRes.rows || [], posRes.rows || [], posRes.cb_rows || [], prices, CFG,
+        )
+      : {
+          deviations: [], pending_build: [], stock_used: 0, cb_used: 0, cash: 0,
+          actual_count: 0, cb_count: 0, plan_count: 0,
+          danger_count: 0, warn_count: 0, info_count: 0,
+        };
 
     renderPlan(date, planRes);
-    renderComparison(cmpRes);
+    renderComparison(cmp);
     renderPositions(posRes.rows || [], posRes.cb_rows || []);
-    renderSummary(cmpRes);
+    renderSummary(cmp);
     setStatus('', '');
   } catch (e) {
     setStatus('加载失败：' + (e && e.message ? e.message : e), 'alert-danger');
@@ -309,6 +370,14 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btn) btn.addEventListener('click', loadAll);
 
   document.addEventListener('click', async e => {
+    if (e.target.closest('#btn-login')) { showLoginForm(); return; }
+    if (e.target.closest('#btn-logout')) {
+      await logoutDecide().catch(() => {});
+      AUTHED = false;
+      renderAuthBar();
+      loadAll();
+      return;
+    }
     const add = e.target.closest('#add-position');
     if (add) { showAddForm(false); return; }
     const addCb = e.target.closest('#add-cb-position');
@@ -317,8 +386,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (del) {
       const code = del.dataset.del;
       const isCb = del.dataset.cb === '1';
-      await fetch('/api/decide/positions/' + encodeURIComponent(code) + (isCb ? '?cb=1' : ''),
-        { method: 'DELETE' });
+      try {
+        await deleteDecidePosition(code, isCb);
+      } catch (err) {
+        setStatus('删除失败：' + (err.error || err.status), 'alert-danger');
+        return;
+      }
       loadAll();
     }
   });

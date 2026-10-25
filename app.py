@@ -455,6 +455,11 @@ def create_app(db_path="hs300.db", top=10):
                 out[code] = float(close)
         return out
 
+    @app.get("/api/decide/config")
+    def decide_config():
+        from config import PORTFOLIO_10W
+        return jsonify(PORTFOLIO_10W)
+
     @app.get("/api/decide/plan")
     def decide_plan():
         conn = open_conn(db_path)

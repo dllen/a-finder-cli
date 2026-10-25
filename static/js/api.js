@@ -173,3 +173,60 @@ export function fetchDecideComparison(date) {
     ? getJSON(dsPath('data/decide-' + date + '.json'))
     : getJSON('/api/decide/comparison', { date });
 }
+
+// ---------------------------------------------------------------------------
+// Cloudflare Worker（持仓写入；D1 是唯一真相源）
+// ---------------------------------------------------------------------------
+
+// 线上静态站：同源（Worker 挂在 ycu.space/api/*）
+// 本地 Flask：跨域到 ycu.space
+export const API_BASE = isStatic() ? '' : 'https://ycu.space';
+
+async function reqJSON(url, opts) {
+  const resp = await fetch(url, Object.assign({ credentials: 'include' }, opts));
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw Object.assign({ status: resp.status }, data);
+  return data;
+}
+
+export function fetchDecidePositionsRemote() {
+  return reqJSON(API_BASE + '/api/decide/positions');
+}
+
+export function postDecidePosition(payload) {
+  return reqJSON(API_BASE + '/api/decide/positions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteDecidePosition(code, isCb) {
+  const q = isCb ? '?cb=1' : '';
+  return reqJSON(
+    API_BASE + '/api/decide/positions/' + encodeURIComponent(code) + q,
+    { method: 'DELETE' },
+  );
+}
+
+export function loginDecide(password) {
+  return reqJSON(API_BASE + '/api/decide/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function logoutDecide() {
+  return reqJSON(API_BASE + '/api/decide/logout', { method: 'POST' });
+}
+
+export function fetchDecideAuthState() {
+  return reqJSON(API_BASE + '/api/decide/health');
+}
+
+export function fetchDecideConfig() {
+  return isStatic()
+    ? getJSON(dsPath('data/decide-config.json'))
+    : getJSON('/api/decide/config');
+}

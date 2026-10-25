@@ -177,3 +177,50 @@ class TestDecideExport:
         assert "决策台" in html
         assert "js/decide.js" in html
         assert 'window.APP_MODE="static"' in html
+
+
+class TestWorkerIntegrationJs:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_api_js_has_api_base(self):
+        src = self._js("api.js")
+        assert "export const API_BASE" in src
+        assert "ycu.space" in src
+
+    def test_api_js_has_worker_calls(self):
+        src = self._js("api.js")
+        for fn in ("fetchDecidePositionsRemote", "postDecidePosition",
+                   "deleteDecidePosition", "loginDecide", "logoutDecide",
+                   "fetchDecideAuthState", "fetchDecideConfig"):
+            assert f"export function {fn}" in src, f"缺少 {fn}"
+
+    def test_decide_js_uses_worker_and_compare(self):
+        src = self._js("decide.js")
+        assert "decide_compare.js" in src
+        assert "computeComparison" in src
+        assert "fetchDecidePositionsRemote" in src
+        assert "loginDecide" in src
+        assert "postDecidePosition" in src
+        assert "deleteDecidePosition" in src
+
+    def test_decide_js_no_hardcoded_flask_post(self):
+        """写操作不能再用硬编码 /api/decide/positions 的裸 fetch。"""
+        src = self._js("decide.js")
+        assert "fetch('/api/decide/positions'" not in src
+
+    def test_decide_html_has_login_area(self, client):
+        body = client.get("/decide").data.decode("utf-8")
+        assert 'id="decide-auth"' in body
+
+    def test_api_decide_config(self, client):
+        resp = client.get("/api/decide/config")
+        assert resp.status_code == 200
+        cfg = resp.get_json()
+        assert cfg["total_capital"] == 100000.0
+        assert cfg["max_positions"] == 8
