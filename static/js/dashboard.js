@@ -1,8 +1,7 @@
 // 顶部 Dashboard 卡片刷新（替代原 static/dashboard.js）
 
-import { fetchDashboard, isStatic } from './api.js';
+import { fetchDashboard, isStatic, planHref, cbHref } from './api.js';
 import { fmt } from './dom.js';
-import { planHref } from './api.js';
 
 function freshnessBadge(f) {
   if (!f) return '<span class="badge bg-secondary">—</span>';
@@ -32,6 +31,7 @@ function renderDashboard(d) {
   const tp = d.today_plan;
   const op = d.open_positions;
   const pnl = d.pnl_5d;
+  const cb = d.cb;
 
   const card = (title, body) => `
     <div class="col">
@@ -69,6 +69,12 @@ function renderDashboard(d) {
 
   const pnlHtml = pnl.length ? sparkline(pnl) : '<span class="text-muted small">暂无收益</span>';
 
+  const cbHtml = cb
+    ? `<div><strong>${cb.picks_count}</strong> <small class="text-muted">只榜单</small>` +
+      ` <strong class="ms-2">${cb.positions_count}</strong> <small class="text-muted">只持仓</small></div>` +
+      `<small class="text-muted">${cb.latest_date ? '榜单 ' + cb.latest_date : '暂无榜单'} · <a href="${cbHref()}">查看 →</a></small>`
+    : '<span class="text-muted small">转债数据未初始化</span>';
+
   const el = document.getElementById('dashboard');
   if (el) {
     el.innerHTML = `
@@ -77,6 +83,9 @@ function renderDashboard(d) {
         ${card('今日 plan', tpHtml)}
         ${card('持仓概览', opHtml)}
         ${card('最近 5 日收益', pnlHtml)}
+      </div>
+      <div class="row g-2 mb-3">
+        ${card('可转债', cbHtml)}
       </div>`;
   }
 }

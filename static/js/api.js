@@ -107,6 +107,35 @@ export async function pollJob(jobId, onProgress, onComplete, onError) {
 
 export function picksHref() { return isStatic() ? 'index.html' : '/'; }
 export function planHref() { return isStatic() ? 'plan.html' : '/plan'; }
+export function cbHref() { return isStatic() ? 'cb.html' : '/cb'; }
+
+// ---------------------------------------------------------------------------
+// 可转债（Convertible Bond）
+// ---------------------------------------------------------------------------
+
+export function fetchCbPicks(date) {
+  return isStatic()
+    ? getJSON(dsPath('data/cb-picks-' + date + '.json'))
+    : getJSON('/api/cb/picks', { date });
+}
+
+export function fetchCbDates() {
+  return isStatic()
+    ? getJSON(dsPath('data/cb-dates.json'))
+    : getJSON('/api/cb/dates');
+}
+
+export function fetchCbPositions() {
+  return isStatic()
+    ? getJSON(dsPath('data/cb-positions.json'))
+    : getJSON('/api/cb/positions');
+}
+
+export function fetchCbAlerts() {
+  return isStatic()
+    ? getJSON(dsPath('data/cb-alerts.json'))
+    : getJSON('/api/cb/alerts');
+}
 
 // 静态模式下隐藏写入控件、修正导航链接
 if (isStatic()) {
@@ -116,5 +145,7 @@ if (isStatic()) {
     if (picksLink) picksLink.href = 'index.html';
     const planLink = document.querySelector('a[data-nav="plan"]');
     if (planLink) planLink.href = 'plan.html';
+    const cbLink = document.querySelector('a[data-nav="cb"]');
+    if (cbLink) cbLink.href = 'cb.html';
   });
 }

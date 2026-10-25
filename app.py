@@ -160,6 +160,11 @@ def latest_close_map(conn):
 def create_app(db_path="hs300.db", top=10):
     app = Flask(__name__)
 
+    def _cb_latest_pick_date(conn) -> str:
+        """最新有榜单的交易日；无数据返回空串。"""
+        row = conn.execute("SELECT MAX(trade_date) FROM cb_picks").fetchone()
+        return row[0] if row and row[0] else ""
+
     @app.get("/")
     def index():
         from datetime import date as _date
@@ -302,13 +307,112 @@ def create_app(db_path="hs300.db", top=10):
             ago = (_dt_class.now() - parsed).total_seconds() / 3600
             last["ago_hours"] = round(ago, 1)
             last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
+
+        # 可转债摘要（只读 DB，不触网）
+        from cb_repository import get_cb_positions
+        conn2 = open_conn(db_path)
+        try:
+            cb_date = _cb_latest_pick_date(conn2)
+            cb_picks_count = conn2.execute(
+                "SELECT COUNT(*) FROM cb_picks WHERE trade_date=?", (cb_date,)
+            ).fetchone()[0] if cb_date else 0
+            cb_positions_count = len(get_cb_positions(conn2))
+        finally:
+            conn2.close()
+
         return jsonify({
             "last_refresh": last,
             "today_plan": today,
             "open_positions": opens,
             "pnl_5d": pnl,
             "holdings_summary": hd["summary"],
+            "cb": {
+                "picks_count": cb_picks_count,
+                "positions_count": cb_positions_count,
+                "latest_date": cb_date,
+            },
         })
+
+    # ------------------------------------------------------------------
+    # 可转债（Convertible Bond）
+    # ------------------------------------------------------------------
+
+    @app.get("/api/cb/dates")
+    def cb_dates():
+        conn = open_conn(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM cb_picks ORDER BY trade_date DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return jsonify({"dates": [r[0] for r in rows]})
+
+    @app.get("/api/cb/picks")
+    def cb_picks():
+        from cb_repository import get_cb_picks
+        conn = open_conn(db_path)
+        try:
+            date = request.args.get("date", "") or _cb_latest_pick_date(conn)
+            rows = get_cb_picks(conn, date) if date else []
+        finally:
+            conn.close()
+        return jsonify({"date": date, "rows": rows})
+
+    @app.get("/api/cb/positions")
+    def cb_positions():
+        from cb_repository import get_cb_positions
+        conn = open_conn(db_path)
+        try:
+            rows = get_cb_positions(conn)
+        finally:
+            conn.close()
+        return jsonify({"rows": rows})
+
+    @app.get("/api/cb/alerts")
+    def cb_alerts():
+        """持仓退出预警。实时抓取行情（仅针对持仓的少数几只）。
+
+        无持仓时直接返回空数组，不触发任何网络请求。
+        """
+        from cb_repository import get_cb_positions
+        from strategies.convertible import evaluate_alerts
+
+        conn = open_conn(db_path)
+        try:
+            positions = get_cb_positions(conn)
+        finally:
+            conn.close()
+
+        generated_at = _dt_class.now().strftime("%Y-%m-%dT%H:%M:%S")
+        if not positions:
+            return jsonify({"generated_at": generated_at, "alerts": []})
+
+        from cb_data_provider import fetch_redeem_status_map, fetch_universe_snapshot
+        universe = {r["code"]: r for r in fetch_universe_snapshot()}
+        redeem_map = fetch_redeem_status_map()
+
+        quotes = {}
+        for code in {p["code"] for p in positions}:
+            u = universe.get(code) or {}
+            rd = redeem_map.get(code) or {}
+            cp = u.get("convert_price")
+            sp = u.get("stock_price")
+            trig = rd.get("redeem_price")
+            redeem_dist = None
+            if trig and sp and sp > 0:
+                redeem_dist = round((trig / sp - 1.0) * 100.0, 4)
+            quotes[code] = {
+                "price": u.get("price"),
+                "redeem_status": rd.get("redeem_status") or "",
+                "redeem_dist": redeem_dist,
+                "premium_rate": u.get("premium_rate"),
+                "stock_price": sp,
+                "convert_price": cp,
+            }
+
+        alerts = evaluate_alerts(positions, quotes)
+        return jsonify({"generated_at": generated_at, "alerts": alerts})
 
     @app.get("/api/stats")
     def stats():
@@ -365,6 +469,14 @@ def create_app(db_path="hs300.db", top=10):
         return render_template("portfolio.html",
             today=today,
             strategy_options=options_html,
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
+
+    @app.get("/cb")
+    def cb_page():
+        from datetime import date as _date
+        return render_template("cb.html",
+            today=_date.today().isoformat(),
             app_mode="api", data_prefix="",
             year=_date.today().year)
 
