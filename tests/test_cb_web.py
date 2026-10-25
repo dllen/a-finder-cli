@@ -227,3 +227,36 @@ class TestCbJs:
         assert "cb-alerts" in src
         assert "cb-positions" in src
         assert "cb-board" in src
+
+
+class TestCbExport:
+
+    def test_export_includes_cb_files(self, cb_db, tmp_path):
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(cb_db, out)
+        data_dir = os.path.join(out, "data")
+        assert os.path.exists(os.path.join(data_dir, "cb-dates.json"))
+        assert os.path.exists(os.path.join(data_dir, "cb-picks-2026-10-25.json"))
+        assert os.path.exists(os.path.join(data_dir, "cb-positions.json"))
+        assert os.path.exists(os.path.join(data_dir, "cb-alerts.json"))
+
+        with open(os.path.join(data_dir, "cb-picks-2026-10-25.json"), encoding="utf-8") as f:
+            picks = json.load(f)
+        assert picks["date"] == "2026-10-25"
+        assert picks["rows"][0]["code"] == "113046"
+
+        with open(os.path.join(data_dir, "cb-positions.json"), encoding="utf-8") as f:
+            pos = json.load(f)
+        assert pos["rows"][0]["code"] == "113059"
+
+    def test_export_writes_cb_html(self, cb_db, tmp_path):
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(cb_db, out)
+        html_path = os.path.join(out, "cb.html")
+        assert os.path.exists(html_path)
+        body = open(html_path, encoding="utf-8").read()
+        assert "可转债" in body
+        assert "js/cb.js" in body
+        assert 'window.APP_MODE="static"' in body

@@ -94,6 +94,69 @@ def _dashboard_payload(conn) -> dict:
     }
 
 
+def _export_cb_data(conn, data_dir: Path) -> None:
+    """导出可转债数据：榜单（按日期）、持仓、预警快照。"""
+    from cb_repository import get_cb_positions, get_cb_picks
+
+    cb_dates = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM cb_picks ORDER BY trade_date DESC"
+        ).fetchall()
+    ]
+    json.dump({"dates": cb_dates}, (data_dir / "cb-dates.json").open("w"), ensure_ascii=False)
+    for d in cb_dates:
+        rows = get_cb_picks(conn, d)
+        json.dump(
+            {"date": d, "rows": rows},
+            (data_dir / f"cb-picks-{d}.json").open("w"),
+            ensure_ascii=False, default=str,
+        )
+
+    positions = get_cb_positions(conn)
+    json.dump(
+        {"rows": positions},
+        (data_dir / "cb-positions.json").open("w"),
+        ensure_ascii=False, default=str,
+    )
+
+    # 预警快照：导出时点抓一次行情（无持仓则不触网）
+    generated_at = _dt_class.now().strftime("%Y-%m-%dT%H:%M:%S")
+    alerts: list = []
+    if positions:
+        try:
+            from cb_data_provider import fetch_redeem_status_map, fetch_universe_snapshot
+            from strategies.convertible import evaluate_alerts
+
+            universe = {r["code"]: r for r in fetch_universe_snapshot()}
+            redeem_map = fetch_redeem_status_map()
+            quotes = {}
+            for code in {p["code"] for p in positions}:
+                u = universe.get(code) or {}
+                rd = redeem_map.get(code) or {}
+                cp = u.get("convert_price")
+                sp = u.get("stock_price")
+                trig = rd.get("redeem_price")
+                redeem_dist = None
+                if trig and sp and sp > 0:
+                    redeem_dist = round((trig / sp - 1.0) * 100.0, 4)
+                quotes[code] = {
+                    "price": u.get("price"),
+                    "redeem_status": rd.get("redeem_status") or "",
+                    "redeem_dist": redeem_dist,
+                    "premium_rate": u.get("premium_rate"),
+                    "stock_price": sp,
+                    "convert_price": cp,
+                }
+            alerts = evaluate_alerts(positions, quotes)
+        except Exception:
+            alerts = []
+    json.dump(
+        {"generated_at": generated_at, "alerts": alerts},
+        (data_dir / "cb-alerts.json").open("w"),
+        ensure_ascii=False, default=str,
+    )
+
+
 def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = None) -> None:
     """写出 portfolio 静态数据 + portfolio.html。"""
     pf_dir = out_dir / "data" / "portfolio"
@@ -212,6 +275,7 @@ def export(db_path: str, out_dir: str) -> int:
                   ensure_ascii=False, default=str)
         json.dump(get_holdings_detail(conn), (data_dir / "holdings.json").open("w"),
                   ensure_ascii=False, default=str)
+        _export_cb_data(conn, data_dir)
     finally:
         conn.close()
 
@@ -238,6 +302,12 @@ def export(db_path: str, out_dir: str) -> int:
             today=plan_default,
             capital_tiers=CAPITAL_TIERS,
             tier_filter_options=tier_filter_options,
+            year=_dt_class.now().year),
+        encoding="utf-8",
+    )
+    (out / "cb.html").write_text(
+        _render_static_page("cb.html",
+            today=_dt_class.now().strftime("%Y-%m-%d"),
             year=_dt_class.now().year),
         encoding="utf-8",
     )
