@@ -134,3 +134,26 @@ class TestDecidePage:
     def test_nav_has_decide_link(self, client):
         body = client.get("/").data.decode("utf-8")
         assert 'data-nav="decide"' in body
+
+
+class TestDecideExport:
+
+    def test_export_includes_decide_files(self, plan_db, tmp_path):
+        from export_json import export
+        out = str(tmp_path / "site")
+        export(plan_db, out)
+        assert os.path.exists(os.path.join(out, "decide.html"))
+        data_dir = os.path.join(out, "data")
+        assert os.path.exists(os.path.join(data_dir, "decide-positions.json"))
+        assert os.path.exists(os.path.join(data_dir, "decide-2026-10-25.json"))
+
+        with open(os.path.join(data_dir, "decide-2026-10-25.json"), encoding="utf-8") as f:
+            snap = json.load(f)
+        assert snap["date"] == "2026-10-25"
+        assert "deviations" in snap
+        assert "cash" in snap
+
+        html = open(os.path.join(out, "decide.html"), encoding="utf-8").read()
+        assert "决策台" in html
+        assert "js/decide.js" in html
+        assert 'window.APP_MODE="static"' in html

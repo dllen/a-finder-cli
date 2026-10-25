@@ -149,3 +149,25 @@ if (isStatic()) {
     if (cbLink) cbLink.href = 'cb.html';
   });
 }
+
+// ---------------------------------------------------------------------------
+// 10w 决策台
+// ---------------------------------------------------------------------------
+
+export function fetchDecidePlan(date) {
+  return isStatic()
+    ? getJSON(dsPath('data/decide-' + date + '.json'))
+    : getJSON('/api/decide/plan', { date });
+}
+
+export function fetchDecidePositions() {
+  return isStatic()
+    ? getJSON(dsPath('data/decide-positions.json'))
+    : getJSON('/api/decide/positions');
+}
+
+export function fetchDecideComparison(date) {
+  return isStatic()
+    ? getJSON(dsPath('data/decide-' + date + '.json'))
+    : getJSON('/api/decide/comparison', { date });
+}

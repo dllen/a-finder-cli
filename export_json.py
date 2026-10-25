@@ -37,7 +37,7 @@ from app import (
     picks_for_date,
     _dt_class,
 )
-from config import CAPITAL_TIERS
+from config import CAPITAL_TIERS, PORTFOLIO_10W
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
@@ -189,6 +189,51 @@ def _export_cb_data(conn, data_dir: Path) -> None:
     )
 
 
+def _export_decide_data(conn, data_dir: Path) -> None:
+    """导出 10w 决策台快照（静态站只读）：计划 + 对照 + 实际持仓。"""
+    from decide_service import compare_plan_vs_actual, dedupe_plan_rows
+    from db_repository import get_trade_plan_by_date
+    from real_position_repository import get_real_cb_positions, get_real_positions
+
+    dates = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT plan_date FROM trade_plan WHERE portfolio='10W' "
+            "ORDER BY plan_date DESC"
+        ).fetchall()
+    ]
+    json.dump({"dates": dates}, (data_dir / "decide-dates.json").open("w"), ensure_ascii=False)
+
+    prices = {}
+    for code, close in conn.execute(
+        "SELECT d.code, d.close FROM daily_prices d "
+        "JOIN (SELECT code, MAX(trade_date) AS md FROM daily_prices GROUP BY code) x "
+        "ON d.code = x.code AND d.trade_date = x.md"
+    ):
+        if close is not None:
+            prices[code] = float(close)
+
+    actual_rows = get_real_positions(conn)
+    cb_rows = get_real_cb_positions(conn)
+    json.dump(
+        {"rows": actual_rows, "cb_rows": cb_rows},
+        (data_dir / "decide-positions.json").open("w"),
+        ensure_ascii=False, default=str,
+    )
+
+    for d in dates:
+        plan_rows = dedupe_plan_rows([
+            r for r in get_trade_plan_by_date(conn, d)
+            if r.get("portfolio") == "10W" and r.get("status") != "failed"
+        ])
+        snap = compare_plan_vs_actual(plan_rows, actual_rows, cb_rows, prices)
+        snap["date"] = d
+        snap["rows"] = plan_rows
+        json.dump(
+            snap, (data_dir / f"decide-{d}.json").open("w"),
+            ensure_ascii=False, default=str,
+        )
+
+
 def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = None) -> None:
     """写出 portfolio 静态数据 + portfolio.html。"""
     pf_dir = out_dir / "data" / "portfolio"
@@ -308,6 +353,7 @@ def export(db_path: str, out_dir: str) -> int:
         json.dump(get_holdings_detail(conn), (data_dir / "holdings.json").open("w"),
                   ensure_ascii=False, default=str)
         _export_cb_data(conn, data_dir)
+        _export_decide_data(conn, data_dir)
     finally:
         conn.close()
 
@@ -340,6 +386,13 @@ def export(db_path: str, out_dir: str) -> int:
     (out / "cb.html").write_text(
         _render_static_page("cb.html",
             today=_dt_class.now().strftime("%Y-%m-%d"),
+            year=_dt_class.now().year),
+        encoding="utf-8",
+    )
+    (out / "decide.html").write_text(
+        _render_static_page("decide.html",
+            today=_dt_class.now().strftime("%Y-%m-%d"),
+            config=PORTFOLIO_10W,
             year=_dt_class.now().year),
         encoding="utf-8",
     )
