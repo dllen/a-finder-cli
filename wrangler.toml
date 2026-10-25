@@ -5,8 +5,7 @@ compatibility_date = "2026-10-25"
 [[d1_databases]]
 binding = "DB"
 database_name = "a-finder"
-# 运行 `npx wrangler d1 create a-finder` 后，把返回的 database_id 填到这里
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "e9348772-e7ae-43aa-a119-19f707ab1821"
 
 routes = [
   { pattern = "ycu.space/api/*", zone_name = "ycu.space" }

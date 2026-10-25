@@ -25,3 +25,4 @@ site/
 # Cloudflare
 .dev.vars
 .wrangler/
+.wrangler-home/
