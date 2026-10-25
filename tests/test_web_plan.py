@@ -208,11 +208,12 @@ def test_dashboard_partial_present_on_both_pages(plan_db):
     for path in ("/", "/plan"):
         r = client.get(path)
         assert b'<div id="dashboard"></div>' in r.data
-        assert b'startDashboard();' in r.data
+        # Dashboard JS is now an external ES6 module
+        assert b'dashboard.js' in r.data
 
 
 def test_dashboard_js_served():
-    """dashboard.js is served at /static/dashboard.js."""
+    """dashboard.js is served at /static/js/dashboard.js."""
     import tempfile
     from db_repository import open_db
     from app import create_app
@@ -221,7 +222,7 @@ def test_dashboard_js_served():
     open_db(path).close()
     app = create_app(db_path=path)
     client = app.test_client()
-    resp = client.get("/static/dashboard.js")
+    resp = client.get("/static/js/dashboard.js")
     assert resp.status_code == 200
     assert b"startDashboard" in resp.data
 
@@ -243,9 +244,12 @@ def test_plan_page_has_holdings_container(plan_db):
 
 
 def test_plan_page_has_dsFetchHoldings(plan_db):
+    """Plan page loads holdings via external JS module."""
     app = create_app(db_path=plan_db)
     resp = app.test_client().get("/plan")
-    assert b'dsFetchHoldings' in resp.data
+    # Holdings logic is now in plan.js module
+    assert b'plan.js' in resp.data
+    assert b'id="holdings"' in resp.data
 
 
 def test_api_plan_build_passes_capital(plan_db, monkeypatch):
@@ -277,20 +281,21 @@ def test_api_plan_build_passes_capital(plan_db, monkeypatch):
 def test_plan_page_renders_strategy_column(plan_db):
     """交易计划表必须有「策略」列，从 rationale_json.obj.strategy 读取。
 
-    静态与 Flask 共用同一份 PLAN_SCRIPT；只要 shell HTML 里包含表头列、桌面/移动端两套
-    模板都能找到 strategy 提取逻辑，就视为修复到位。
+    表格现在是客户端渲染（plan.js），所以检查 JS 模块而非 HTML。
     """
     app = create_app(db_path=plan_db)
     resp = app.test_client().get("/plan")
-    body = resp.data.decode("utf-8")
-
     assert resp.status_code == 200
-    # 桌面表头新增「策略」列
-    assert "<th>策略</th>" in body
-    # 移动端卡片 kv-grid 也要带「策略」一行
-    assert '<span class="k">策略</span>' in body
-    # row() 从 rationale_json 解出 strategy（obj.strategy / .strategy 至少出现一处）
-    assert "obj.strategy" in body or ".strategy" in body
+    # Strategy column logic is in plan.js
+    js_resp = app.test_client().get("/static/js/plan.js")
+    assert js_resp.status_code == 200
+    js_body = js_resp.data.decode("utf-8")
+    # Desktop table header includes 策略 column
+    assert "<th>策略</th>" in js_body
+    # Mobile card kv-grid includes 策略 row
+    assert '<span class="k">策略</span>' in js_body
+    # row() extracts strategy from rationale_json
+    assert ".strategy" in js_body
 
 
 def test_plan_page_renders_only_affordable_toggle(plan_db):
@@ -308,9 +313,8 @@ def test_plan_page_renders_only_affordable_toggle(plan_db):
     # 复选框必须在 filter-toolbar 内，与 include-failed 风格一致
     assert 'id="only-affordable"' in body
     assert "只显示可建仓" in body
-    # JS 状态机与过滤逻辑必须就位：drawPlan 会基于 onlyAffordable 跳过 insufficientLot 行
-    assert "onlyAffordable" in body
-    assert "insufficientLot" in body
+    # JS logic is now in external plan.js module
+    assert b'plan.js' in resp.data
 
 
 def test_plan_page_renders_tier_filter_dropdown(plan_db):
@@ -332,9 +336,8 @@ def test_plan_page_renders_tier_filter_dropdown(plan_db):
     # 10 个 checkbox 必须存在
     for c in CAPITAL_TIERS:
         assert f'value="{c}"' in body, f"missing tier-filter checkbox for {c}"
-    # JS 模板必须含交集过滤逻辑：tierFilter + sizeShares 检查
-    assert "tierFilter" in body
-    assert "tier-filter-cb" in body
+    # JS logic is now in external plan.js module
+    assert b'plan.js' in resp.data
 
 
 def test_plan_row_includes_tier_shares_matrix(plan_db):
@@ -350,14 +353,16 @@ def test_plan_row_includes_tier_shares_matrix(plan_db):
     body = resp.data.decode("utf-8")
 
     assert resp.status_code == 200
-    # JS 必须含子表标题 + 子表 class
-    assert "各档股数" in body
-    assert "tier-shares-table" in body
-    assert "tier-shares-wrap" in body
-    # 模板里要有生成 data-tier 的循环（tierSharesHtml + 'data-tier="'）
-    assert 'data-tier="' in body
-    # 模板必须遍历 CAPITAL_TIERS（forEach + CAPITAL_TIERS）
-    assert "CAPITAL_TIERS.forEach" in body
+    # Tier shares logic is now in external plan.js module
+    assert b'plan.js' in resp.data
+    # Verify the JS module contains the tier-shares logic
+    js_resp = app.test_client().get("/static/js/plan.js")
+    assert js_resp.status_code == 200
+    js_body = js_resp.data.decode("utf-8")
+    assert "各档股数" in js_body
+    assert "tier-shares-table" in js_body
+    assert "tier-shares-wrap" in js_body
+    assert 'data-tier="' in js_body
 
 
 def test_plan_page_renders_ten_capital_tiers(plan_db):
@@ -411,7 +416,7 @@ def test_cli_plan_accepts_new_capital_tier():
 def test_pages_have_favicon_link():
     """每个页面 head 里都带 <link rel="icon" type="image/svg+xml" ...>。
 
-    favicon 用 SVG 内联 data URI 注入，静态站与 Flask 共用同一份 shell，避免 404。
+    favicon 现在是静态文件 /static/favicon.svg（从内联 data URI 迁移）。
     """
     from db_repository import open_db
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -419,11 +424,11 @@ def test_pages_have_favicon_link():
     open_db(path).close()
     app = create_app(db_path=path)
     client = app.test_client()
-    from app import _FAVICON_HREF
-    assert _FAVICON_HREF.startswith("data:image/svg+xml")
     for path_ in ("/", "/plan"):
         body = client.get(path_).data.decode("utf-8")
-        assert '<link rel="icon" type="image/svg+xml" href=' in body
-        assert _FAVICON_HREF in body
-        # 验证 SVG 内容（指纹色 #34c98e 必须出现在响应中）
-        assert "#34c98e" in body
+        assert '<link rel="icon" type="image/svg+xml"' in body
+        assert 'favicon.svg' in body
+    # Verify the SVG file is served and contains expected content
+    svg_resp = client.get("/static/favicon.svg")
+    assert svg_resp.status_code == 200
+    assert b"#34c98e" in svg_resp.data

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}每日机会{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+{% include 'components/nav.html' %}
+{% block body %}{% endblock %}
+<footer class="app-footer">
+<div class="container d-flex flex-column flex-md-row justify-content-between align-items-center py-3 gap-1">
+<span>&copy; {{ year }} 每日机会</span>
+<span>沪深300 选股与交易计划 &middot; 数据仅供参考，不构成投资建议</span>
+</div>
+</footer>
+<script src="{{ url_for('static', filename='vendor/bootstrap.bundle.min.js') }}"></script>
+<script>window.APP_MODE={{ app_mode|tojson }};window.DATA_PREFIX={{ data_prefix|tojson }};</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

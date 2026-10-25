@@ -1,0 +1,99 @@
+<h2>UI 架构重构：现状 vs 目标</h2>
+<p class="subtitle">app.py 从 1499 行瘦身到 ~400 行，HTML/CSS/JS 各归其位</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">❌ 现状：单文件巨石</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 0.75rem; line-height: 1.6;">
+      <div style="background:#fee;border-left:3px solid #c00;padding:4px 8px;margin-bottom:4px;">
+        <b>app.py</b> — 1499 行<br>
+        ├─ Python 路由逻辑 (~500行)<br>
+        ├─ _APP_CSS 内联 CSS (~125行)<br>
+        ├─ PAGE_BODY 内联 HTML (~25行)<br>
+        ├─ PAGE_SCRIPT 内联 JS (~200行)<br>
+        ├─ PLAN_BODY + PLAN_SCRIPT (~300行)<br>
+        ├─ PORTFOLIO_BODY + SCRIPT (~200行)<br>
+        └─ _SHELL / _nav / _footer (~100行)
+      </div>
+      <div style="background:#ffe;border-left:3px solid #cc0;padding:4px 8px;margin-bottom:4px;">
+        <b>static/</b> — 仅 3 个小文件<br>
+        common.js (64行) · dashboard.js (90行)<br>
+        data-source.js (67行)
+      </div>
+      <div style="padding:4px 8px;color:#666;">
+        ⚠️ jQuery 3.7.1 (CDN)<br>
+        ⚠️ Bootstrap 5.3.3 (CDN)<br>
+        ⚠️ Chart.js 4.4.1 (CDN)<br>
+        ⚠️ bootcdn.net 国内 CDN<br>
+        ⚠️ 无模板引擎，字符串 replace<br>
+        ⚠️ 无暗色模式<br>
+        ⚠️ 无构建工具（优点也是缺点）
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">✅ 目标：职责分离</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 0.75rem; line-height: 1.6;">
+      <div style="background:#efe;border-left:3px solid #0a0;padding:4px 8px;margin-bottom:4px;">
+        <b>app.py</b> — ~400 行<br>
+        └─ 纯 Python 路由 + API
+      </div>
+      <div style="background:#eef;border-left:3px solid #00a;padding:4px 8px;margin-bottom:4px;">
+        <b>templates/</b> — Jinja2 模板<br>
+        base.html (shell + nav + footer)<br>
+        picks.html · plan.html · portfolio.html<br>
+        components/ (table, card, filter...)
+      </div>
+      <div style="background:#fef;border-left:3px solid #a0a;padding:4px 8px;margin-bottom:4px;">
+        <b>static/css/</b> — 独立样式表<br>
+        app.css (变量 + 组件 + 响应式)
+      </div>
+      <div style="background:#ffe;border-left:3px solid #aa0;padding:4px 8px;margin-bottom:4px;">
+        <b>static/js/</b> — Vanilla ES6+<br>
+        api.js · table.js · filters.js<br>
+        dashboard.js · plan.js · portfolio.js
+      </div>
+      <div style="background:#eff;border-left:3px solid #0aa;padding:4px 8px;">
+        <b>static/vendor/</b> — 本地化依赖<br>
+        bootstrap.min.css (本地)<br>
+        chart.umd.min.js (本地)<br>
+        ✂️ jQuery 移除
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 2rem;">
+  <h3>重构收益</h3>
+  <div class="options">
+    <div class="option" style="cursor:default;">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3>可维护性</h3>
+        <p>改 CSS 不用翻 1499 行 Python；加新页面只需新建模板 + 路由</p>
+      </div>
+    </div>
+    <div class="option" style="cursor:default;">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3>离线可用</h3>
+        <p>Bootstrap/Chart.js 本地化后，无网络也能完整使用 Dashboard</p>
+      </div>
+    </div>
+    <div class="option" style="cursor:default;">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3>性能</h3>
+        <p>去掉 jQuery (~90KB)；CSS/JS 可被浏览器缓存；模板编译后更快</p>
+      </div>
+    </div>
+    <div class="option" style="cursor:default;">
+      <div class="letter">4</div>
+      <div class="content">
+        <h3>后续扩展基础</h3>
+        <p>可转债页面、暗色模式、移动端适配都在这个基础上高效实现</p>
+      </div>
+    </div>
+  </div>
+</div>

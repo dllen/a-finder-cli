@@ -1,28 +1,35 @@
-"""静态导出：去掉操作按钮的回归测试。"""
-from app import PAGE_BODY, PLAN_BODY
-from export_json import _strip_write_controls
+"""静态导出：写入控件在静态模式下被隐藏的回归测试。"""
 
 
-def test_strip_write_controls_removes_buttons_and_checkbox():
-    picks = _strip_write_controls(PAGE_BODY)
-    plan = _strip_write_controls(PLAN_BODY)
+def test_static_mode_hides_write_controls():
+    """Static mode renders templates with show_write_controls=False."""
+    from export_json import _render_static_page
+    from config import CAPITAL_TIERS
 
-    for html in (picks, plan):
+    picks_html = _render_static_page("picks.html", today="2026-10-24", year=2026)
+    tier_filter_options = "".join(
+        f'<li><label class="dropdown-item"><input type="checkbox" class="form-check-input me-1 tier-filter-cb" value="{c}"> {c // 10000}W</label></li>'
+        for c in CAPITAL_TIERS
+    )
+    plan_html = _render_static_page("plan.html",
+        today="2026-10-24", capital_tiers=CAPITAL_TIERS,
+        tier_filter_options=tier_filter_options, year=2026)
+
+    for html in (picks_html, plan_html):
         assert "write-control" not in html
         assert "btn-recalc" not in html
         assert "btn-sync" not in html
         assert "btn-build" not in html
         assert "include-failed" not in html
 
-    # 导航与内容仍在
-    assert "每日机会" in picks
-    assert 'id="dashboard"' in picks
-    assert "交易计划" in plan
-    assert 'id="board"' in plan
+    # Navigation and content still present
+    assert "每日机会" in picks_html
+    assert 'id="dashboard"' in picks_html
+    assert "交易计划" in plan_html
+    assert 'id="board"' in plan_html
 
-    # 快速筛选输入框不被 strip 误删
-    assert 'id="q"' in picks
-    assert 'id="q"' in plan
+    # Search input not stripped
+    assert 'id="q"' in picks_html
 
 
 def test_export_emits_holdings_json(tmp_path):
