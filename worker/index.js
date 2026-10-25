@@ -1,9 +1,9 @@
 // Cloudflare Worker：10w 决策台持仓的线上读写。
-// 读公开（首屏渲染需要），写需密码登录后的 HttpOnly Cookie。
-// 密码与签名密钥通过 `wrangler secret put DECIDE_PASSWORD / DECIDE_SECRET` 注入。
-import { buildCookie, clearCookie, parseCookie, signToken, verifyToken } from './auth.js';
+// 读公开（首屏渲染需要），写需登录后的 HttpOnly Cookie。
+// 登录是双因子：DECIDE_USER + DECIDE_PASSWORD；签名密钥 DECIDE_SECRET。
+// 三者都通过 `wrangler secret put` 注入。
+import { buildCookie, clearCookie, readAuth, signToken } from './auth.js';
 
-const COOKIE_NAME = 'decide_auth';
 const MAX_AGE = 7 * 24 * 3600;           // 7 天（秒）
 const ALLOWED_ORIGINS = [
   'https://ycu.space',
@@ -39,9 +39,7 @@ function json(data, status, origin, extraHeaders) {
 }
 
 async function isAuthed(request, env) {
-  const token = parseCookie(request.headers.get('Cookie'), COOKIE_NAME);
-  if (!token) return false;
-  return (await verifyToken(token, env.DECIDE_SECRET)) !== null;
+  return (await readAuth(request, env)) !== null;
 }
 
 function nowStamp() {
@@ -61,28 +59,35 @@ export default {
 
     // ---- health ----
     if (path === '/api/decide/health' && method === 'GET') {
+      const payload = await readAuth(request, env);
       let d1 = 'ok';
       try {
         await env.DB.prepare('SELECT 1').first();
       } catch (e) {
         d1 = 'error: ' + (e && e.message ? e.message : e);
       }
-      return json(
-        { ok: d1 === 'ok', d1, authed: await isAuthed(request, env) },
-        200, origin,
-      );
+      return json({
+        ok: d1 === 'ok',
+        d1,
+        authed: payload !== null,
+        user: payload ? payload.user || null : null,
+      }, 200, origin);
     }
 
     // ---- login ----
     if (path === '/api/decide/login' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      if (!env.DECIDE_PASSWORD || body.password !== env.DECIDE_PASSWORD) {
-        return json({ error: '密码错误' }, 401, origin);
+      const userOk = !!env.DECIDE_USER && body.user === env.DECIDE_USER;
+      const passOk = !!env.DECIDE_PASSWORD && body.password === env.DECIDE_PASSWORD;
+      if (!userOk || !passOk) {
+        // 不区分用户名错还是密码错，避免探测
+        return json({ error: '用户名或密码错误' }, 401, origin);
       }
       const token = await signToken(
-        { exp: Date.now() + MAX_AGE * 1000 }, env.DECIDE_SECRET,
+        { user: env.DECIDE_USER, exp: Date.now() + MAX_AGE * 1000 },
+        env.DECIDE_SECRET,
       );
-      return json({ ok: true }, 200, origin, {
+      return json({ ok: true, user: env.DECIDE_USER }, 200, origin, {
         'Set-Cookie': buildCookie(token, MAX_AGE),
       });
     }
