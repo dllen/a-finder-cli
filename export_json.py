@@ -349,11 +349,19 @@ def export(db_path: str, out_dir: str) -> int:
 
     # Static assets: copy JS modules, CSS, vendor libs, favicon
     src_static = Path(__file__).parent / "static"
-    # JS modules
+    version = _static_version()
+    # JS modules：重写模块内部 import 的相对路径，追加 ?v=<sha>，
+    # 否则浏览器缓存的旧依赖模块（如 api.js）会让新入口 import 失败。
     dst_js = static_dir / "js"
     dst_js.mkdir(exist_ok=True)
     for f in (src_static / "js").glob("*.js"):
-        shutil.copy(f, dst_js / f.name)
+        src = f.read_text(encoding="utf-8")
+        src = re.sub(
+            r"from\s+'(\./[^']+\.js)'",
+            rf"from '\1?v={version}'",
+            src,
+        )
+        (dst_js / f.name).write_text(src, encoding="utf-8")
     # CSS
     dst_css = static_dir / "css"
     dst_css.mkdir(exist_ok=True)
