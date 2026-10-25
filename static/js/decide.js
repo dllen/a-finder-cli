@@ -39,61 +39,76 @@ function renderSummary(c) {
     card('现金余额', money(c.cash), c.cash < 0 ? '已超配' : '可用',
          c.cash < 0 ? 'text-danger' : '') +
     card('持仓数', c.actual_count, `计划 ${c.plan_count} 只`) +
-    card('偏差', c.deviations.length,
-         `危险 ${c.danger_count || 0} · 警告 ${c.warn_count || 0} · 提示 ${c.info_count || 0}`,
-         c.danger_count ? 'border-danger' : '');
+    (c.actual_count === 0 && (c.pending_build || []).length
+      ? card('待建仓', c.pending_build.length, '尚未录入持仓', 'border-info')
+      : card('偏差', c.deviations.length,
+          `危险 ${c.danger_count || 0} · 警告 ${c.warn_count || 0} · 提示 ${c.info_count || 0}`,
+          c.danger_count ? 'border-danger' : ''));
 }
 
 // ---------------------------------------------------------------------------
 // 今日执行清单
 // ---------------------------------------------------------------------------
 
-function renderPlan(date, rows) {
+function renderPlan(date, plan) {
   const el = $('decide-plan');
   if (!el) return;
-  if (!rows || !rows.length) {
-    el.innerHTML = '<div class="empty-state">该日期暂无 10W 档位计划</div>';
+  const rows = plan.rows || [];
+  const skipped = plan.skipped || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-state">该日期暂无「买入信号」榜单</div>';
     return;
   }
-  let html = '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
-    '<th>动作</th><th>代码</th><th>名称</th><th class="num">计划价</th><th class="num">股数</th>' +
-    '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th><th>理由</th>' +
+
+  // 汇总条：目标单票 / 计划合计 / 剩余股票现金
+  let html = `<div class="d-flex flex-wrap gap-3 align-items-center mb-2 small">
+    <span>目标单票 <strong>${money(plan.target_amount)}</strong></span>
+    <span>计划合计 <strong>${money(plan.planned_amount)}</strong></span>
+    <span>股票仓 <strong>${money(plan.stock_capital)}</strong></span>
+    <span class="${(plan.remaining_stock_cash || 0) < 0 ? 'text-danger' : 'text-muted'}">
+      剩余 <strong>${money(plan.remaining_stock_cash)}</strong></span>
+  </div>`;
+
+  html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
+    '<th>排名</th><th>代码</th><th>名称</th><th class="num">计划价</th><th class="num">股数</th>' +
+    '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th><th class="num">评分</th>' +
     '</tr></thead><tbody>';
   rows.forEach(r => {
-    const amount = (r.plan_price || 0) * (r.shares || 0);
-    const isBuy = r.action === 'buy';
-    const badge = isBuy
-      ? '<span class="badge bg-success">买入</span>'
-      : '<span class="badge bg-secondary">持有</span>';
-    html += `<tr><td>${badge}</td><td class="code">${esc(r.code)}</td>` +
+    html += `<tr><td><span class="rank-badge">${r.rank == null ? '' : r.rank}</span></td>` +
+      `<td class="code">${esc(r.code)}</td>` +
       `<td>${esc(r.name || '—')}</td>` +
       `<td class="num">${fmt(r.plan_price)}</td>` +
       `<td class="num">${r.shares ?? '—'}</td>` +
-      `<td class="num">${money(amount)}</td>` +
+      `<td class="num">${money(r.amount)}</td>` +
       `<td class="num">${fmt(r.stop_price)}</td>` +
       `<td class="num">${fmt(r.tp_price)}</td>` +
-      `<td class="small">${esc(r.reason || '')}</td></tr>`;
+      `<td class="num">${r.score == null ? '—' : r.score.toFixed(1)}</td></tr>`;
   });
   html += '</tbody></table></div>';
 
   html += '<div class="app-card d-md-none mb-3">';
   rows.forEach(r => {
-    const amount = (r.plan_price || 0) * (r.shares || 0);
-    const badge = r.action === 'buy'
-      ? '<span class="badge bg-success">买入</span>'
-      : '<span class="badge bg-secondary">持有</span>';
     html += `<div class="plan-card"><div class="card-header-row">` +
+      `<span class="rank-badge">${r.rank == null ? '' : r.rank}</span>` +
       `<span class="code fw-semibold">${esc(r.code)}</span>` +
       `<span class="card-title-text">${esc(r.name || '')}</span>` +
-      badge + `</div>` +
+      `<span class="score-chip">${r.score == null ? '—' : r.score.toFixed(0)}</span></div>` +
       `<div class="kv-grid">` +
         `<span class="k">计划价</span><span class="v num">${fmt(r.plan_price)}</span>` +
-        `<span class="k">股数</span><span class="v num">${r.shares ?? '—'}（${money(amount)}）</span>` +
+        `<span class="k">股数</span><span class="v num">${r.shares ?? '—'}（${money(r.amount)}）</span>` +
         `<span class="k">止损</span><span class="v num">${fmt(r.stop_price)}</span>` +
         `<span class="k">止盈</span><span class="v num">${fmt(r.tp_price)}</span>` +
       `</div></div>`;
   });
   html += '</div>';
+
+  if (skipped.length) {
+    html += `<div class="alert alert-warning py-2 mb-0">
+      <strong>跳过 ${skipped.length} 只</strong>（一手金额超单票上限，10w 本金买不起）：
+      ${skipped.map(s => `${esc(s.code)} ${esc(s.name)}（一手 ${money(s.lot_cost)}）`).join('、')}
+    </div>`;
+  }
+
   el.innerHTML = html;
 }
 
@@ -105,6 +120,37 @@ function renderComparison(c) {
   const el = $('decide-comparison');
   if (!el) return;
   const devs = c.deviations || [];
+  const pending = c.pending_build || [];
+
+  // 空仓：展示待建仓清单（不是"漏买"偏差）
+  if (!c.actual_count && pending.length) {
+    let html = `<div class="alert alert-info py-2 mb-2">
+      当前空仓，以下 ${pending.length} 只是今日计划买入的标的 —— 这是<strong>待建仓清单</strong>，录入了实际持仓后才会开始对照。
+    </div>`;
+    html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
+      '<th>代码</th><th>名称</th><th class="num">计划价</th><th class="num">建议股数</th>' +
+      '<th class="num">金额</th><th class="num">止损</th><th class="num">止盈</th>' +
+      '</tr></thead><tbody>';
+    let total = 0;
+    pending.forEach(p => {
+      total += p.amount || 0;
+      html += `<tr><td class="code">${esc(p.code)}</td><td>${esc(p.name || '—')}</td>` +
+        `<td class="num">${fmt(p.plan_price)}</td>` +
+        `<td class="num">${p.shares ?? '—'}</td>` +
+        `<td class="num">${money(p.amount)}</td>` +
+        `<td class="num">${fmt(p.stop_price)}</td>` +
+        `<td class="num">${fmt(p.tp_price)}</td></tr>`;
+    });
+    html += `</tbody><tfoot><tr><td colspan="4" class="text-end fw-semibold">合计</td>` +
+      `<td class="num fw-semibold">${money(total)}</td><td colspan="2"></td></tr></tfoot></table></div>`;
+    const cap = c.total_capital || 0;
+    if (total > cap) {
+      html += `<div class="alert alert-danger py-2 mt-2">合计 ${money(total)} 超出本金 ${money(cap)}，需按比例缩减</div>`;
+    }
+    el.innerHTML = html;
+    return;
+  }
+
   if (!devs.length) {
     el.innerHTML = '<div class="empty-state">无偏差：计划与实际一致</div>';
     return;
@@ -246,7 +292,7 @@ async function loadAll() {
     const cmpRes = await fetchDecideComparison(date).catch(() => ({ deviations: [] }));
     const posRes = await fetchDecidePositions().catch(() => ({ rows: [], cb_rows: [] }));
 
-    renderPlan(date, planRes.rows || []);
+    renderPlan(date, planRes);
     renderComparison(cmpRes);
     renderPositions(posRes.rows || [], posRes.cb_rows || []);
     renderSummary(cmpRes);

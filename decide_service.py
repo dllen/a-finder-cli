@@ -43,6 +43,78 @@ def _dev(severity: str, kind: str, code: str, name: str,
     }
 
 
+LOT_SIZE = 100  # A 股一手 = 100 股
+
+
+def build_plan_from_picks(
+    picks: Iterable[Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """从「买入信号」榜单构建 10w 建仓计划。
+
+    依据报告第 3 章（选股规则：买入信号 top 8）与第 4 章（仓位规则）：
+      - 目标 8 只，单票上限 = total_capital × max_single_weight
+      - 每只目标金额 = min(单票上限, 股票仓 / 最大只数)
+      - 股数按一手 100 股向下取整
+      - 买不起一手的高价股跳过（顺延下一名），并记录 skipped
+
+    picks: daily_picks 里 kind='买入信号' 的行，含 rank/code/name/buy/stop/target/score
+    """
+    cfg = config or PORTFOLIO_10W
+    total_capital = float(cfg["total_capital"])
+    max_positions = int(cfg["max_positions"])
+    stock_capital = total_capital * float(cfg["stock_ratio"])
+    per_name_cap = total_capital * float(cfg["max_single_weight"])
+    target_amount = min(per_name_cap, stock_capital / max_positions)
+
+    ordered = sorted(
+        (p for p in picks if p.get("code")),
+        key=lambda p: (_num(p.get("rank")) or 999, -(_num(p.get("score")) or 0.0)),
+    )
+
+    rows: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for p in ordered:
+        if len(rows) >= max_positions:
+            break
+        price = _num(p.get("buy"))
+        if not price or price <= 0:
+            continue
+        shares = int(target_amount / price / LOT_SIZE) * LOT_SIZE
+        if shares <= 0:
+            skipped.append({
+                "code": str(p.get("code")),
+                "name": p.get("name") or str(p.get("code")),
+                "buy": round(price, 2),
+                "lot_cost": round(price * LOT_SIZE, 2),
+                "reason": f"一手需 ¥{price * LOT_SIZE:,.0f}，超单票上限 ¥{target_amount:,.0f}",
+            })
+            continue
+        rows.append({
+            "code": str(p.get("code")),
+            "name": p.get("name") or str(p.get("code")),
+            "action": "buy",
+            "plan_price": round(price, 2),
+            "shares": shares,
+            "amount": round(shares * price, 2),
+            "stop_price": _num(p.get("stop")),
+            "tp_price": _num(p.get("target")),
+            "score": _num(p.get("score")),
+            "rank": _num(p.get("rank")),
+        })
+
+    planned = sum(r["amount"] for r in rows)
+    return {
+        "rows": rows,
+        "skipped": skipped,
+        "target_amount": round(target_amount, 2),
+        "planned_amount": round(planned, 2),
+        "stock_capital": round(stock_capital, 2),
+        "remaining_stock_cash": round(stock_capital - planned, 2),
+    }
+
+
+
 def compare_plan_vs_actual(
     plan_rows: Iterable[Dict[str, Any]],
     actual_rows: Iterable[Dict[str, Any]],
@@ -62,6 +134,7 @@ def compare_plan_vs_actual(
     actual_by_code = {str(r.get("code")): r for r in actual}
 
     deviations: List[Dict[str, Any]] = []
+    pending_build: List[Dict[str, Any]] = []
 
     # ---- 资金占用 ----
     stock_used = 0.0
@@ -74,9 +147,24 @@ def compare_plan_vs_actual(
         cb_used += amt
     cash = total_capital - stock_used - cb_used
 
-    # ---- 漏买 / 多买 ----
+    # ---- 待建仓 / 漏买 / 多买 ----
+    # 空仓（actual 为空）时，"计划买入但未持有"不是纪律偏差，而是待建仓清单——
+    # 否则空仓用户会看到一堆"你漏买了"的噪音（计划里每次都有 20+ 只 buy）。
+    empty_portfolio = len(actual) == 0
     for code, p in plan_by_code.items():
-        if p.get("action") == "buy" and code not in actual_by_code:
+        if p.get("action") != "buy" or code in actual_by_code:
+            continue
+        if empty_portfolio:
+            pending_build.append({
+                "code": code,
+                "name": p.get("name") or code,
+                "plan_price": _num(p.get("plan_price")),
+                "shares": p.get("shares"),
+                "amount": round((_num(p.get("plan_price")) or 0.0) * int(p.get("shares") or 0), 2),
+                "stop_price": _num(p.get("stop_price")),
+                "tp_price": _num(p.get("tp_price")),
+            })
+        else:
             deviations.append(_dev(
                 "info", "missing_buy", code, p.get("name"),
                 "计划买入但未持有",
@@ -177,6 +265,7 @@ def compare_plan_vs_actual(
 
     return {
         "deviations": deviations,
+        "pending_build": pending_build,
         "stock_used": round(stock_used, 2),
         "cb_used": round(cb_used, 2),
         "cash": round(cash, 2),

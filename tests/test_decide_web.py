@@ -8,28 +8,23 @@ import pytest
 
 @pytest.fixture
 def plan_db():
-    """含 trade_plan 10W 档位（含重复行）的库。"""
+    """含「买入信号」榜单的库（决策台数据源）。"""
     from db_repository import open_db
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     conn = open_db(path)
-    # 同一 code 重复 3 行（模拟回补产生：params_hash 不同 → UNIQUE 约束不拦）
-    for i in range(3):
+    rows = [
+        # rank, code, name, buy, stop, target, score
+        (1, "600519", "贵州茅台", 100.0, 95.0, 110.0, 88.0),
+        (2, "600036", "招商银行", 40.0, 38.0, 44.0, 75.0),
+    ]
+    for rank, code, name, buy, stop, target, score in rows:
         conn.execute(
-            "INSERT INTO trade_plan (plan_date, portfolio, code, action, plan_price, "
-            "size_pct, stop_price, tp_price, rr_ratio, status, reason, rationale_json, "
-            "params_hash, created_at, shares) "
-            "VALUES ('2026-10-25','10W','600519','buy',100.0,0.10,95.0,110.0,2.0,"
-            "'ok','理由','{}',?,'2026-10-25T00:00:00',100)",
-            (f"hash{i}",),
+            "INSERT INTO daily_picks (date, rank, kind, code, name, strategy, "
+            "buy, stop, target, score, updated_at) "
+            "VALUES ('2026-10-25',?, '买入信号',?,?, '买入信号',?,?,?,?, '2026-10-25T00:00:00')",
+            (rank, code, name, buy, stop, target, score),
         )
-    conn.execute(
-        "INSERT INTO trade_plan (plan_date, portfolio, code, action, plan_price, "
-        "size_pct, stop_price, tp_price, rr_ratio, status, reason, rationale_json, "
-        "params_hash, created_at, shares) "
-        "VALUES ('2026-10-25','10W','600036','buy',40.0,0.10,38.0,44.0,2.0,"
-        "'ok','理由','{}','h2','2026-10-25T00:00:00',200)"
-    )
     conn.execute(
         "INSERT INTO hs300_metadata (code, name) VALUES ('600519','贵州茅台')"
     )
@@ -52,14 +47,39 @@ def client(plan_db):
 
 class TestDecideApi:
 
-    def test_api_decide_plan_returns_deduped(self, client):
+    def test_api_decide_plan_returns_top8_with_sizing(self, client):
+        """榜单 → 建仓计划：算股数、按一手取整、给出资金汇总。"""
         resp = client.get("/api/decide/plan?date=2026-10-25")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["date"] == "2026-10-25"
-        assert len(data["rows"]) == 2, "重复行必须去重"
-        codes = sorted(r["code"] for r in data["rows"])
-        assert codes == ["600036", "600519"]
+        assert len(data["rows"]) == 2
+        codes = [r["code"] for r in data["rows"]]
+        assert codes == ["600519", "600036"], "按 rank 排序"
+
+        # 单票目标 = min(10%×10w, 8w/8) = 10000
+        assert data["target_amount"] == 10000.0
+        assert data["stock_capital"] == 80000.0
+
+        maotai = data["rows"][0]
+        assert maotai["plan_price"] == 100.0
+        assert maotai["shares"] == 100          # 10000/100 = 100 股
+        assert maotai["amount"] == 10000.0
+        assert maotai["stop_price"] == 95.0
+        assert maotai["tp_price"] == 110.0
+
+        # 600036: 10000/40 = 250 → 一手取整 200 股 × 40 = 8000
+        cmb = data["rows"][1]
+        assert cmb["shares"] == 200
+        assert cmb["amount"] == 8000.0
+
+        assert data["planned_amount"] == 18000.0
+        assert data["remaining_stock_cash"] == 80000.0 - 18000.0
+
+    def test_api_decide_plan_reports_skipped_field(self, client):
+        """skipped 字段存在（跳过买不起一手的高价股）。"""
+        data = client.get("/api/decide/plan?date=2026-10-25").get_json()
+        assert isinstance(data["skipped"], list)
 
     def test_api_decide_positions_crud(self, client):
         resp = client.post("/api/decide/positions", json={

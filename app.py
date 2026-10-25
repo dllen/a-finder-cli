@@ -419,21 +419,29 @@ def create_app(db_path="hs300.db", top=10):
     # ------------------------------------------------------------------
 
     def _decide_latest_plan_date(conn):
+        """最新有「买入信号」榜单的交易日（决策台数据源，报告第 3 章结论）。"""
         row = conn.execute(
-            "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio='10W'"
+            "SELECT MAX(date) FROM daily_picks WHERE kind='买入信号'"
         ).fetchone()
         return row[0] if row and row[0] else ""
 
     def _decide_plan_rows(conn, date):
-        """10W 档位当日 plan，按 code 去重（trade_plan 回补会产生重复行）。"""
-        from decide_service import dedupe_plan_rows
-        from db_repository import get_trade_plan_by_date
+        """当日「买入信号」榜单 → 10w 建仓计划（top 8，跳过高价买不起一手的）。
 
-        rows = [
-            r for r in get_trade_plan_by_date(conn, date)
-            if r.get("portfolio") == "10W" and r.get("status") != "failed"
+        不用 trade_plan 的 10W 档位——那是多策略（动量突破/回调买入/震荡回踩/
+        高股息）叠加的 23-26 只，合计超本金 2.5 倍，不能直接建仓。
+        """
+        from decide_service import build_plan_from_picks
+
+        picks = [
+            dict(zip(["rank", "code", "name", "buy", "stop", "target", "score"], r))
+            for r in conn.execute(
+                "SELECT rank, code, name, buy, stop, target, score "
+                "FROM daily_picks WHERE kind='买入信号' AND date=? ORDER BY rank",
+                (date,),
+            )
         ]
-        return dedupe_plan_rows(rows)
+        return build_plan_from_picks(picks)
 
     def _decide_latest_prices(conn):
         """每只票的最新收盘价，用于止损/止盈判定。"""
@@ -452,16 +460,29 @@ def create_app(db_path="hs300.db", top=10):
         conn = open_conn(db_path)
         try:
             date = request.args.get("date", "") or _decide_latest_plan_date(conn)
-            rows = _decide_plan_rows(conn, date) if date else []
+            built = _decide_plan_rows(conn, date) if date else {
+                "rows": [], "skipped": [], "target_amount": 0.0,
+                "planned_amount": 0.0, "stock_capital": 0.0,
+                "remaining_stock_cash": 0.0,
+            }
             dates = [
                 r[0] for r in conn.execute(
-                    "SELECT DISTINCT plan_date FROM trade_plan WHERE portfolio='10W' "
-                    "ORDER BY plan_date DESC"
+                    "SELECT DISTINCT date FROM daily_picks WHERE kind='买入信号' "
+                    "ORDER BY date DESC"
                 ).fetchall()
             ]
         finally:
             conn.close()
-        return jsonify({"date": date, "rows": rows, "dates": dates})
+        return jsonify({
+            "date": date,
+            "dates": dates,
+            "rows": built["rows"],
+            "skipped": built["skipped"],
+            "target_amount": built["target_amount"],
+            "planned_amount": built["planned_amount"],
+            "stock_capital": built["stock_capital"],
+            "remaining_stock_cash": built["remaining_stock_cash"],
+        })
 
     @app.get("/api/decide/positions")
     def decide_positions():
@@ -511,14 +532,19 @@ def create_app(db_path="hs300.db", top=10):
         conn = open_conn(db_path)
         try:
             date = request.args.get("date", "") or _decide_latest_plan_date(conn)
-            plan_rows = _decide_plan_rows(conn, date) if date else []
+            built = _decide_plan_rows(conn, date) if date else {"rows": [], "skipped": []}
             actual_rows = get_real_positions(conn)
             cb_rows = get_real_cb_positions(conn)
             prices = _decide_latest_prices(conn)
         finally:
             conn.close()
-        result = compare_plan_vs_actual(plan_rows, actual_rows, cb_rows, prices)
+        result = compare_plan_vs_actual(built["rows"], actual_rows, cb_rows, prices)
         result["date"] = date
+        result["skipped"] = built["skipped"]
+        result["target_amount"] = built.get("target_amount", 0.0)
+        result["planned_amount"] = built.get("planned_amount", 0.0)
+        result["stock_capital"] = built.get("stock_capital", 0.0)
+        result["remaining_stock_cash"] = built.get("remaining_stock_cash", 0.0)
         return jsonify(result)
 
     @app.get("/api/stats")

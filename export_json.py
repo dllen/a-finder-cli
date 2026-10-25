@@ -190,15 +190,18 @@ def _export_cb_data(conn, data_dir: Path) -> None:
 
 
 def _export_decide_data(conn, data_dir: Path) -> None:
-    """导出 10w 决策台快照（静态站只读）：计划 + 对照 + 实际持仓。"""
-    from decide_service import compare_plan_vs_actual, dedupe_plan_rows
-    from db_repository import get_trade_plan_by_date
+    """导出 10w 决策台快照（静态站只读）：建仓计划 + 对照 + 实际持仓。
+
+    数据源是 daily_picks 的「买入信号」榜单（报告第 3 章），不是 trade_plan
+    的 10W 档位——后者是多策略叠加的 23-26 只，合计超本金 2.5 倍。
+    """
+    from decide_service import build_plan_from_picks, compare_plan_vs_actual
     from real_position_repository import get_real_cb_positions, get_real_positions
 
     dates = [
         r[0] for r in conn.execute(
-            "SELECT DISTINCT plan_date FROM trade_plan WHERE portfolio='10W' "
-            "ORDER BY plan_date DESC"
+            "SELECT DISTINCT date FROM daily_picks WHERE kind='买入信号' "
+            "ORDER BY date DESC"
         ).fetchall()
     ]
     json.dump({"dates": dates}, (data_dir / "decide-dates.json").open("w"), ensure_ascii=False)
@@ -221,13 +224,23 @@ def _export_decide_data(conn, data_dir: Path) -> None:
     )
 
     for d in dates:
-        plan_rows = dedupe_plan_rows([
-            r for r in get_trade_plan_by_date(conn, d)
-            if r.get("portfolio") == "10W" and r.get("status") != "failed"
-        ])
-        snap = compare_plan_vs_actual(plan_rows, actual_rows, cb_rows, prices)
+        picks = [
+            dict(zip(["rank", "code", "name", "buy", "stop", "target", "score"], r))
+            for r in conn.execute(
+                "SELECT rank, code, name, buy, stop, target, score "
+                "FROM daily_picks WHERE kind='买入信号' AND date=? ORDER BY rank",
+                (d,),
+            )
+        ]
+        built = build_plan_from_picks(picks)
+        snap = compare_plan_vs_actual(built["rows"], actual_rows, cb_rows, prices)
         snap["date"] = d
-        snap["rows"] = plan_rows
+        snap["rows"] = built["rows"]
+        snap["skipped"] = built["skipped"]
+        snap["target_amount"] = built["target_amount"]
+        snap["planned_amount"] = built["planned_amount"]
+        snap["stock_capital"] = built["stock_capital"]
+        snap["remaining_stock_cash"] = built["remaining_stock_cash"]
         json.dump(
             snap, (data_dir / f"decide-{d}.json").open("w"),
             ensure_ascii=False, default=str,

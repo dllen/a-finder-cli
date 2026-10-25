@@ -130,13 +130,18 @@ class TestCompare:
         assert d["cash"] == 90000.0
 
     def test_detects_missing_buy(self):
+        """有部分持仓时，计划买但没买的算漏买（空仓时归入待建仓，不算偏差）。"""
         from decide_service import compare_plan_vs_actual
         d = compare_plan_vs_actual(
-            plan_rows=[self._plan(action="buy")], actual_rows=[],
-            cb_rows=[], latest_prices={},
+            plan_rows=[self._plan(action="buy", code="600519"),
+                       self._plan(action="buy", code="600036")],
+            actual_rows=[self._actual(code="600519")],
+            cb_rows=[], latest_prices={"600519": 100.0},
         )
         kinds = [x["kind"] for x in d["deviations"]]
         assert "missing_buy" in kinds
+        missing = [x for x in d["deviations"] if x["kind"] == "missing_buy"]
+        assert [x["code"] for x in missing] == ["600036"]
 
     def test_detects_unplanned_position(self):
         from decide_service import compare_plan_vs_actual
@@ -241,8 +246,134 @@ class TestCompare:
 
     def test_deviation_severity_levels(self):
         from decide_service import compare_plan_vs_actual
+        # 用超配场景产生 danger 级偏差
         d = compare_plan_vs_actual(
-            plan_rows=[self._plan(action="buy")], actual_rows=[],
+            plan_rows=[],
+            actual_rows=[self._actual(code=f"60000{i}") for i in range(9)],
             cb_rows=[], latest_prices={},
         )
-        assert d["deviations"][0]["severity"] in ("info", "warn", "danger")
+        assert d["deviations"][0]["severity"] == "danger", "危险级应排最前"
+        assert all(x["severity"] in ("info", "warn", "danger") for x in d["deviations"])
+
+
+class TestPendingBuild:
+    """空仓时「计划买入但未持有」应是待建仓清单，不是偏差。"""
+
+    def _plan_buy(self, code="600519", shares=100, plan_price=100.0):
+        return {
+            "code": code, "name": "测试股", "action": "buy",
+            "plan_price": plan_price, "shares": shares,
+            "stop_price": 95.0, "tp_price": 110.0,
+        }
+
+    def test_empty_portfolio_returns_pending_build_not_deviations(self):
+        from decide_service import compare_plan_vs_actual
+        d = compare_plan_vs_actual(
+            plan_rows=[self._plan_buy("600519"), self._plan_buy("600036")],
+            actual_rows=[], cb_rows=[], latest_prices={},
+        )
+        assert d["deviations"] == [], "空仓时不应产生漏买偏差"
+        assert len(d["pending_build"]) == 2
+        codes = sorted(x["code"] for x in d["pending_build"])
+        assert codes == ["600036", "600519"]
+        first = d["pending_build"][0]
+        assert first["shares"] == 100
+        assert first["amount"] == 10000.0
+        assert first["stop_price"] == 95.0
+        assert first["tp_price"] == 110.0
+
+    def test_partial_portfolio_still_reports_missing_buy(self):
+        """有部分持仓时，计划买但没买的才算漏买。"""
+        from decide_service import compare_plan_vs_actual
+        d = compare_plan_vs_actual(
+            plan_rows=[self._plan_buy("600519"), self._plan_buy("600036")],
+            actual_rows=[{"code": "600519", "name": "测试股", "shares": 100,
+                          "entry_price": 100.0, "stop_price": 95.0}],
+            cb_rows=[], latest_prices={"600519": 100.0},
+        )
+        kinds = [x["kind"] for x in d["deviations"]]
+        assert "missing_buy" in kinds
+        missing = [x for x in d["deviations"] if x["kind"] == "missing_buy"]
+        assert [x["code"] for x in missing] == ["600036"]
+        assert d["pending_build"] == [], "已有持仓时不应有待建仓清单"
+
+    def test_empty_portfolio_plan_count_still_reported(self):
+        from decide_service import compare_plan_vs_actual
+        d = compare_plan_vs_actual(
+            plan_rows=[self._plan_buy("600519")],
+            actual_rows=[], cb_rows=[], latest_prices={},
+        )
+        assert d["plan_count"] == 1
+        assert d["actual_count"] == 0
+        assert d["cash"] == 100000.0
+
+
+class TestBuildPlanFromPicks:
+    """从「买入信号」榜单构建 10w 建仓计划（报告第 3/4 章）。"""
+
+    def _pick(self, rank, code, buy, stop=None, target=None, score=50.0):
+        return {
+            "rank": rank, "code": code, "name": f"股{code}",
+            "buy": buy, "stop": stop or round(buy * 0.9, 2),
+            "target": target or round(buy * 1.2, 2), "score": score,
+        }
+
+    def test_builds_at_most_max_positions(self):
+        from decide_service import build_plan_from_picks
+        picks = [self._pick(i, f"6000{i:02d}", 10.0) for i in range(1, 21)]
+        r = build_plan_from_picks(picks)
+        assert len(r["rows"]) == 8
+        assert [x["rank"] for x in r["rows"]] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    def test_target_amount_is_min_of_cap_and_even_split(self):
+        """单票目标 = min(10% × 10w, 8w / 8) = min(10000, 10000) = 10000。"""
+        from decide_service import build_plan_from_picks
+        r = build_plan_from_picks([self._pick(1, "600000", 10.0)])
+        assert r["target_amount"] == 10000.0
+        assert r["rows"][0]["shares"] == 1000      # 10000/10 = 1000 股
+        assert r["rows"][0]["amount"] == 10000.0
+
+    def test_skips_high_price_stock_and_falls_through(self):
+        """高价股一手超上限 → 跳过，顺延下一名。"""
+        from decide_service import build_plan_from_picks
+        picks = [
+            self._pick(1, "301269", 108.20),   # 一手 10820 > 10000 → 跳过
+            self._pick(2, "300760", 177.30),   # 一手 17730 > 10000 → 跳过
+            self._pick(3, "600886", 15.68),    # 可买
+        ]
+        r = build_plan_from_picks(picks)
+        assert [x["code"] for x in r["rows"]] == ["600886"]
+        assert [x["code"] for x in r["skipped"]] == ["301269", "300760"]
+        assert "超单票上限" in r["skipped"][0]["reason"]
+
+    def test_shares_rounded_down_to_lot(self):
+        from decide_service import build_plan_from_picks
+        r = build_plan_from_picks([self._pick(1, "600000", 33.33)])
+        # 10000/33.33 = 300.03 → 300 股
+        assert r["rows"][0]["shares"] == 300
+        assert r["rows"][0]["amount"] == round(300 * 33.33, 2)
+
+    def test_respects_max_positions_when_skipping(self):
+        """跳过若干只后仍只凑满 8 只。"""
+        from decide_service import build_plan_from_picks
+        picks = [self._pick(1, "301269", 200.0)]  # 高价跳过
+        picks += [self._pick(i, f"6000{i:02d}", 10.0) for i in range(2, 15)]
+        r = build_plan_from_picks(picks)
+        assert len(r["rows"]) == 8
+        assert len(r["skipped"]) == 1
+        assert all(x["code"] != "301269" for x in r["rows"])
+
+    def test_totals_within_stock_capital(self):
+        from decide_service import build_plan_from_picks
+        picks = [self._pick(i, f"6000{i:02d}", 10.0) for i in range(1, 9)]
+        r = build_plan_from_picks(picks)
+        assert r["planned_amount"] <= r["stock_capital"]
+        assert r["remaining_stock_cash"] == r["stock_capital"] - r["planned_amount"]
+
+    def test_orders_by_rank_not_input_order(self):
+        from decide_service import build_plan_from_picks
+        picks = [self._pick(3, "600003", 10.0),
+                 self._pick(1, "600001", 10.0),
+                 self._pick(2, "600002", 10.0)]
+        r = build_plan_from_picks(picks)
+        assert [x["code"] for x in r["rows"]] == ["600001", "600002", "600003"]
