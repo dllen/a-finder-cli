@@ -414,6 +414,113 @@ def create_app(db_path="hs300.db", top=10):
         alerts = evaluate_alerts(positions, quotes)
         return jsonify({"generated_at": generated_at, "alerts": alerts})
 
+    # ------------------------------------------------------------------
+    # 10w 决策台
+    # ------------------------------------------------------------------
+
+    def _decide_latest_plan_date(conn):
+        row = conn.execute(
+            "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio='10W'"
+        ).fetchone()
+        return row[0] if row and row[0] else ""
+
+    def _decide_plan_rows(conn, date):
+        """10W 档位当日 plan，按 code 去重（trade_plan 回补会产生重复行）。"""
+        from decide_service import dedupe_plan_rows
+        from db_repository import get_trade_plan_by_date
+
+        rows = [
+            r for r in get_trade_plan_by_date(conn, date)
+            if r.get("portfolio") == "10W" and r.get("status") != "failed"
+        ]
+        return dedupe_plan_rows(rows)
+
+    def _decide_latest_prices(conn):
+        """每只票的最新收盘价，用于止损/止盈判定。"""
+        out = {}
+        for code, close in conn.execute(
+            "SELECT d.code, d.close FROM daily_prices d "
+            "JOIN (SELECT code, MAX(trade_date) AS md FROM daily_prices GROUP BY code) x "
+            "ON d.code = x.code AND d.trade_date = x.md"
+        ):
+            if close is not None:
+                out[code] = float(close)
+        return out
+
+    @app.get("/api/decide/plan")
+    def decide_plan():
+        conn = open_conn(db_path)
+        try:
+            date = request.args.get("date", "") or _decide_latest_plan_date(conn)
+            rows = _decide_plan_rows(conn, date) if date else []
+            dates = [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT plan_date FROM trade_plan WHERE portfolio='10W' "
+                    "ORDER BY plan_date DESC"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        return jsonify({"date": date, "rows": rows, "dates": dates})
+
+    @app.get("/api/decide/positions")
+    def decide_positions():
+        from real_position_repository import get_real_cb_positions, get_real_positions
+        conn = open_conn(db_path)
+        try:
+            rows = get_real_positions(conn)
+            cb_rows = get_real_cb_positions(conn)
+        finally:
+            conn.close()
+        return jsonify({"rows": rows, "cb_rows": cb_rows})
+
+    @app.post("/api/decide/positions")
+    def decide_positions_add():
+        from real_position_repository import upsert_real_cb_position, upsert_real_position
+        payload = request.get_json(silent=True) or {}
+        is_cb = bool(payload.get("is_cb"))
+        conn = open_conn(db_path)
+        try:
+            if is_cb:
+                upsert_real_cb_position(conn, payload)
+            else:
+                upsert_real_position(conn, payload)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        finally:
+            conn.close()
+        return jsonify({"ok": True})
+
+    @app.delete("/api/decide/positions/<code>")
+    def decide_positions_delete(code):
+        from real_position_repository import delete_real_cb_position, delete_real_position
+        conn = open_conn(db_path)
+        try:
+            if request.args.get("cb") == "1":
+                delete_real_cb_position(conn, code)
+            else:
+                delete_real_position(conn, code)
+        finally:
+            conn.close()
+        return jsonify({"ok": True})
+
+    @app.get("/api/decide/comparison")
+    def decide_comparison():
+        from decide_service import compare_plan_vs_actual
+        from real_position_repository import get_real_cb_positions, get_real_positions
+        conn = open_conn(db_path)
+        try:
+            date = request.args.get("date", "") or _decide_latest_plan_date(conn)
+            plan_rows = _decide_plan_rows(conn, date) if date else []
+            actual_rows = get_real_positions(conn)
+            cb_rows = get_real_cb_positions(conn)
+            prices = _decide_latest_prices(conn)
+        finally:
+            conn.close()
+        result = compare_plan_vs_actual(plan_rows, actual_rows, cb_rows, prices)
+        result["date"] = date
+        return jsonify(result)
+
     @app.get("/api/stats")
     def stats():
         from db_repository import fetch_pick_outcomes
@@ -477,6 +584,16 @@ def create_app(db_path="hs300.db", top=10):
         from datetime import date as _date
         return render_template("cb.html",
             today=_date.today().isoformat(),
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
+
+    @app.get("/decide")
+    def decide_page():
+        from datetime import date as _date
+        from config import PORTFOLIO_10W
+        return render_template("decide.html",
+            today=_date.today().isoformat(),
+            config=PORTFOLIO_10W,
             app_mode="api", data_prefix="",
             year=_date.today().year)
 
