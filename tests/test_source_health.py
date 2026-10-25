@@ -189,3 +189,43 @@ class TestFetchDailyKlineSmart:
             )
         assert len(rows) > 0
         mock_sina.assert_called_once()
+
+
+class TestSyncServiceIntegration:
+
+    def test_fetch_with_retry_uses_smart_fetcher(self, tmp_path):
+        """_fetch_with_retry 调用 fetch_daily_kline_smart 而非 fetch_daily_kline_with_name。"""
+        from sync_service import _fetch_with_retry, RateLimiter
+        from data_providers import SourceHealthTracker
+
+        tracker = SourceHealthTracker()
+        tracker.probe = MagicMock()  # skip probe
+        limiter = RateLimiter(rate_per_sec=1000)
+
+        with patch(
+            "sync_service.fetch_daily_kline_smart"
+        ) as mock_smart:
+            mock_smart.return_value = ([MagicMock()], "test")
+            rows, name = _fetch_with_retry(
+                "600519", "20261001", "20261024",
+                retries=0, backoff=0.1,
+                limiter=limiter, tracker=tracker,
+            )
+        mock_smart.assert_called_once()
+        assert len(rows) > 0
+
+    def test_sync_hs300_uses_smart_fetcher(self, tmp_path):
+        """sync_hs300（增量路径）也走 fetch_daily_kline_smart。"""
+        from sync_service import sync_hs300
+        from db_repository import open_db
+
+        db_path = str(tmp_path / "t.db")
+        open_db(db_path).close()
+
+        with patch("sync_service.fetch_hs300_constituents") as mock_cons, \
+             patch("sync_service.fetch_daily_kline_smart") as mock_smart:
+            mock_cons.return_value = {"600519": "贵州茅台"}
+            mock_smart.return_value = ([], "")
+            sync_hs300(db_path, "incremental", 1)
+
+        mock_smart.assert_called()
