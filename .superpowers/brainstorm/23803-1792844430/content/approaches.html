@@ -1,0 +1,85 @@
+<h2>架构重构：三种实施方案</h2>
+<p class="subtitle">核心目标相同，差异在于迁移策略和风险</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>一步到位重构（推荐）</h3>
+      <p>在一个 PR 里完成全部四项：Jinja2 模板 + CSS 抽离 + JS 去 jQuery + CDN 本地化。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优势</h4>
+          <ul>
+            <li>一次切换，避免中间态的混合架构</li>
+            <li>测试只需验证最终状态</li>
+            <li>改动量大但逻辑简单（主要是搬迁+翻译）</li>
+            <li>现有功能不变，只是换了组织方式</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>单次提交较大（~50 文件变更）</li>
+            <li>如果出问题，回滚粒度粗</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>分阶段渐进迁移</h3>
+      <p>拆成 4 个独立 PR，按依赖顺序逐步推进：① CDN 本地化 → ② CSS 抽离 → ③ Jinja2 模板 → ④ JS 去 jQuery。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优势</h4>
+          <ul>
+            <li>每步可独立验证和回滚</li>
+            <li>单步改动小，review 容易</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>中间态是混合架构（部分内联+部分外部文件）</li>
+            <li>总工作量更大（每步都要跑全量测试）</li>
+            <li>步骤间有耦合（如 CSS 抽离后模板才能引用）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>并行新建 + 切换</h3>
+      <p>保留现有 app.py 不动，新建 app_v2.py + templates/ + static/ 全套。验证通过后一次性切换入口。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优势</h4>
+          <ul>
+            <li>零风险——旧代码完全不动</li>
+            <li>可以边开发边对比新旧效果</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>双倍代码量（维护两套直到切换）</li>
+            <li>API 路由需要同步两份</li>
+            <li>对这个项目规模来说过度工程</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;">
+  <h3>我的推荐：方案 A（一步到位）</h3>
+  <p>理由：这次重构的本质是<strong>文件搬迁 + 语法翻译</strong>，不是功能变更。HTML/CSS/JS 的内容已经稳定运行数月，只需要换个地方放、换种写法。分阶段反而引入中间态复杂度。通过充分的 TDD（先写端到端测试锁定行为，再重构）可以控制风险。</p>
+</div>
