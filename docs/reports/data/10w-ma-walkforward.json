@@ -1,0 +1,51 @@
+{
+  "note": "均线策略回测结果（ma_backtest.py）。win_rate 口径为『盈利日/持仓日』日胜率，非笔胜率。数据区间 2024-10-08~2026-10-23。walk-forward 参数搜索因耗时过长未采用，改用『不同回测窗口的 top 对比』做稳健性交叉验证。",
+  "benchmark_total_return": -8.62,
+  "position_ratio": 96.67,
+  "weak_market_days": 144,
+  "top_comparison": {
+    "3": {
+      "total_return": -10.5,
+      "annualized_return": -10.5,
+      "excess_return": -1.89,
+      "win_rate": 46.98,
+      "avg_exposure": 77.28,
+      "avg_daily_picks": 2.56,
+      "stop_hits": 4,
+      "avg_daily_return": -0.02
+    },
+    "5": {
+      "total_return": 19.12,
+      "annualized_return": 19.12,
+      "excess_return": 27.74,
+      "win_rate": 50.86,
+      "avg_exposure": 73.12,
+      "avg_daily_picks": 3.85,
+      "stop_hits": 8,
+      "avg_daily_return": 0.09
+    },
+    "8": {
+      "total_return": 31.18,
+      "annualized_return": 31.18,
+      "excess_return": 39.8,
+      "win_rate": 53.02,
+      "avg_exposure": 67.86,
+      "avg_daily_picks": 5.32,
+      "stop_hits": 10,
+      "avg_daily_return": 0.13
+    }
+  },
+  "window_robustness": {
+    "note": "不同回测长度的独立验证，确认 top=8>top=5>top=3 排序稳定、top=3 两窗口皆亏。",
+    "days_120": {
+      "3": {"total_return": -8.46, "excess_return": 3.21, "win_rate": 51.33},
+      "5": {"total_return": -3.69, "excess_return": 7.98, "win_rate": 53.1},
+      "8": {"total_return": 4.79, "excess_return": 16.46, "win_rate": 53.98}
+    },
+    "days_240": {
+      "3": {"total_return": -10.5, "excess_return": -1.89, "win_rate": 46.98},
+      "5": {"total_return": 19.12, "excess_return": 27.74, "win_rate": 50.86},
+      "8": {"total_return": 31.18, "excess_return": 39.8, "win_rate": 53.02}
+    }
+  }
+}
