@@ -62,6 +62,13 @@ bash a-finder.sh site [db] [top] [out] [--push]        # 本地一键生成网�
 bash a-finder.sh cron                                  # launchd 入口（工作日 15:30 跑 site --push）
 ```
 
+# CI 自动部署（deploy-site.yml）
+- `.github/workflows/deploy-site.yml`：A 股交易日 15:30 北京（07:30 UTC）自动
+  同步→选股→计划→组合→转债→导出→部署 gh-pages。用 chinese_calendar 判交易日，
+  数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
+  手动兜底：GitHub Actions 页面的 workflow_dispatch。
+- 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
+
 ## Architecture
 
 Entry: `stock_cli.py` → `cli_layer.build_parser/run_cli` (argparse, formatting, Textual UI). Most analysis subcommands take `stocks` (list of `Stock` from `domain_models`) preloaded from local SQLite via `market_data.build_market_from_db` or freshly via `market_data.build_market` (network), then scored through `analysis_service.get_scores`.
