@@ -21,3 +21,7 @@ site/
 .codex/
 .codesight/
 .agents/
+
+# Cloudflare
+.dev.vars
+.wrangler/
