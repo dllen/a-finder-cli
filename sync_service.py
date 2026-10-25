@@ -26,7 +26,12 @@ from db_repository import (
     upsert_metadata,
 )
 from akshare_data_provider import fetch_fundamentals_history_akshare, fetch_industry_akshare
-from data_providers import fetch_daily_kline_with_name, fetch_hs300_constituents, fetch_stock_meta
+from data_providers import (
+    SourceHealthTracker,
+    fetch_daily_kline_smart,
+    fetch_hs300_constituents,
+    fetch_stock_meta,
+)
 from errors import FetchError, InvalidConfigError
 from logger import get_logger
 from utils import date_to_str, parse_date
@@ -62,12 +67,13 @@ def _fetch_with_retry(
     retries: int,
     backoff: float,
     limiter: RateLimiter,
+    tracker: "SourceHealthTracker",
 ) -> Tuple[List, str]:
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
             limiter.wait()
-            return fetch_daily_kline_with_name(code, start_str, end_str)
+            return fetch_daily_kline_smart(code, start_str, end_str, tracker)
         except Exception as exc:
             last_error = exc
             if attempt >= retries:
@@ -172,6 +178,11 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional
         updated_offsets: Dict[str, str] = {}
         total = len(mapping)
         done = 0
+        # 探针测试各数据源，建立优先级（被封的源自动降级）
+        tracker = SourceHealthTracker()
+        tracker.probe()
+        if progress:
+            progress(0, f"数据源优先级: {' > '.join(tracker.get_ordered_sources())}")
         for code in sorted(mapping.keys()):
             last_date = None if config.mode == "full" else code_offsets.get(code)
             if not last_date and config.mode != "full":
@@ -187,7 +198,7 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional
             else:
                 beg = start_str
             try:
-                rows, name = fetch_daily_kline_with_name(code, beg, end_str)
+                rows, name = fetch_daily_kline_smart(code, beg, end_str, tracker)
             except Exception as exc:  # noqa: BLE001
                 done += 1
                 logger.warning("拉取失败: code=%s error=%s", code, exc)
@@ -289,6 +300,11 @@ def sync_hs300_range(
             candidates.append((code, [(date_to_str(beg), end_str)]))
         total_rows = 0
         if candidates:
+            # 探针测试各数据源，建立优先级（被封的源自动降级）
+            tracker = SourceHealthTracker()
+            tracker.probe()
+            if progress:
+                progress(0, f"数据源优先级: {' > '.join(tracker.get_ordered_sources())}")
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = {
                     executor.submit(
@@ -299,6 +315,7 @@ def sync_hs300_range(
                         retries,
                         backoff,
                         limiter,
+                        tracker,
                     ): (code, segment)
                     for code, segments in candidates
                     for segment in segments

@@ -1,10 +1,12 @@
 import json
 import re
+import threading
 import urllib.parse
 import urllib.request
 from typing import Dict, List, Optional
 
 from db_repository import PriceRow, StockMeta
+from errors import FetchError
 from utils import retry_call
 
 
@@ -183,6 +185,53 @@ def _fetch_daily_kline_fallback(code: str, start_date: str, end_date: str) -> tu
     return [], ""
 
 
+def fetch_daily_kline_eastmoney(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    """东财直连（不走 fallback）。失败时抛异常，由调用方决定降级策略。
+
+    与 fetch_daily_kline_with_name 的区别：后者失败会静默切到新浪/腾讯，
+    导致健康探测无法区分"东财可用"和"东财挂了但被备源救回"。
+    """
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": "101",
+        "fqt": "0",
+        "secid": code_to_secid(code),
+        "beg": start_date,
+        "end": end_date,
+    }
+    referer = f"https://quote.eastmoney.com/sz{code}.html" if not code.startswith(("60", "688")) else f"https://quote.eastmoney.com/sh{code}.html"
+    data = fetch_url_json(url, params, referer)
+    payload = data.get("data") if isinstance(data, dict) else None
+    kline_data = payload.get("klines") if isinstance(payload, dict) else None
+    if not kline_data:
+        raise FetchError(f"东财无数据: {code} {start_date}~{end_date}")
+    name = str(payload.get("name") or "").strip() if payload else ""
+    rows = []
+    for entry in kline_data:
+        parts = entry.split(",")
+        if len(parts) < 11:
+            continue
+        rows.append(
+            PriceRow(
+                code=code,
+                trade_date=parts[0],
+                open_price=float(parts[1]),
+                close_price=float(parts[2]),
+                high_price=float(parts[3]),
+                low_price=float(parts[4]),
+                volume=float(parts[5]),
+                amount=float(parts[6]),
+                amplitude=float(parts[7]),
+                pct_change=float(parts[8]),
+                change=float(parts[9]),
+                turnover=float(parts[10]),
+            )
+        )
+    return rows, name
+
+
 def fetch_daily_kline_with_name(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
     url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = {
@@ -319,3 +368,148 @@ def _fetch_province_from_eastmoney(code: str) -> str:
     except Exception:
         pass
     return ""
+
+
+class SourceHealthTracker:
+    """跟踪各数据源的可用性，动态调整优先级。
+
+    同步开始前用探针股票测试各源（probe），同步过程中持续记录
+    失败次数（record_failure），超过阈值自动降级到列表末尾。
+    """
+
+    SOURCES = ["eastmoney", "sina", "tencent"]
+    PROBE_CODES = ["600519"]  # 贵州茅台：流动性好、不会退市
+    MAX_CONSECUTIVE_FAILURES = 3
+
+    def __init__(self) -> None:
+        self._health: Dict[str, Dict] = {
+            name: {"available": True, "fail_count": 0}
+            for name in self.SOURCES
+        }
+        self._ordered: List[str] = list(self.SOURCES)
+        self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # probe
+    # ------------------------------------------------------------------
+
+    def probe(self) -> None:
+        """同步开始前，用探针股票测试各源，建立初始优先级。"""
+        results: Dict[str, bool] = {}
+        for source in self.SOURCES:
+            try:
+                rows = self._try_source(
+                    source, self.PROBE_CODES[0], "20261001", "20261010"
+                )
+                results[source] = bool(rows)
+            except Exception:
+                results[source] = False
+
+        available = [s for s in self.SOURCES if results.get(s)]
+        unavailable = [s for s in self.SOURCES if not results.get(s)]
+
+        with self._lock:
+            self._ordered = available + unavailable
+            for s in available:
+                self._health[s]["available"] = True
+                self._health[s]["fail_count"] = 0
+            for s in unavailable:
+                self._health[s]["available"] = False
+                self._health[s]["fail_count"] = 0
+
+    # ------------------------------------------------------------------
+    # query
+    # ------------------------------------------------------------------
+
+    def get_ordered_sources(self) -> List[str]:
+        """返回当前优先级排序的源列表（副本）。"""
+        with self._lock:
+            return self._ordered.copy()
+
+    def is_available(self, source: str) -> bool:
+        """查询某源当前是否可用。"""
+        with self._lock:
+            return self._health.get(source, {}).get("available", False)
+
+    # ------------------------------------------------------------------
+    # mutation
+    # ------------------------------------------------------------------
+
+    def record_success(self, source: str) -> None:
+        """记录成功，重置 fail_count。"""
+        with self._lock:
+            if source in self._health:
+                self._health[source]["fail_count"] = 0
+                self._health[source]["available"] = True
+
+    def record_failure(self, source: str) -> None:
+        """记录失败；连续失败超阈值则降级到列表末尾。"""
+        with self._lock:
+            if source not in self._health:
+                return
+            self._health[source]["fail_count"] += 1
+            if (
+                self._health[source]["fail_count"]
+                >= self.MAX_CONSECUTIVE_FAILURES
+            ):
+                self._health[source]["available"] = False
+                if source in self._ordered:
+                    self._ordered.remove(source)
+                    self._ordered.append(source)
+
+    # ------------------------------------------------------------------
+    # internal
+    # ------------------------------------------------------------------
+
+    def _try_source(
+        self, source: str, code: str, start: str, end: str
+    ) -> List[PriceRow]:
+        """用指定源获取数据，返回行列表（空=失败）。
+
+        用各源的直连接口（不走 fallback），否则探测无法区分
+        "东财可用"和"东财挂了但被备源救回"。
+        """
+        if source == "eastmoney":
+            rows, _ = fetch_daily_kline_eastmoney(code, start, end)
+        elif source == "sina":
+            rows, _ = fetch_daily_kline_sina(code, start, end)
+        elif source == "tencent":
+            rows, _ = fetch_daily_kline_tencent(code, start, end)
+        else:
+            return []
+        return rows
+
+
+def fetch_daily_kline_smart(
+    code: str,
+    start_date: str,
+    end_date: str,
+    tracker: SourceHealthTracker,
+) -> tuple:
+    """按 tracker 优先级依次尝试各数据源。
+
+    第一个返回非空行的源胜出。每次成功/失败都反馈给 tracker。
+    所有可用源都失败时返回 ([], "")。
+    """
+    for source in tracker.get_ordered_sources():
+        if not tracker.is_available(source):
+            continue
+        try:
+            if source == "eastmoney":
+                rows, name = fetch_daily_kline_eastmoney(code, start_date, end_date)
+            elif source == "sina":
+                rows, name = fetch_daily_kline_sina(code, start_date, end_date)
+            elif source == "tencent":
+                rows, name = fetch_daily_kline_tencent(code, start_date, end_date)
+            else:
+                continue
+
+            if rows:
+                tracker.record_success(source)
+                return rows, name
+            else:
+                tracker.record_failure(source)
+        except Exception:
+            tracker.record_failure(source)
+
+    return [], ""
