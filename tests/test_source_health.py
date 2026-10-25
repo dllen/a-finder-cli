@@ -16,7 +16,7 @@ class TestProbe:
     def test_probe_marks_eastmoney_unavailable_when_blocked(self):
         """东财被封 → probe 标记不可用，优先级排到末尾。"""
         tracker = _make_tracker()
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.side_effect = ConnectionError("RemoteDisconnected")
@@ -33,7 +33,7 @@ class TestProbe:
     def test_probe_all_available_keeps_default_order(self):
         """全部可用 → 保持默认顺序（eastmoney 优先）。"""
         tracker = _make_tracker()
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.return_value = ([MagicMock()], "茅台")
@@ -46,7 +46,7 @@ class TestProbe:
     def test_probe_empty_rows_counts_as_failure(self):
         """源返回空列表 → 视为失败。"""
         tracker = _make_tracker()
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.return_value = ([], "")       # 空 = 失败
@@ -133,7 +133,7 @@ class TestFetchDailyKlineSmart:
     def test_skips_unavailable_source(self):
         """eastmoney 不可用 → 直接调 sina，不调 eastmoney。"""
         tracker = self._make_tracker_with_priority(["sina", "tencent"])
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_sina.return_value = ([MagicMock()], "茅台")
             rows, name = fetch_daily_kline_smart(
@@ -148,7 +148,7 @@ class TestFetchDailyKlineSmart:
         tracker = self._make_tracker_with_priority(
             ["eastmoney", "sina", "tencent"]
         )
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_em.side_effect = ConnectionError("blocked")
             mock_sina.return_value = ([MagicMock()], "茅台")
@@ -163,7 +163,7 @@ class TestFetchDailyKlineSmart:
         tracker = self._make_tracker_with_priority(
             ["eastmoney", "sina", "tencent"]
         )
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.side_effect = Exception("fail")
@@ -180,7 +180,7 @@ class TestFetchDailyKlineSmart:
         tracker = self._make_tracker_with_priority(
             ["eastmoney", "sina"]
         )
-        with patch("data_providers.fetch_daily_kline_with_name") as mock_em, \
+        with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_em.return_value = ([], "")  # 空 = 失败
             mock_sina.return_value = ([MagicMock()], "茅台")

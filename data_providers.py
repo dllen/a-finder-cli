@@ -6,6 +6,7 @@ import urllib.request
 from typing import Dict, List, Optional
 
 from db_repository import PriceRow, StockMeta
+from errors import FetchError
 from utils import retry_call
 
 
@@ -182,6 +183,53 @@ def _fetch_daily_kline_fallback(code: str, start_date: str, end_date: str) -> tu
         except Exception:
             continue
     return [], ""
+
+
+def fetch_daily_kline_eastmoney(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    """东财直连（不走 fallback）。失败时抛异常，由调用方决定降级策略。
+
+    与 fetch_daily_kline_with_name 的区别：后者失败会静默切到新浪/腾讯，
+    导致健康探测无法区分"东财可用"和"东财挂了但被备源救回"。
+    """
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": "101",
+        "fqt": "0",
+        "secid": code_to_secid(code),
+        "beg": start_date,
+        "end": end_date,
+    }
+    referer = f"https://quote.eastmoney.com/sz{code}.html" if not code.startswith(("60", "688")) else f"https://quote.eastmoney.com/sh{code}.html"
+    data = fetch_url_json(url, params, referer)
+    payload = data.get("data") if isinstance(data, dict) else None
+    kline_data = payload.get("klines") if isinstance(payload, dict) else None
+    if not kline_data:
+        raise FetchError(f"东财无数据: {code} {start_date}~{end_date}")
+    name = str(payload.get("name") or "").strip() if payload else ""
+    rows = []
+    for entry in kline_data:
+        parts = entry.split(",")
+        if len(parts) < 11:
+            continue
+        rows.append(
+            PriceRow(
+                code=code,
+                trade_date=parts[0],
+                open_price=float(parts[1]),
+                close_price=float(parts[2]),
+                high_price=float(parts[3]),
+                low_price=float(parts[4]),
+                volume=float(parts[5]),
+                amount=float(parts[6]),
+                amplitude=float(parts[7]),
+                pct_change=float(parts[8]),
+                change=float(parts[9]),
+                turnover=float(parts[10]),
+            )
+        )
+    return rows, name
 
 
 def fetch_daily_kline_with_name(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
@@ -416,9 +464,13 @@ class SourceHealthTracker:
     def _try_source(
         self, source: str, code: str, start: str, end: str
     ) -> List[PriceRow]:
-        """用指定源获取数据，返回行列表（空=失败）。"""
+        """用指定源获取数据，返回行列表（空=失败）。
+
+        用各源的直连接口（不走 fallback），否则探测无法区分
+        "东财可用"和"东财挂了但被备源救回"。
+        """
         if source == "eastmoney":
-            rows, _ = fetch_daily_kline_with_name(code, start, end)
+            rows, _ = fetch_daily_kline_eastmoney(code, start, end)
         elif source == "sina":
             rows, _ = fetch_daily_kline_sina(code, start, end)
         elif source == "tencent":
@@ -444,7 +496,7 @@ def fetch_daily_kline_smart(
             continue
         try:
             if source == "eastmoney":
-                rows, name = fetch_daily_kline_with_name(code, start_date, end_date)
+                rows, name = fetch_daily_kline_eastmoney(code, start_date, end_date)
             elif source == "sina":
                 rows, name = fetch_daily_kline_sina(code, start_date, end_date)
             elif source == "tencent":
