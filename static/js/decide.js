@@ -53,7 +53,7 @@ function showLoginForm() {
       renderAuthBar();
       loadAll();
     })
-    .catch(e => setStatus('登录失败：' + (e.error || e.status), 'alert-danger'));
+    .catch(e => setStatus('登录失败：' + (e.error || e.status), 'alert-danger', 'decide-status'));
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ function showAddForm(isCb) {
     try {
       await postDecidePosition(payload);
     } catch (err) {
-      setStatus('保存失败：' + (err.error || err.status), 'alert-danger');
+      setStatus('保存失败：' + (err.error || err.status), 'alert-danger', 'decide-status');
       return;
     }
     modal.remove();
@@ -327,7 +327,7 @@ function fillDateOptions(dates) {
 }
 
 async function loadAll() {
-  setStatus('加载中…', 'alert-info');
+  setStatus('加载中…', 'alert-info', 'decide-status');
   try {
     const [planRes, posRes, cfgRes, authRes] = await Promise.all([
       fetchDecidePlan().catch(() => ({ date: '', rows: [], dates: [] })),
@@ -362,9 +362,9 @@ async function loadAll() {
     renderComparison(cmp);
     renderPositions(posRes.rows || [], posRes.cb_rows || []);
     renderSummary(cmp);
-    setStatus('', '');
+    setStatus('', '', 'decide-status');
   } catch (e) {
-    setStatus('加载失败：' + (e && e.message ? e.message : e), 'alert-danger');
+    setStatus('加载失败：' + (e && e.message ? e.message : e), 'alert-danger', 'decide-status');
   }
 }
 
@@ -394,7 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         await deleteDecidePosition(code, isCb);
       } catch (err) {
-        setStatus('删除失败：' + (err.error || err.status), 'alert-danger');
+        setStatus('删除失败：' + (err.error || err.status), 'alert-danger', 'decide-status');
         return;
       }
       loadAll();

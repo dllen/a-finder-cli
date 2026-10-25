@@ -286,3 +286,26 @@ class TestDecideUndefinedGuard:
         src = self._js("decide.js")
         assert "${c.actual_count}" not in src
         assert "计划 ${c.plan_count}" not in src
+
+
+class TestSetStatusContainer:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_dom_setstatus_has_container_param(self):
+        src = self._js("dom.js")
+        assert "containerId" in src, "setStatus 需支持容器参数"
+        assert "containerId = 'status'" in src, "默认值应保持 'status'（向后兼容）"
+
+    def test_decide_html_has_status_div(self, client):
+        body = client.get("/decide").data.decode("utf-8")
+        assert 'id="decide-status"' in body
+
+    def test_decide_js_uses_decide_status(self):
+        src = self._js("decide.js")
+        assert "'decide-status'" in src, "decide.js 的 setStatus 应指向 #decide-status"

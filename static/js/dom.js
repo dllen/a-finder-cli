@@ -24,10 +24,16 @@ export function fillDateSelect(dates) {
   return sel.value;
 }
 
-export function setStatus(html, cls) {
-  const el = $('status');
+export function setStatus(html, cls, containerId = 'status') {
+  const el = $(containerId);
   if (!el) return;
   el.innerHTML = html ? `<div class="alert ${cls}" role="status">${html}</div>` : '';
+  if (html) {
+    const plain = String(html).replace(/<[^>]+>/g, '');
+    setTimeout(() => {
+      if (el.textContent && el.textContent.includes(plain)) el.innerHTML = '';
+    }, 6000);
+  }
 }
 
 export function setProgress(pct) {
