@@ -101,6 +101,7 @@ async function submitLogin(ev) {
     closeLoginModal();
     renderAuthBar();
     await loadAll();
+    resumePendingOpen();
   } catch (err) {
     const msg = err && err.status === 401
       ? '用户名或密码错误'
@@ -161,6 +162,31 @@ function isHeldRow(planRow, heldSet) {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function planRowPrefill(row) {
+  return {
+    code: row.code,
+    name: row.name,
+    strategy: row.strategy,
+    shares: row.shares,
+    entry_price: row.plan_price,
+    stop_price: row.stop_price,
+    entry_date: todayISO(),
+  };
+}
+
+// 登录成功后续上被打断的建仓操作（单只或全部）
+function resumePendingOpen() {
+  if (!PENDING_PLAN_ROW) return;
+  const pending = PENDING_PLAN_ROW;
+  PENDING_PLAN_ROW = null;
+  if (pending === '__ALL__') {
+    openAllPositions();
+    return;
+  }
+  const row = (LAST_PLAN_ROWS || []).find(r => String(r.code) === String(pending));
+  if (row) openPositionForm({ prefill: planRowPrefill(row), readonly: ['code', 'name'] });
 }
 
 function openButton(planRow, heldSet, workerReady) {
@@ -361,48 +387,111 @@ function renderPositions(rows, cbRows) {
 // 录入表单
 // ---------------------------------------------------------------------------
 
-function showAddForm(isCb) {
-  const title = isCb ? '添加转债持仓' : '添加股票持仓';
-  const fields = [
+function openPositionForm(opts) {
+  const o = opts || {};
+  const isCb = !!o.isCb;
+  const prefill = o.prefill || {};
+  const readonlyKeys = o.readonly || [];
+
+  // 移除上一次残留的 modal，避免重复 id
+  const stale = document.getElementById('pos-modal');
+  if (stale) stale.remove();
+
+  const title = prefill.code
+    ? `建仓：${esc(prefill.code)} ${esc(prefill.name || '')}`
+    : (isCb ? '添加转债持仓' : '添加股票持仓');
+
+  const defs = [
     ['code', '代码', 'text'],
     ['name', '名称', 'text'],
     ['shares', '股数', 'number'],
     ['entry_price', '成本价', 'number'],
     ['stop_price', '止损价（可空）', 'number'],
     ['entry_date', '建仓日', 'date'],
-  ].map(([k, label, type]) =>
-    `<div class="col-auto"><label class="form-label mb-0">${label}</label>` +
-    `<input type="${type}" class="form-control form-control-sm" id="fld-${k}" data-key="${k}"></div>`
-  ).join('');
+  ];
+
+  const fields = defs.map(([k, label, type]) => {
+    const ro = readonlyKeys.includes(k) ? ' readonly' : '';
+    const val = prefill[k] == null ? '' : String(prefill[k]);
+    return `<div class="mb-2"><label class="form-label mb-1 small">${label}</label>` +
+      `<input type="${type}" class="form-control form-control-sm" id="fld-${k}" ` +
+      `data-key="${k}" value="${esc(val)}"${ro}></div>`;
+  }).join('');
+
+  const hint = prefill.strategy
+    ? `<div class="small text-muted mb-2">策略：${esc(prefill.strategy)}</div>`
+    : '';
+
   document.body.insertAdjacentHTML('beforeend',
-    `<div class="modal fade" id="pos-modal" tabindex="-1">
-      <div class="modal-dialog"><div class="modal-content">
-        <div class="modal-header"><h6 class="modal-title">${title}</h6>
-          <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-        <div class="modal-body"><div class="row g-2">${fields}</div></div>
-        <div class="modal-footer">
-          <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button class="btn btn-sm btn-primary" id="pos-save">保存</button>
-        </div>
+    `<div class="modal fade" id="pos-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered modal-sm"><div class="modal-content">
+        <form id="pos-form">
+          <div class="modal-header py-2"><h6 class="modal-title">${title}</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+          <div class="modal-body">
+            <div id="pos-error" class="alert alert-danger py-2 mb-2 d-none" role="alert"></div>
+            ${hint}${fields}
+            <div class="small text-muted" id="pos-amount"></div>
+          </div>
+          <div class="modal-footer py-2">
+            <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="submit" class="btn btn-sm btn-primary" id="pos-save">${prefill.code ? '确认建仓' : '保存'}</button>
+          </div>
+        </form>
       </div></div>
     </div>`);
-  const modal = document.getElementById('pos-modal');
-  modal.classList.add('show');
-  modal.style.display = 'block';
-  document.getElementById('pos-save').addEventListener('click', async () => {
-    const payload = { is_cb: !!isCb };
-    modal.querySelectorAll('[data-key]').forEach(inp => {
-      const k = inp.dataset.key;
+
+  const modalEl = document.getElementById('pos-modal');
+  const modal = (window.bootstrap && window.bootstrap.Modal)
+    ? window.bootstrap.Modal.getOrCreateInstance(modalEl) : null;
+  if (modal) modal.show();
+  else { modalEl.classList.add('show'); modalEl.style.display = 'block'; }
+
+  const $fld = k => document.getElementById('fld-' + k);
+  const showErr = msg => {
+    const e = document.getElementById('pos-error');
+    if (e) { e.textContent = msg; e.classList.remove('d-none'); }
+  };
+
+  function refreshAmount() {
+    const sh = Number($fld('shares').value || 0);
+    const pr = Number($fld('entry_price').value || 0);
+    const el = document.getElementById('pos-amount');
+    if (el) el.textContent = sh > 0 && pr > 0 ? `金额：${money(sh * pr)}` : '';
+  }
+  ['shares', 'entry_price'].forEach(k => {
+    const el = $fld(k);
+    if (el) el.addEventListener('input', refreshAmount);
+  });
+  refreshAmount();
+
+  const form = document.getElementById('pos-form');
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const payload = { is_cb: isCb };
+    defs.forEach(([k]) => {
+      const inp = $fld(k);
+      if (!inp) return;
       const v = inp.value.trim();
       payload[k] = v === '' ? null : (inp.type === 'number' ? Number(v) : v);
     });
+
+    if (!payload.code) { showErr('缺少代码'); return; }
+    if (!payload.shares || payload.shares <= 0) { showErr('股数必须大于 0'); return; }
+    if (payload.shares % 100 !== 0) { showErr('股数必须是整手（100 的整数倍）'); return; }
+    if (!payload.entry_price || payload.entry_price <= 0) { showErr('成本价必须大于 0'); return; }
+
+    const btn = document.getElementById('pos-save');
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
     try {
       await postDecidePosition(payload);
     } catch (err) {
-      setStatus('保存失败：' + (err.error || err.status), 'alert-danger', 'decide-status');
+      showErr('保存失败：' + (err.error || err.status || '未知错误'));
+      if (btn) { btn.disabled = false; btn.textContent = old; }
       return;
     }
-    modal.remove();
+    if (modal) modal.hide(); else modalEl.remove();
     loadAll();
   });
 }
@@ -430,6 +519,7 @@ function showLoading() {
 
 function renderAll(cmp, planRes, posRes, date) {
   const empty = (cmp.actual_count || 0) === 0;
+  LAST_PLAN_ROWS = planRes.rows || [];
 
   renderSummary(cmp);
 
@@ -511,10 +601,21 @@ document.addEventListener('DOMContentLoaded', () => {
       loadAll();
       return;
     }
+    const openBtn = e.target.closest('[data-open]');
+    if (openBtn) {
+      if (!AUTHED) {
+        PENDING_PLAN_ROW = openBtn.dataset.open;
+        openLoginModal();
+        return;
+      }
+      const row = (LAST_PLAN_ROWS || []).find(r => String(r.code) === String(openBtn.dataset.open));
+      if (row) openPositionForm({ prefill: planRowPrefill(row), readonly: ['code', 'name'] });
+      return;
+    }
     const add = e.target.closest('#add-position');
-    if (add) { showAddForm(false); return; }
+    if (add) { openPositionForm({}); return; }
     const addCb = e.target.closest('#add-cb-position');
-    if (addCb) { showAddForm(true); return; }
+    if (addCb) { openPositionForm({ isCb: true }); return; }
     const del = e.target.closest('[data-del]');
     if (del) {
       const code = del.dataset.del;

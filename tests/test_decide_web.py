@@ -459,3 +459,34 @@ class TestPlanActionColumn:
     def test_worker_down_disables(self):
         src = self._js("decide.js")
         assert "WORKER_OK" in src
+
+
+class TestPositionForm:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_form_function_exists(self):
+        assert "function openPositionForm" in self._js("decide.js")
+
+    def test_prefill_mapping(self):
+        src = self._js("decide.js")
+        assert "entry_price: row.plan_price" in src or "entry_price: prefill" in src
+
+    def test_removes_stale_modal(self):
+        src = self._js("decide.js")
+        assert "getElementById('pos-modal')" in src
+        seg = src.split("function openPositionForm")[1].split("\nfunction ")[0]
+        assert "remove()" in seg
+
+    def test_validates_lot_size(self):
+        src = self._js("decide.js")
+        assert "% 100 !== 0" in src
+        assert "整手" in src
+
+    def test_no_prompt_still(self):
+        assert "prompt(" not in self._js("decide.js")
