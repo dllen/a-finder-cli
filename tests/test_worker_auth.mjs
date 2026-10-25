@@ -41,3 +41,31 @@ test('buildCookie 含安全属性', () => {
   assert.ok(c.includes('SameSite=Strict'));
   assert.ok(c.includes('Max-Age=604800'));
 });
+
+import { readAuth } from '../worker/auth.js';
+
+function fakeRequest(cookieHeader) {
+  return {
+    headers: {
+      get(name) {
+        return name.toLowerCase() === 'cookie' ? cookieHeader : null;
+      },
+    },
+  };
+}
+
+test('readAuth 无 cookie 返回 null', async () => {
+  assert.equal(await readAuth(fakeRequest(null), { DECIDE_SECRET: SECRET }), null);
+});
+
+test('readAuth 有效 cookie 返回 payload', async () => {
+  const token = await signToken({ user: 'alice', exp: Date.now() + 60000 }, SECRET);
+  const payload = await readAuth(fakeRequest(`decide_auth=${token}`), { DECIDE_SECRET: SECRET });
+  assert.ok(payload);
+  assert.equal(payload.user, 'alice');
+});
+
+test('readAuth 过期 token 返回 null', async () => {
+  const token = await signToken({ user: 'alice', exp: Date.now() - 1000 }, SECRET);
+  assert.equal(await readAuth(fakeRequest(`decide_auth=${token}`), { DECIDE_SECRET: SECRET }), null);
+});

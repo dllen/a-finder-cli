@@ -69,3 +69,12 @@ export function buildCookie(value, maxAge) {
 export function clearCookie() {
   return 'decide_auth=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0';
 }
+const COOKIE_NAME = 'decide_auth';
+
+/** 读取并校验请求的登录态，返回 payload（含 user）或 null。 */
+export async function readAuth(request, env) {
+  if (!env || !env.DECIDE_SECRET) return null;
+  const token = parseCookie(request.headers.get('Cookie'), COOKIE_NAME);
+  if (!token) return null;
+  return verifyToken(token, env.DECIDE_SECRET);
+}
