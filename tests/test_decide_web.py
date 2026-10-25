@@ -341,3 +341,37 @@ class TestLoginModal:
         src = self._js("api.js")
         assert "export function loginDecide(user, password)" in src
         assert "body: JSON.stringify({ user, password })" in src
+
+
+class TestRenderAllSplit:
+
+    def _js(self, name):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "static", "js", name,
+        )
+        return open(path, encoding="utf-8").read()
+
+    def test_render_all_exists(self):
+        assert "function renderAll" in self._js("decide.js")
+
+    def test_comparison_hidden_when_empty(self):
+        src = self._js("decide.js")
+        seg = src.split("function renderAll")[1].split("\nfunction ")[0]
+        assert "decide-comparison-wrap" in seg
+        assert "style.display" in seg or "classList" in seg
+
+    def test_plan_title_switches(self):
+        src = self._js("decide.js")
+        assert "待建仓清单" in src
+        assert "今日执行清单" in src
+
+    def test_skeleton_loading(self):
+        src = self._js("decide.js")
+        assert "function showLoading" in src
+        assert "skeleton" in src
+
+    def test_summary_responsive_classes(self, client):
+        body = client.get("/decide").data.decode("utf-8")
+        assert "row-cols-md-3" in body
+        assert "row-cols-xl-5" in body

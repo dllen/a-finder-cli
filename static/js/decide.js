@@ -379,8 +379,36 @@ function fillDateOptions(dates) {
   if (dates && dates.length) sel.value = dates[0];
 }
 
+function showLoading() {
+  const tpl = '<div class="app-card skeleton-table" aria-busy="true">' +
+    '<div class="skeleton skeleton-row"></div>'.repeat(3) + '</div>';
+  ['decide-summary', 'decide-plan', 'decide-positions'].forEach(id => {
+    const el = $(id);
+    if (el) el.innerHTML = tpl;
+  });
+}
+
+function renderAll(cmp, planRes, posRes, date) {
+  const empty = (cmp.actual_count || 0) === 0;
+
+  renderSummary(cmp);
+
+  // 标题随状态切换
+  const titleEl = $('decide-plan-title');
+  if (titleEl) titleEl.textContent = empty ? '待建仓清单' : '今日执行清单';
+  renderPlan(date, planRes);
+
+  // 空仓：待建仓清单已含全部信息，隐藏「执行对照」避免重复
+  const wrap = $('decide-comparison-wrap');
+  if (wrap) wrap.style.display = empty ? 'none' : '';
+  if (!empty) renderComparison(cmp);
+
+  renderPositions(posRes.rows || [], posRes.cb_rows || []);
+}
+
 async function loadAll() {
-  setStatus('加载中…', 'alert-info', 'decide-status');
+  showLoading();
+  setStatus('', '', 'decide-status');
   try {
     const [planRes, posRes, cfgRes, authRes] = await Promise.all([
       fetchDecidePlan().catch(() => ({ date: '', rows: [], dates: [] })),
@@ -414,11 +442,7 @@ async function loadAll() {
           danger_count: 0, warn_count: 0, info_count: 0,
         };
 
-    renderPlan(date, planRes);
-    renderComparison(cmp);
-    renderPositions(posRes.rows || [], posRes.cb_rows || []);
-    renderSummary(cmp);
-    setStatus('', '', 'decide-status');
+    renderAll(cmp, planRes, posRes, date);
   } catch (e) {
     setStatus('加载失败：' + (e && e.message ? e.message : e), 'alert-danger', 'decide-status');
   }
