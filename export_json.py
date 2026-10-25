@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -41,18 +42,49 @@ from config import CAPITAL_TIERS
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
 
+def _static_version() -> str:
+    """静态资源版本号：用 git HEAD 短 sha 做缓存破坏参数。
+
+    Cloudflare 对 static/*.js 下发 max-age=14400（4 小时），部署新代码后
+    浏览器/边缘会继续用旧 JS，导致新页面 import 失败（如可转债 fetchCb* 缺失）。
+    给 src/href 加 ?v=<sha> 让每次部署 URL 都变，强制重新加载。
+    """
+    import subprocess
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).parent),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return _dt_class.now().strftime("%Y%m%d%H%M%S")
+
+
+def _cache_bust(html: str, version: str) -> str:
+    """给 static/ 资源的 src/href 追加 ?v=<version> 缓存破坏参数。"""
+    return re.sub(
+        r'(src|href)="(static/[^"]+)"',
+        rf'\1="\2?v={version}"',
+        html,
+    )
+
+
 def _render_static_page(template_name: str, **kwargs) -> str:
     """Render a Jinja2 template in static mode (no url_for, relative paths)."""
     from jinja2 import Environment, FileSystemLoader
     env = Environment(loader=FileSystemLoader(str(Path(__file__).parent / "templates")))
     # In static mode, url_for doesn't work — provide a simple replacement
     env.globals['url_for'] = lambda endpoint, **kw: f"static/{kw.get('filename', '')}"
-    return env.get_template(template_name).render(
+    html = env.get_template(template_name).render(
         app_mode="static",
         data_prefix="",
         show_write_controls=False,
         **kwargs,
     )
+    return _cache_bust(html, _static_version())
 
 
 def _cleanup_stale_date_files(data_dir: Path, pick_dates, plan_dates) -> None:
