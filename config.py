@@ -48,3 +48,19 @@ CB_RISK = {
     "min_price": CB_FILTERS["price_min"],
     "max_price": CB_FILTERS["price_max"],
 }
+
+# ---------------------------------------------------------------------------
+# 10w 决策台：专属配置（报告 docs/reports/10w-decision-system.md 第 4/5 章）
+# 与全局 MAX_SINGLE / MAX_POSITIONS 等区分——这是 10w 本金场景的独立参数，
+# 不影响其他资金档位的 plan 生成。
+# ---------------------------------------------------------------------------
+PORTFOLIO_10W = {
+    "total_capital": 100000.0,
+    "stock_ratio": 0.8,
+    "cb_ratio": 0.2,
+    "max_positions": 8,
+    "max_single_weight": 0.10,
+    "max_stock_exposure": 0.75,
+    "cb_capital": 20000.0,
+    "max_cb_positions": 3,
+}
