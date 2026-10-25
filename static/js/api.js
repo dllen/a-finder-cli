@@ -60,7 +60,9 @@ export function fetchPortfolioDetail(label, date, strategy) {
 }
 
 export function fetchStats() {
-  return getJSON('/api/stats');
+  return isStatic()
+    ? getJSON(dsPath('data/stats.json'))
+    : getJSON('/api/stats');
 }
 
 export async function postRefresh(sync) {

@@ -126,6 +126,43 @@ def _dashboard_payload(conn) -> dict:
     }
 
 
+def _export_stats(conn, data_dir: Path) -> None:
+    """导出策略胜率统计（镜像 /api/stats），供静态站「策略胜率统计」区块使用。"""
+    from db_repository import fetch_pick_outcomes
+    from evolution.attribution import attribute
+
+    rows = fetch_pick_outcomes(conn, judged_only=True)
+    s = attribute(rows)
+    strategies = [
+        {"strategy": k, "n": v.n, "win_rate": round(v.win_rate * 100, 1),
+         "expectancy": round(v.expectancy * 100, 2)}
+        for k, v in s.items()
+    ]
+    strategies.sort(key=lambda x: (-x["n"], x["strategy"]))
+
+    monthly: dict = {}
+    for r in rows:
+        if not r.get("date"):
+            continue
+        m = str(r["date"])[:7]
+        b = monthly.setdefault(m, {"n": 0, "wins": 0, "ret": 0.0})
+        b["n"] += 1
+        if r.get("win"):
+            b["wins"] += 1
+        b["ret"] += float(r.get("outcome_pct") or 0.0)
+    monthly_list = [
+        {"month": m, "n": b["n"],
+         "win_rate": round(b["wins"] / b["n"] * 100, 1) if b["n"] else 0.0,
+         "avg_ret": round(b["ret"] / b["n"] * 100, 2) if b["n"] else 0.0}
+        for m, b in sorted(monthly.items())
+    ]
+    json.dump(
+        {"strategies": strategies, "monthly": monthly_list},
+        (data_dir / "stats.json").open("w"),
+        ensure_ascii=False, default=str,
+    )
+
+
 def _export_cb_data(conn, data_dir: Path) -> None:
     """导出可转债数据：榜单（按日期）、持仓、预警快照。"""
     from cb_repository import get_cb_positions, get_cb_picks
@@ -367,6 +404,7 @@ def export(db_path: str, out_dir: str) -> int:
                   ensure_ascii=False, default=str)
         _export_cb_data(conn, data_dir)
         _export_decide_data(conn, data_dir)
+        _export_stats(conn, data_dir)
     finally:
         conn.close()
 
