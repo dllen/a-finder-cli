@@ -251,3 +251,62 @@ Add build-system and py-modules in pyproject.toml, then run uv sync --reinstall.
 - Related Files: /Users/shichaopeng/Work/code/github/a-finder-cli/pyproject.toml
 
 ---
+## [2026-10-25] 选股榜单全 0 条：K 线历史不足 221 个交易日
+
+**Area**: data / strategy
+
+### Summary
+`run_picks` 对所有日期返回 0 条（ma/buy/signal/multi 全 0），站点数据停在旧日期
+
+### Error
+```
+run_picks(db, top=20, do_sync=False, trade_date='2026-10-23')
+{'date': '2026-10-23', 'ma': 0, 'buy': 0, 'signal': 0, 'multi': 0}
+```
+
+### Context
+- Command/operation attempted: 同步 2 周行情后回填 daily_picks
+- Input or parameters used: sync-hs300-range 2026-04-25~2026-10-24（仅 120 交易日）
+- Environment details: SQLite DB, pick_history.run_picks → build_market_from_db(min_days=221, max_days=520)
+
+### Suggested Fix
+选股策略要求 221~520 个交易日的 K 线历史。同步时至少覆盖 2 年
+（约 2024-10 起，~500 交易日 / 148k 行），否则 4 个榜单全部为空。
+另注意 `build_plan(plan_date, db_path)` 参数顺序传反会按日期名创建
+散落 SQLite 文件。
+
+### Metadata
+- Reproducible: yes
+- Related Files: pick_history.py, plan_builder.py
+
+---
+
+## [2026-10-25] 东财被封导致探测误判为"可用"
+
+**Area**: data / sync
+
+### Summary
+SourceHealthTracker.probe() 报告 eastmoney 可用，实际它已被限流
+
+### Error
+```
+Priority: eastmoney > sina > tencent
+  eastmoney: available=True   # 实际 RemoteDisconnected
+```
+
+### Context
+- Command/operation attempted: SourceHealthTracker.probe()
+- Input or parameters used: 600519 探针
+- Environment details: 东财 push2his 被限流，新浪/腾讯正常
+
+### Suggested Fix
+探测与 smart 路由必须走各源**直连**接口，不能用
+`fetch_daily_kline_with_name`（它失败会静默回退到新浪/腾讯，
+导致无法区分"东财可用"和"东财挂了但被备源救回"）。
+已新增 `fetch_daily_kline_eastmoney`（无 fallback，失败抛异常）。
+
+### Metadata
+- Reproducible: yes
+- Related Files: data_providers.py, sync_service.py
+
+---
