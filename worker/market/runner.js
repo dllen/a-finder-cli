@@ -19,7 +19,7 @@ function dayOffsetStr(dateStr, days) {
  * 跑一轮抓取。返回诊断信息，便于 /api/market/tick 与 cron 共用。
  * 非交易时段、无活跃任务、开关关闭都直接返回 reason。
  */
-export async function runMarketSync(env) {
+export async function runMarketSync(env, opts = {}) {
   // 开关：显式设为 'false' 才关闭（默认开启）。想暂停抓取只需
   // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
   if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
@@ -49,6 +49,14 @@ export async function runMarketSync(env) {
   }
 
   const codes = await listSymbols(env.DB);
+  if (opts.dry) {
+    // 只报告门禁判断结果，不抓取（HTTP 有 10ms CPU 限额，重活只能靠 cron）
+    return {
+      dry: true, beijing: bj, job: active.id, kind: parseJobId(active.id).kind,
+      cursor: active.cursor, total: active.total, codes: codes.length,
+      chunkSize: chunkSizeFor(parseJobId(active.id).kind),
+    };
+  }
   // 目标日期以「任务 id」为准，不用 bj.date：隔夜未完成的 job 的 id 是更早的日期，
   // 用今天去抓却推进昨天的游标会写错数据。
   const meta = parseJobId(active.id);

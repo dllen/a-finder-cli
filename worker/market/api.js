@@ -62,7 +62,8 @@ export async function handleMarketApi(request, env, path) {
 
   // 手动跑一轮：cron 失灵或需要立即补抓时用，返回诊断信息
   if (path === '/api/market/tick' && request.method === 'POST') {
-    const result = await runMarketSync(env);
+    const body = await request.json().catch(() => ({}));
+    const result = await runMarketSync(env, { dry: body.dry === true });
     return json({ result });
   }
 
