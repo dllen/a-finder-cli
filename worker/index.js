@@ -90,32 +90,28 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // ---- TEMP PROBE ③（不复权日线源 + 成交额/换手率字段；Task 1 结束即删除）----
+    // ---- TEMP PROBE ④（腾讯 bfq 不复权 + 扩展字段；Task 1 结束即删除）----
     if (path === '/api/probe' && method === 'GET') {
       const code = '600519';
-      const date = '2026-10-23';
       const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
       const targets = [
-        ['tx_kline_bfq',
-          `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=sh${code},day,${date},${date},10`,
+        ['newfq_bfq',
+          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10,bfq`,
           'https://gu.qq.com/'],
-        ['tx_newfq_bfq',
-          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,${date},${date},10,qfq`,
+        ['fq_bfq',
+          `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10,bfq`,
           'https://gu.qq.com/'],
-        ['sina_daily',
-          `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh${code}&scale=240&ma=no&datalen=3`,
-          'https://finance.sina.com.cn/'],
-        ['sina_hq',
-          `https://hq.sinajs.cn/list=sh${code}`,
-          'https://finance.sina.com.cn/'],
+        ['newfq_day_only',
+          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10`,
+          'https://gu.qq.com/'],
       ];
       const out = {};
       for (const [name, url, referer] of targets) {
         try {
           const r = await fetch(url, { headers: { 'User-Agent': ua, 'Referer': referer } });
           const text = await r.text();
-          out[name] = { status: r.status, body: text.slice(0, 400) };
+          out[name] = { status: r.status, body: text.slice(0, 700) };
         } catch (e) {
           out[name] = { status: 0, error: String(e).slice(0, 160) };
         }
