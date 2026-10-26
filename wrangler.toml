@@ -10,3 +10,9 @@ database_id = "e9348772-e7ae-43aa-a119-19f707ab1821"
 routes = [
   { pattern = "ycu.space/api/*", zone_name = "ycu.space" }
 ]
+
+# GitHub Actions schedule 在高负载时段会延迟甚至丢弃，
+# 用 Workers Cron 在北京时间 15:35（UTC 07:35）兜底触发 deploy-site 的 workflow_dispatch。
+# 是否交易日的判断仍由 workflow 内的 chinese_calendar 步骤负责，这里每天发即可。
+[triggers]
+crons = ["35 7 * * *"]

@@ -67,6 +67,12 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   同步→选股→计划→组合→转债→导出→部署 gh-pages。用 chinese_calendar 判交易日，
   数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
+- GitHub schedule 高负载会延迟/丢弃，有三重保险：备用 cron 07:45 UTC、
+  Cloudflare Workers Cron 07:35 UTC 兜底发 workflow_dispatch（`worker/index.js` 的
+  `scheduled` handler，需 secret `GITHUB_DISPATCH_TOKEN`——fine-grained PAT 仅授本仓库
+  Actions: Read and write；手动验证：登录后 POST /api/decide/dispatch-test）、
+  手动 workflow_dispatch。hs300.db 缓存 key 按 run_id 唯一（固定 key 会冻结缓存——
+  actions/cache 不允许覆盖已存在的 key）。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
 
 # CI 自动部署 Worker（deploy-worker.yml）

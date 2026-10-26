@@ -2,6 +2,10 @@
 // 读公开（首屏渲染需要），写需登录后的 HttpOnly Cookie。
 // 登录是双因子：DECIDE_USER + DECIDE_PASSWORD；签名密钥 DECIDE_SECRET。
 // 三者都通过 `wrangler secret put` 注入。
+// 另带一个 Cron：每天 UTC 07:35（北京 15:35）兜底触发 deploy-site 的
+// workflow_dispatch（GitHub schedule 高负载时会延迟/丢弃）。
+// 该功能需要 secret GITHUB_DISPATCH_TOKEN（fine-grained PAT，
+// 仅授权本仓库 Actions: Read and write）。
 import { buildCookie, clearCookie, readAuth, signToken } from './auth.js';
 
 const MAX_AGE = 7 * 24 * 3600;           // 7 天（秒）
@@ -11,6 +15,35 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8000',
   'http://localhost:8000',
 ];
+
+// Cron 兜底触发的目标 workflow
+const DISPATCH_REPO = 'dllen/a-finder-cli';
+const DISPATCH_WORKFLOW = 'deploy-site.yml';
+const DISPATCH_REF = 'main';
+
+/** 调 GitHub API 触发 workflow_dispatch。返回 {ok, status, detail}。 */
+async function dispatchDeploySite(env) {
+  if (!env.GITHUB_DISPATCH_TOKEN) {
+    return { ok: false, status: 0, detail: 'GITHUB_DISPATCH_TOKEN 未配置' };
+  }
+  const resp = await fetch(
+    `https://api.github.com/repos/${DISPATCH_REPO}/actions/workflows/${DISPATCH_WORKFLOW}/dispatches`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'a-finder-cron',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ref: DISPATCH_REF }),
+    },
+  );
+  // 成功返回 204 No Content
+  if (resp.status === 204) return { ok: true, status: 204, detail: '' };
+  return { ok: false, status: resp.status, detail: await resp.text() };
+}
 
 function corsHeaders(origin) {
   const h = {
@@ -161,6 +194,37 @@ export default {
       return json({ ok: true }, 200, origin);
     }
 
+    // ---- 手动触发 dispatch 测试（需认证，验证 GITHUB_DISPATCH_TOKEN 配好没）----
+    if (path === '/api/decide/dispatch-test' && method === 'POST') {
+      if (!(await isAuthed(request, env))) {
+        return json({ error: '未登录' }, 401, origin);
+      }
+      const r = await dispatchDeploySite(env);
+      return json(
+        r.ok
+          ? { ok: true, status: r.status, workflow: DISPATCH_WORKFLOW, ref: DISPATCH_REF }
+          : { ok: false, status: r.status, detail: r.detail.slice(0, 300) },
+        r.ok ? 200 : 502,
+        origin,
+      );
+    }
+
     return json({ error: 'not found' }, 404, origin);
+  },
+
+  // Cron：每天 UTC 07:35（北京 15:35）兜底触发 deploy-site workflow_dispatch。
+  // GitHub schedule 高负载时会延迟/丢弃；交易日判断仍由 workflow 自己做，
+  // 这里每天发，非交易日 workflow 会在「判定 A 股交易日」步骤跳过。
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      const r = await dispatchDeploySite(env);
+      if (r.ok) {
+        console.log('workflow_dispatch 已触发:', DISPATCH_WORKFLOW, 'ref', DISPATCH_REF);
+      } else {
+        // 抛出让这次 cron 在 Cloudflare dashboard 标记为失败，便于发现
+        console.error('workflow_dispatch 失败:', r.status, r.detail);
+        throw new Error(`dispatch failed: HTTP ${r.status} ${r.detail.slice(0, 200)}`);
+      }
+    })());
   },
 };

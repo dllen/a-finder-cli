@@ -6,7 +6,12 @@ name: deploy-site
 on:
   schedule:
     # A股收盘 15:00 北京，数据落地约 15:30 → 07:30 UTC
+    # GitHub schedule 高负载时会延迟/丢弃，加 07:45 作为备用触发点。
+    # 若 07:30 的 run 还在跑，07:45 的 run 会在 concurrency 组里排队等它结束；
+    # 同步是增量的、部署是幂等的，双跑无副作用。另有 Cloudflare Workers Cron
+    # 在 07:35 UTC 兜底发 workflow_dispatch（见 worker/index.js scheduled）。
     - cron: "30 7 * * *"
+    - cron: "45 7 * * *"
   workflow_dispatch:
 
 concurrency:
