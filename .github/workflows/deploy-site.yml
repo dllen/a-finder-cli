@@ -53,7 +53,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: hs300.db
-          key: hs300-db
+          # key 必须每次唯一：固定 key 会导致首次保存后缓存永远不再更新
+          # （actions/cache 不允许覆盖已存在的 key），每天从同一份旧 DB 增量同步。
+          key: hs300-db-${{ github.run_id }}
           restore-keys: |
             hs300-db-
 
@@ -87,7 +89,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: hs300.db
-          key: hs300-db
+          key: hs300-db-${{ github.run_id }}
 
       - name: 部署 gh-pages
         if: steps.trade-day.outputs.is_trade_day == 'true'
