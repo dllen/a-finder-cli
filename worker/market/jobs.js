@@ -33,11 +33,15 @@ export function isTradingWindow(bj) {
   return minutes >= WINDOW_START_MIN && minutes < WINDOW_END_MIN;
 }
 
-/** 有活跃任务且在时间窗内才需要干活 */
+/**
+ * 有活跃任务才需要干活。
+ * 日报必须在交易时段（15:35–23:00，等当日 K 线稳定）；
+ * 回填抓的是历史日期，任何时间都可以跑（否则 301 只 × 2 只/轮 跑不完一个窗口）。
+ */
 export function shouldRun(job, bj) {
   if (!job) return false;
   if (job.status !== 'pending' && job.status !== 'running') return false;
-  return isTradingWindow(bj);
+  return parseJobId(job.id).kind === 'backfill' ? true : isTradingWindow(bj);
 }
 
 /** 按游标切出本片代码；done 表示本片之后没有剩余。size 默认 CHUNK_SIZE（回填时传更小值） */
@@ -103,10 +107,11 @@ export function backfillJobId(date, days) {
 /**
  * 每轮的抓取只数。
  * 日报：40（响应 ~200B/只，解析可忽略）。
- * 回填：5（腾讯一次最多给 640 根 ≈ 58KB/只，5 只约 290KB，JSON 解析 3-6ms，
- * 留出余量给 D1 写入）。实测 8 只会撞 Free 计划 10ms CPU 上限：
- * 数据写进去了但 updateJob 没执行到，游标不推进 → 每轮重复抓同样几只。
+ * 回填：2（腾讯一次最多 640 根 ≈ 58KB/只；实测 8 只、5 只都会撞 Free 的 10ms CPU
+ * 上限 —— 表现为数据写进去了但 updateJob 没执行到，游标不推进，每轮重复抓同样几只。
+ * 2 只 ≈ 116KB，解析 + 1280 行 bind 约 2-3ms，留足余量。
+ * 301 只 / 2 = 151 轮，cron 每分钟一轮 ≈ 2.5 小时，回填不限时段可跨夜跑完）。
  */
 export function chunkSizeFor(kind) {
-  return kind === 'backfill' ? 5 : CHUNK_SIZE;
+  return kind === 'backfill' ? 2 : CHUNK_SIZE;
 }

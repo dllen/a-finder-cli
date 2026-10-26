@@ -28,10 +28,17 @@ test('isTradingWindow：15:35–23:00 的工作日才抓', () => {
 });
 
 test('shouldRun：没有活跃任务就不跑；有则跑', () => {
+  const dailyJob = (status) => ({ id: '2026-10-26', status });
   assert.equal(shouldRun(null, { weekday: 1, hour: 16, minute: 0 }), false);
-  assert.equal(shouldRun({ status: 'done' }, { weekday: 1, hour: 16, minute: 0 }), false);
-  assert.equal(shouldRun({ status: 'running' }, { weekday: 1, hour: 16, minute: 0 }), true);
-  assert.equal(shouldRun({ status: 'running' }, { weekday: 1, hour: 12, minute: 0 }), false);
+  assert.equal(shouldRun(dailyJob('done'), { weekday: 1, hour: 16, minute: 0 }), false);
+  assert.equal(shouldRun(dailyJob('running'), { weekday: 1, hour: 16, minute: 0 }), true);
+  assert.equal(shouldRun(dailyJob('running'), { weekday: 1, hour: 12, minute: 0 }), false);
+});
+
+test('shouldRun：回填任务不受交易时段限制', () => {
+  const backfill = { id: 'backfill:2026-10-26:730', status: 'running' };
+  assert.equal(shouldRun(backfill, { weekday: 1, hour: 23, minute: 30 }), true);
+  assert.equal(shouldRun(backfill, { weekday: 0, hour: 3, minute: 0 }), true);
 });
 
 test('planChunk：按游标切出本片代码与下一游标', () => {
