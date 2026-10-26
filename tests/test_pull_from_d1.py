@@ -171,3 +171,26 @@ def test_cli_without_token_is_not_hard_failure(db, monkeypatch):
     monkeypatch.delenv("D1_SYNC_TOKEN", raising=False)
     # 网络不可用 → WorkerError → fell_back → 退出码 3（不是 2）
     assert pull.main(["--db", path, "--worker", "https://127.0.0.1:9", "--token", ""]) == 3
+
+
+def test_http_json_sends_user_agent(monkeypatch):
+    """Cloudflare 会 403 掉默认 Python-urllib UA，必须自带。"""
+    captured = {}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout=30):
+        captured["ua"] = req.get_header("User-agent")
+        captured["token"] = req.get_header("X-sync-token")
+        return FakeResp()
+
+    monkeypatch.setattr(pull.urllib.request, "urlopen", fake_urlopen)
+    assert pull._http_json("https://w/api/market/health", "") == {"ok": True}
+    assert captured["ua"].startswith("a-finder-ci/")
+    assert captured["token"] is None
+
+    pull._http_json("https://w/api/market/health", "tok")
+    assert captured["token"] == "tok"

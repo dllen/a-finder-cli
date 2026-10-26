@@ -28,8 +28,14 @@ class WorkerError(RuntimeError):
     pass
 
 
+# Cloudflare 会拦截默认的 "Python-urllib/x.y"（实测返回 403），必须自带 UA
+USER_AGENT = "a-finder-ci/1.0 (+https://github.com/dllen/a-finder-cli)"
+
+
 def _http_json(url: str, token: str) -> Dict:
-    headers = {"X-Sync-Token": token} if token else {}
+    headers = {"User-Agent": USER_AGENT}
+    if token:
+        headers["X-Sync-Token"] = token
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
