@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/date_filter.html' import date_filter %}
 {% set active_page = "cb" %}
 {% block title %}可转债{% endblock %}
 
@@ -8,7 +9,7 @@
     <h2 class="mb-0">可转债</h2>
     <span class="text-muted fs-6 ms-2">[独立转债仓]</span>
     <div class="ms-auto d-flex align-items-center gap-2">
-      <select id="cb-date" class="form-select form-select-sm" style="width:auto" aria-label="榜单日期"></select>
+      {{ date_filter('cb-date', '日期', compact=true) }}
       <button id="cb-refresh" class="btn btn-sm btn-outline-primary write-control">刷新</button>
     </div>
   </div>

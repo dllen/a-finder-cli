@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/date_filter.html' import date_filter %}
 {% set active_page = "plan" %}
 {% block title %}每日 Plan{% endblock %}
 
@@ -11,10 +12,7 @@
   {% include 'components/dashboard_cards.html' %}
 
   <div class="filter-toolbar">
-    <div class="filter-group">
-      <label class="form-label" for="d">日期</label>
-      <select id="d" class="form-select"></select>
-    </div>
+    {{ date_filter('d', '日期') }}
     <div class="filter-group">
       <label class="form-label" for="capital-group">资金</label>
       <div id="capital-group" class="btn-group btn-group-sm flex-wrap" role="group" aria-label="资金档位">

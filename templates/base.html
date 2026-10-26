@@ -7,6 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/date-filter.css') }}">
 </head>
 <body>
 {% include 'components/nav.html' %}
@@ -19,6 +20,7 @@
 </footer>
 <script src="{{ url_for('static', filename='vendor/bootstrap.bundle.min.js') }}"></script>
 <script>window.APP_MODE={{ app_mode|tojson }};window.DATA_PREFIX={{ data_prefix|tojson }};</script>
+<script type="module" src="{{ url_for('static', filename='js/date-filter.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

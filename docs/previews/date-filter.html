@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="日期筛选组件的八态预览：默认、悬停、焦点、按下、禁用、加载、错误、成功。">
+<title>日期筛选组件 · 八态预览</title>
+<style>
+  :root{
+    --brand:#16263a;--brand-2:#1f3350;--accent:#2f6f9f;
+    --bg:#f5f6f8;--surface:#ffffff;--border:#e3e6eb;--text:#1a2332;--muted:#66707c;
+    --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  body{margin:0;padding:2rem 1.5rem;background:var(--surface);color:var(--text);
+       font-family:var(--font-sans);
+       overflow-x:clip;line-height:1.5}
+  html{overflow-x:clip}
+  h1{font-size:1.1rem;font-weight:600;margin:0 0 .25rem;text-wrap:balance}
+  p.note{font-size:.85rem;color:var(--muted);margin:0 0 1.5rem}
+  .row{display:grid;grid-template-columns:9rem minmax(0,1fr);gap:1rem;align-items:center;
+       padding:.75rem 0;border-top:1px solid var(--border)}
+  .row:last-child{border-bottom:1px solid var(--border)}
+  .row h2{font-size:.8rem;font-weight:500;color:var(--muted);margin:0;line-height:1.3}
+  .row code{display:block;font-size:.72rem;color:var(--muted);margin-top:.15rem}
+  .form-select{display:block;width:100%}
+  .stack{display:flex;flex-direction:column;gap:.6rem}
+</style>
+<link rel="stylesheet" href="../../static/css/date-filter.css">
+</head>
+<body>
+<h1>日期筛选组件 · 八态预览</h1>
+<p class="note">八态逐行堆叠。伪类状态由 <code>is-hover / is-focus / is-active</code> 辅助类强制模拟，与真实伪类同一套 token。</p>
+
+<div class="row">
+  <h2>1 默认<code>default</code></h2>
+  <div class="date-filter" data-preview>
+    <label class="date-filter__label" for="p1">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p1" class="form-select date-filter__select"><option selected>2026-10-23</option><option>2026-10-22</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status"></span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>2 悬停<code>:hover</code></h2>
+  <div class="date-filter is-hover">
+    <label class="date-filter__label" for="p2">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p2" class="form-select date-filter__select"><option selected>2026-10-22</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status"></span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>3 键盘焦点<code>:focus-visible</code></h2>
+  <div class="date-filter is-focus">
+    <label class="date-filter__label" for="p3">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p3" class="form-select date-filter__select"><option selected>2026-10-22</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status"></span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>4 按下<code>:active</code></h2>
+  <div class="date-filter is-active">
+    <label class="date-filter__label" for="p4">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p4" class="form-select date-filter__select"><option selected>2026-10-22</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日">
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status"></span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>5 禁用<code>disabled</code></h2>
+  <div class="date-filter">
+    <label class="date-filter__label" for="p5">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p5" class="form-select date-filter__select" disabled><option selected>2026-10-23</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status"></span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>6 加载<code>.is-loading</code></h2>
+  <div class="date-filter is-loading">
+    <label class="date-filter__label" for="p6">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p6" class="form-select date-filter__select" disabled></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status">加载中…</span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>7 错误<code>.is-error</code></h2>
+  <div class="date-filter is-error">
+    <label class="date-filter__label" for="p7">日期</label>
+    <div class="date-filter__control">
+      <button type="button" class="date-filter__step" aria-label="前一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="date-filter__field">
+        <select id="p7" class="form-select date-filter__select"><option selected>2026-10-23</option></select>
+      </div>
+      <button type="button" class="date-filter__step" aria-label="后一交易日" disabled>
+        <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <span class="date-filter__status">日期加载失败</span>
+  </div>
+</div>
+
+<div class="row">
+  <h2>8 成功 / 回看<code>.is-success · 回到最新</code></h2>
+  <div class="stack">
+    <div class="date-filter is-success">
+      <label class="date-filter__label" for="p8">日期</label>
+      <div class="date-filter__control">
+        <button type="button" class="date-filter__step" aria-label="前一交易日">
+          <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="date-filter__field">
+          <select id="p8" class="form-select date-filter__select"><option selected>2026-10-23</option><option>2026-10-22</option></select>
+        </div>
+        <button type="button" class="date-filter__step" aria-label="后一交易日" disabled>
+          <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <span class="date-filter__status">已同步</span>
+    </div>
+    <div class="date-filter">
+      <label class="date-filter__label" for="p9">日期</label>
+      <div class="date-filter__control">
+        <button type="button" class="date-filter__step" aria-label="前一交易日">
+          <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="date-filter__field">
+          <select id="p9" class="form-select date-filter__select"><option>2026-10-23</option><option selected>2026-10-16</option></select>
+        </div>
+        <button type="button" class="date-filter__step" aria-label="后一交易日">
+          <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <button type="button" class="date-filter__latest">回到最新</button>
+      <span class="date-filter__status"></span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

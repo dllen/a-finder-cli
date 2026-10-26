@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/date_filter.html' import date_filter %}
 {% set active_page = "decide" %}
 {% block title %}10w 决策台{% endblock %}
 
@@ -8,7 +9,7 @@
     <h2 class="mb-0">10w 决策台</h2>
     <span class="text-muted fs-6 ms-2">{{ config.stock_ratio | int }}w 股 + {{ config.cb_ratio | int }}w 债 · 最多 {{ config.max_positions }} 只 · 单票 ≤{{ '%.0f' % (config.max_single_weight * 100) }}%</span>
     <div class="ms-auto d-flex align-items-center gap-2">
-      <select id="decide-date" class="form-select form-select-sm" style="width:auto" aria-label="计划日期"></select>
+      {{ date_filter('decide-date', '日期', compact=true) }}
       <button id="decide-refresh" class="btn btn-sm btn-outline-primary write-control">刷新</button>
     </div>
   </div>

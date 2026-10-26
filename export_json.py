@@ -460,7 +460,8 @@ def export(db_path: str, out_dir: str) -> int:
     # CSS
     dst_css = static_dir / "css"
     dst_css.mkdir(exist_ok=True)
-    shutil.copy(src_static / "css" / "app.css", dst_css / "app.css")
+    for f in (src_static / "css").glob("*.css"):
+        shutil.copy(f, dst_css / f.name)
     # Vendor libs
     dst_vendor = static_dir / "vendor"
     dst_vendor.mkdir(exist_ok=True)

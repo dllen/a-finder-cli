@@ -1,0 +1,32 @@
+{# 日期筛选组件：日期标签 + 前/后交易日步进 + "回到最新" + 状态区。
+   用法：{% from 'components/date_filter.html' import date_filter %}
+        {{ date_filter('d', '日期') }}              页面主筛选（picks / plan）
+        {{ date_filter('cb-date', '日期', compact=true) }}  紧凑表头（cb / decide）
+   行为由 static/js/date-filter.js 提供（步进、URL ?d= 状态、键盘、状态类）。#}
+{% macro date_filter(select_id='d', label='日期', compact=false) -%}
+<div class="date-filter{% if compact %} date-filter--compact{% endif %}"
+     data-date-filter data-select-id="{{ select_id }}">
+  <label class="date-filter__label" for="{{ select_id }}">{{ label }}</label>
+  <div class="date-filter__control">
+    <button type="button" class="date-filter__step" data-step="-1"
+            aria-label="前一交易日" aria-controls="{{ select_id }}" disabled>
+      <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <div class="date-filter__field">
+      <select id="{{ select_id }}" class="form-select date-filter__select"></select>
+    </div>
+    <button type="button" class="date-filter__step" data-step="1"
+            aria-label="后一交易日" aria-controls="{{ select_id }}" disabled>
+      <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+  <button type="button" class="date-filter__latest" hidden>回到最新</button>
+  <span class="date-filter__status" role="status" aria-live="polite"></span>
+</div>
+{%- endmacro %}

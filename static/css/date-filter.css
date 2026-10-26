@@ -1,0 +1,166 @@
+/* Hallmark · component: date-filter · genre: modern-minimal · theme: project tokens · states: 8 · contrast: pass · v2.0.0 */
+/* Critique: the app carried four date controls in three dialects (bare select, form-select, native date input) with no way to step or share a date; this one control adds stepping, URL state and a "回看中" state without inventing a new look.
+   waive: 15 (stamp is line 1, critique line 2 — the page-level 40-line rule is met by construction)
+   answered: F9 labels are body face, small, untracked; F10 no middle dots; F11 no gradient, no card-in-card, no emoji icons */
+:root{
+  /* date-filter component tokens — every colour and duration below resolves through these */
+  --df-surface:var(--surface);
+  --df-surface-hover:#f7f9fb;
+  --df-surface-active:#eef2f6;
+  --df-border:var(--border);
+  --df-border-hover:#c9d2dc;
+  --df-text:var(--text);
+  --df-muted:var(--muted);
+  --df-focus:var(--accent);
+  --df-ring:rgba(47,111,159,.22);
+  --df-error-text:#a12a1f;
+  --df-error-border:#f0c4bd;
+  --df-error-surface:#fdf1ef;
+  --df-ok-text:#1f6b3f;
+  --df-ok-border:#cfe6d6;
+  --df-ok-surface:#eff7f1;
+  --df-h:2.125rem;
+  --df-radius:.4rem;
+  --df-dur-micro:110ms;
+  --df-dur-short:180ms;
+  --df-ease:cubic-bezier(.4,0,.2,1);
+}
+.date-filter{
+  display:flex;
+  align-items:center;
+  gap:.4rem;
+  flex-wrap:wrap;
+  font-family:inherit;
+  color:var(--df-text);
+}
+.date-filter__label{
+  font-size:.85rem;
+  font-weight:500;
+  color:var(--df-muted);
+  line-height:1.2;
+  white-space:nowrap;
+}
+.date-filter__control{
+  display:inline-flex;
+  align-items:stretch;
+  height:var(--df-h);
+  background:var(--df-surface);
+  border:1px solid var(--df-border);
+  border-radius:var(--df-radius);
+  transition:border-color var(--df-dur-micro) var(--df-ease),
+             box-shadow var(--df-dur-micro) var(--df-ease);
+}
+.date-filter__control:hover{border-color:var(--df-border-hover)}
+.date-filter__control:focus-within{
+  border-color:var(--df-focus);
+  box-shadow:0 0 0 3px var(--df-ring);
+}
+.date-filter__step{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:1.85rem;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:var(--df-muted);
+  cursor:pointer;
+  border-radius:calc(var(--df-radius) - 1px) 0 0 calc(var(--df-radius) - 1px);
+  transition:background-color var(--df-dur-micro) var(--df-ease),
+             color var(--df-dur-micro) var(--df-ease),
+             transform var(--df-dur-micro) var(--df-ease);
+}
+.date-filter__step:last-child{border-radius:0 calc(var(--df-radius) - 1px) calc(var(--df-radius) - 1px) 0}
+.date-filter__step:hover:not(:disabled){background:var(--df-surface-hover);color:var(--df-text)}
+.date-filter__step:active:not(:disabled){background:var(--df-surface-active);transform:translateY(1px)}
+.date-filter__step:focus-visible{outline:2px solid var(--df-focus);outline-offset:-2px;border-radius:var(--df-radius)}
+.date-filter__step:disabled{color:var(--df-muted);opacity:.32;cursor:not-allowed}
+.date-filter__icon{width:1rem;height:1rem;display:block}
+.date-filter__field{position:relative;display:flex;align-items:center}
+.date-filter__field::after{
+  content:"";
+  position:absolute;
+  right:.7rem;
+  width:.42rem;
+  height:.42rem;
+  border-right:1.5px solid var(--df-muted);
+  border-bottom:1.5px solid var(--df-muted);
+  transform:translateY(-2px) rotate(45deg);
+  pointer-events:none;
+}
+.date-filter__select{
+  appearance:none;
+  -webkit-appearance:none;
+  background:transparent;
+  background-image:none;
+  border:0;
+  border-radius:0;
+  height:100%;
+  min-width:8.75rem;
+  padding:0 1.7rem 0 .6rem;
+  font-size:.9rem;
+  font-weight:500;
+  color:var(--df-text);
+  font-variant-numeric:tabular-nums;
+  cursor:pointer;
+  transition:color var(--df-dur-micro) var(--df-ease);
+}
+/* 覆盖 .filter-toolbar .form-select 的 min-height/min-width（同优先级，本文件后加载） */
+.date-filter .date-filter__select{min-height:0;min-width:8.75rem;height:100%}
+.date-filter__select:hover{color:var(--df-text)}
+.date-filter__select:focus-visible{outline:2px solid var(--df-focus);outline-offset:-2px;border-radius:var(--df-radius)}
+.date-filter__select:disabled{color:var(--df-muted);cursor:progress}
+.date-filter__select option{color:var(--df-text);background:var(--df-surface)}
+.date-filter__latest{
+  padding:0;
+  border:0;
+  background:none;
+  font:inherit;
+  font-size:.8rem;
+  color:var(--df-focus);
+  text-decoration:underline;
+  text-underline-offset:.15em;
+  cursor:pointer;
+  transition:color var(--df-dur-micro) var(--df-ease);
+}
+.date-filter__latest:hover{color:var(--df-text)}
+.date-filter__latest:active{transform:translateY(1px)}
+.date-filter__latest:focus-visible{outline:2px solid var(--df-focus);outline-offset:2px;border-radius:.15rem}
+.date-filter__status{font-size:.8rem;color:var(--df-muted);line-height:1.2}
+.date-filter.is-loading .date-filter__field{overflow:hidden}
+.date-filter.is-loading .date-filter__field::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:var(--df-surface-active);
+  border-radius:0 .2rem .2rem 0;
+}
+.date-filter.is-loading .date-filter__select{color:transparent;position:relative;z-index:1}
+.date-filter.is-error .date-filter__control{border-color:var(--df-error-border);background:var(--df-error-surface)}
+.date-filter.is-error .date-filter__status{color:var(--df-error-text)}
+.date-filter.is-success .date-filter__control{border-color:var(--df-ok-border);background:var(--df-ok-surface)}
+.date-filter.is-success .date-filter__status{color:var(--df-ok-text)}
+.date-filter--compact .date-filter__control{height:2rem}
+.date-filter--compact .date-filter__select{min-width:7.5rem;font-size:.85rem;min-height:0}
+.date-filter__hit{display:none}
+/* state helpers — mirror the pseudo-classes so the 8-state preview can force each one; unused in production */
+.date-filter.is-hover .date-filter__control{border-color:var(--df-border-hover)}
+.date-filter.is-focus .date-filter__control{border-color:var(--df-focus);box-shadow:0 0 0 3px var(--df-ring)}
+.date-filter.is-active .date-filter__step{background:var(--df-surface-active);transform:translateY(1px)}
+.date-filter.is-hover .date-filter__latest{color:var(--df-text)}
+@media (max-width:767px){
+  .date-filter{gap:.35rem}
+  .date-filter__control{height:2.5rem}
+  .date-filter__step{width:2.5rem}
+  .date-filter__select{min-width:9.25rem}
+  .date-filter__label{font-size:.8rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .date-filter__control,
+  .date-filter__step,
+  .date-filter__select,
+  .date-filter__latest{transition:none}
+  .date-filter__step:active:not(:disabled),
+  .date-filter__latest:active{transform:none}
+  .date-filter.is-loading .date-filter__field::before{animation:none}
+}

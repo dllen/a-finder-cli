@@ -2,6 +2,7 @@
 
 import { fetchPicks, fetchDates, fetchStats, postRefresh, pollJob } from './api.js';
 import { $, fillDateSelect, setStatus, setProgress, setLog, showBoardLoading, whenBoardReady, esc, fmt } from './dom.js';
+import { setDateFilterState } from './date-filter.js';
 import { renderPicksBoard } from './table.js';
 import { startDashboard } from './dashboard.js';
 
@@ -72,12 +73,14 @@ function render(date) {
 function loadDates() {
   fetchDates().then(d => {
     const v = fillDateSelect(d.dates);
+    setDateFilterState('d', '', '');
     if (v) render(v);
     else {
       const board = $('board');
       if (board) board.innerHTML = '<div class="empty-state">暂无选股数据</div>';
     }
   }).catch(() => {
+    setDateFilterState('d', 'error', '日期加载失败');
     const board = $('board');
     if (board) board.innerHTML = '<div class="empty-state">日期加载失败</div>';
   });

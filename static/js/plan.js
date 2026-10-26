@@ -2,6 +2,7 @@
 
 import { fetchPlan, fetchPlanDates, fetchHoldings, postPlanBuild, pollJob } from './api.js';
 import { $, fmt, esc, fillDateSelect, setStatus, setProgress, setLog, showBoardLoading, whenBoardReady } from './dom.js';
+import { setDateFilterState } from './date-filter.js';
 import { startDashboard } from './dashboard.js';
 
 const CAPITAL_TIERS = [50000,100000,150000,200000,250000,300000,350000,400000,450000,500000];
@@ -184,9 +185,11 @@ function render(date) {
 function loadDates() {
   fetchPlanDates().then(d => {
     const v = fillDateSelect(d.dates);
+    setDateFilterState('d', '', '');
     if (v) render(v);
     else { const b = $('board'); if (b) b.innerHTML = '<div class="empty-state">暂无 plan 数据</div>'; }
   }).catch(() => {
+    setDateFilterState('d', 'error', '日期加载失败');
     const b = $('board'); if (b) b.innerHTML = '<div class="empty-state">日期加载失败</div>';
   });
 }
