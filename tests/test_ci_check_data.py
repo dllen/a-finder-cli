@@ -145,3 +145,17 @@ def test_latest_weekday_skips_weekend():
     # 2026-10-25 是周日 → 最近工作日应为 10-23（周五）
     assert ci.latest_weekday(dt.date(2026, 10, 25)) == "2026-10-23"
     assert ci.latest_weekday(dt.date(2026, 10, 26)) == "2026-10-26"
+
+
+def test_source_field_passed_through(db):
+    path, conn = db
+    _seed(conn, [f"60000{i}" for i in range(300)], "2026-10-26")
+    _seed_picks(conn, "2026-10-26")
+    _seed_plan(conn, "2026-10-26")
+
+    out = ci.check(path, "2026-10-26", min_codes=250, prices_only=False,
+                   source="d1")
+    assert out["source"] == "d1"
+    out2 = ci.check(path, "2026-10-26", min_codes=250, prices_only=False,
+                    source="direct")
+    assert out2["source"] == "direct"

@@ -94,8 +94,39 @@ jobs:
           restore-keys: |
             hs300-db-
 
-      - name: 增量同步行情（短窗口 + 重试到落地）
+      # 行情来源：优先从 Cloudflare D1（Worker 每天抓好的数据）拉增量；
+      # Worker 不可用/无新数据时（退出码 3 → fell_back=true）回退原来的直连数据源。
+      - name: 从 D1 拉增量（Worker 抓取）
+        id: pull
         if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          D1_SYNC_TOKEN: ${{ secrets.D1_SYNC_TOKEN }}
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+        run: |
+          set -uo pipefail
+          COLD=0
+          [ -f hs300.db ] || COLD=1
+          MAX_DAYS=60
+          # 冷启动（无缓存 DB）时要把历史补回来，否则指标算不出来
+          [ "$COLD" = "1" ] && MAX_DAYS=400
+          echo "从 D1 拉增量：期望交易日 ${EXPECT}，max-days=$MAX_DAYS"
+          set +e
+          python3 scripts/pull_from_d1.py --db hs300.db --max-days "$MAX_DAYS" --github-output
+          rc=$?
+          set -e
+          echo "pull 退出码: $rc"
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::缺少 D1_SYNC_TOKEN，无法从 Worker 拉取"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            # 退出码 3 = Worker 无数据/不可用（会走回退步骤）；
+            # 其他非 0 视为异常，交给后面的行情校验判定，不在此中断。
+            echo "::warning::pull_from_d1.py 异常退出（${rc}），继续走行情校验"
+          fi
+
+      - name: 回退直连（Worker 无数据时）
+        if: steps.pull.outputs.fell_back == 'true'
         env:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}
           # 日常只补最近 60 天：请求少 → 限流概率低 → 当天更可能同步成功
@@ -111,26 +142,17 @@ jobs:
             echo "::notice::无缓存 DB，冷启动：扩大窗口到 400 天"
             export SYNC_DAYS=400 SYNC_CONCURRENCY=8 SYNC_RATE=8 SYNC_RETRIES=3
           fi
-          ok=0
-          for attempt in 1 2 3; do
-            echo "── 第 $attempt 次同步 ──"
-            SYNC_END_DATE="$EXPECT" \
-              bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
-            if python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" --prices-only; then
-              ok=1; break
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "行情未就绪（数据源可能延迟），120s 后重试…"
-              sleep 120
-            fi
-          done
-          if [ "$ok" = "1" ]; then
-            echo "prices_ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prices_ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::三次同步后期望交易日 $EXPECT 的行情仍不完整"
-          fi
-        id: sync
+          echo "::warning::D1 无新数据或不可用，回退直连数据源"
+          SYNC_END_DATE="$EXPECT" \
+            bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
+
+      - name: 行情校验（决定是否继续补抓）
+        if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+        run: |
+          python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" \
+            --prices-only --source "${{ steps.pull.outputs.fell_back == 'true' && 'direct' || 'd1' }}"
 
       - name: 选股 + 计划 + 组合 + 可转债
         if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
@@ -178,7 +200,8 @@ jobs:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}
         run: |
           set -uo pipefail
-          python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT"
+          python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" \
+            --source "${{ steps.pull.outputs.fell_back == 'true' && 'direct' || 'd1' }}"
           rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::数据不完整：期望 $EXPECT，详见上方校验输出（站点已按最新可得数据部署）"

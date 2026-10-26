@@ -15,6 +15,7 @@ workflow 会绿着把昨天的数据当今天发布。这个脚本把「数据�
   python3 scripts/ci_check_data.py --db hs300.db
   python3 scripts/ci_check_data.py --db hs300.db --expect 2026-10-26 --json
   python3 scripts/ci_check_data.py --db hs300.db --prices-only   # 只校验行情
+  python3 scripts/ci_check_data.py --db hs300.db --source d1   # 记录数据来源（d1/direct）
   python3 scripts/ci_check_data.py --db hs300.db --github-output   # 写 data_ok=true/false
 
 退出码：0 = 全部通过；1 = 有检查未通过；2 = 参数/库错误。
@@ -47,7 +48,8 @@ def _q(conn: sqlite3.Connection, sql: str, params: Tuple = ()) -> Optional[objec
     return row[0] if row else None
 
 
-def check(db_path: str, expect: str, min_codes: int, prices_only: bool) -> Dict:
+def check(db_path: str, expect: str, min_codes: int, prices_only: bool,
+          source: str = "unknown") -> Dict:
     conn = sqlite3.connect(db_path)
     try:
         latest_price = _q(conn, "SELECT MAX(trade_date) FROM daily_prices")
@@ -56,6 +58,7 @@ def check(db_path: str, expect: str, min_codes: int, prices_only: bool) -> Dict:
                 "ok": False,
                 "expect": expect,
                 "latest_price": None,
+                "source": source,
                 "reasons": ["daily_prices 表为空（行情未同步）"],
             }
 
@@ -107,6 +110,7 @@ def check(db_path: str, expect: str, min_codes: int, prices_only: bool) -> Dict:
             "pick_date": pick_date,
             "pick_rows": pick_count,
             "plan_date": plan_date,
+            "source": source,
             "reasons": reasons,
         }
     finally:
@@ -119,6 +123,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--expect", default="", help="期望交易日 YYYY-MM-DD（默认最近工作日）")
     ap.add_argument("--min-codes", type=int, default=250, help="期望日应有行情的最少股票数")
     ap.add_argument("--prices-only", action="store_true", help="只校验行情（同步重试阶段用）")
+    ap.add_argument("--source", default="unknown",
+                    help="数据来源：d1 / direct / unknown")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--github-output", action="store_true", help="把 data_ok= 写入 $GITHUB_OUTPUT")
     args = ap.parse_args(argv)
@@ -129,7 +135,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     expect = args.expect or latest_weekday(dt.date.today())
     try:
-        result = check(args.db, expect, args.min_codes, args.prices_only)
+        result = check(args.db, expect, args.min_codes, args.prices_only,
+                       source=args.source)
     except sqlite3.Error as exc:
         print(f"::error::读取数据库失败: {exc}", file=sys.stderr)
         return 2
@@ -139,6 +146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         print("=== 数据校验 ===")
         print(f"  期望交易日     : {result['expect']}")
+        print(f"  数据来源       : {result.get('source', 'unknown')}")
         print(f"  行情最新日期   : {result['latest_price']}")
         print(f"  该日股票数     : {result.get('codes_on_expect', 0)}"
               f"（最新日 {result.get('codes_on_latest', 0)}，阈值 {result['min_codes']}）")
