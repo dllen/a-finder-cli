@@ -4,7 +4,7 @@ import {
   parseJobId, chunkSizeFor,
 } from './jobs.js';
 import {
-  listSymbols, ensureJob, activeJob, upsertPrices, updateJob,
+  listSymbols, ensureJob, activeJob, getJob, upsertPrices, updateJob,
 } from './repo.js';
 import { fetchBars, fetchRange, pickBars } from './sources.js';
 
@@ -24,14 +24,22 @@ export async function runMarketSync(env) {
   // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
   if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
   const bj = beijingNow();
-  const job = await activeJob(env.DB);
 
-  // 15:35 之后自动建当天任务（幂等），无需外部触发
-  if (!job && isTradingWindow(bj)) {
+  // 优先级：当天的日报 > 回填。回填可能跨天（301 只 / 5 只每轮 ≈ 2 小时），
+  // 若不优先日报，当天行情会被回填拖住不抓。
+  let active = null;
+  const todayJob = await getJob(env.DB, bj.date);
+  const todayRunning = todayJob && (todayJob.status === 'pending' || todayJob.status === 'running');
+  if (todayRunning) {
+    active = todayJob;
+  } else if (!todayJob && isTradingWindow(bj)) {
     const codes = await listSymbols(env.DB);
-    if (codes.length) await ensureJob(env.DB, bj.date, codes.length);
+    if (codes.length) {
+      await ensureJob(env.DB, bj.date, codes.length);
+      active = await getJob(env.DB, bj.date);
+    }
   }
-  const active = job || await activeJob(env.DB);
+  if (!active) active = await activeJob(env.DB);
   if (!shouldRun(active, bj)) {
     return {
       skipped: 'no-active-job-in-window',

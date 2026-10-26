@@ -18,6 +18,12 @@ export async function ensureJob(DB, id, total) {
 }
 
 /** 当前活跃任务（没跑到 done/failed 的那条）；没有则返回 null */
+export async function getJob(DB, id) {
+  return DB.prepare(
+    'SELECT id, status, cursor, total, attempts, note FROM sync_jobs WHERE id=?',
+  ).bind(id).first();
+}
+
 export async function activeJob(DB) {
   return DB.prepare(
     'SELECT id, status, cursor, total, attempts, note FROM sync_jobs ' +

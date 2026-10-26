@@ -103,9 +103,10 @@ export function backfillJobId(date, days) {
 /**
  * 每轮的抓取只数。
  * 日报：40（响应 ~200B/只，解析可忽略）。
- * 回填：8（每只 ~25KB/250 行，8 只约 200KB，JSON 解析 2-4ms，仍在 Free 的 10ms 内）。
- * 51 轮 × 2 分钟 ≈ 105 分钟；调成 6 会跑不完 15:35–23:00 的时间窗。
+ * 回填：5（腾讯一次最多给 640 根 ≈ 58KB/只，5 只约 290KB，JSON 解析 3-6ms，
+ * 留出余量给 D1 写入）。实测 8 只会撞 Free 计划 10ms CPU 上限：
+ * 数据写进去了但 updateJob 没执行到，游标不推进 → 每轮重复抓同样几只。
  */
 export function chunkSizeFor(kind) {
-  return kind === 'backfill' ? 8 : CHUNK_SIZE;
+  return kind === 'backfill' ? 5 : CHUNK_SIZE;
 }
