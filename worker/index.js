@@ -275,6 +275,7 @@ async function runMarketSync(env) {
 
   const rows = [];
   const failed = [];
+  try {
   // 并发池 6（Free 计划同时连接上限）
   for (let i = 0; i < slice.length; i += 6) {
     const batch = slice.slice(i, i + 6);
@@ -306,6 +307,14 @@ async function runMarketSync(env) {
   });
   await updateJob(env.DB, next);
   console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
+  } catch (err) {
+    // 任何未捕获错误都写回任务，否则任务会静默卡在 running（本次回填就是这样卡的）
+    const failedState = advanceJob(active, {
+      advance: 0, failedCodes: [], hardFailure: String(err).slice(0, 200),
+    });
+    await updateJob(env.DB, { ...failedState, status: failedState.status === 'done' ? 'running' : failedState.status });
+    console.error(`sync ${active.id} 异常:`, String(err).slice(0, 300));
+  }
 }
 
 /** YYYY-MM-DD 平移若干天（回填窗口起点） */

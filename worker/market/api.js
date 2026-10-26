@@ -4,6 +4,7 @@ import {
   missingCodes,
 } from './repo.js';
 import { backfillJobId } from './jobs.js';
+import { activeJob } from './repo.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -56,6 +57,12 @@ export async function handleMarketApi(request, env, path) {
   if (path === '/api/market/dates') {
     const since = new URL(request.url).searchParams.get('since') || '1970-01-01';
     return json({ dates: await datesSince(env.DB, since) });
+  }
+
+  // 任务状态：排查「抓取卡住/失败」时不用 wrangler tail
+  if (path === '/api/market/job' && request.method === 'GET') {
+    const job = await activeJob(env.DB);
+    return json({ job: job || null });
   }
 
   const dayMatch = path.match(/^\/api\/market\/day\/([^/]+)$/);

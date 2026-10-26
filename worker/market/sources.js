@@ -143,12 +143,13 @@ export async function fetchBars(code, targetDate) {
  */
 export async function fetchRange(code, beg, end) {
   const symbol = tencentSymbol(code);
-  const url = `${BASE}/newfqkline/get?param=${symbol},day,${beg},${end},800,bfq`;
+  // 640 是腾讯该接口的单次根数上限（传 800 会返回空/错误）
+  const url = `${BASE}/newfqkline/get?param=${symbol},day,${beg},${end},640,bfq`;
   const rows = parseNewfq(await getJson(url, 'https://gu.qq.com/'), code);
   if (rows.length) {
     return { source: 'tencent-newfq', rows: computePctChange(rows) };
   }
-  const fb = `${BASE}/fqkline/get?param=${symbol},day,${beg},${end},800,bfq`;
+  const fb = `${BASE}/fqkline/get?param=${symbol},day,${beg},${end},640,bfq`;
   const rows2 = parseFq(await getJson(fb, 'https://gu.qq.com/'), code);
   return { source: rows2.length ? 'tencent-fq' : 'none', rows: computePctChange(rows2) };
 }

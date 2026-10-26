@@ -130,6 +130,14 @@ test('未配置 SYNC_TOKEN 时只读端点公开（软鉴权）', async () => {
   assert.equal(res.status, 200);
 });
 
+test('job 端点返回活跃任务（诊断用）', async () => {
+  const res = await handleMarketApi(
+    new Request('https://x/api/market/job', { headers: { 'X-Sync-Token': 'token-123' } }),
+    env(), '/api/market/job',
+  );
+  assert.equal(res.status, 200);
+});
+
 test('未知子路径 → null（交回主分发器 404）', async () => {
   const out = await handleMarketApi(
     new Request('https://x/api/market/unknown', { headers: { 'X-Sync-Token': 'token-123' } }),

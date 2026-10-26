@@ -43,14 +43,19 @@ const UPSERT = 'INSERT INTO market_prices ' +
   'volume=excluded.volume, amount=excluded.amount, turnover=excluded.turnover, ' +
   'pct_change=excluded.pct_change';
 
-export async function upsertPrices(DB, rows) {
+export async function upsertPrices(DB, rows, batchSize = 200) {
   if (!rows.length) return;
-  const stmts = rows.map((r) => DB.prepare(UPSERT).bind(
-    r.code, r.trade_date, r.open, r.close, r.high, r.low,
-    r.volume, r.amount, r.turnover, r.pct_change,
-  ));
-  await DB.batch(stmts);
+  // 回填一轮可能带几千行，单次 batch 过大会失败；按 batchSize 拆成多次 batch()。
+  // 每次 batch() 只计 1 次查询（Free 计划上限 50 次/调用），4000 行 = 20 次。
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const stmts = rows.slice(i, i + batchSize).map((r) => DB.prepare(UPSERT).bind(
+      r.code, r.trade_date, r.open, r.close, r.high, r.low,
+      r.volume, r.amount, r.turnover, r.pct_change,
+    ));
+    await DB.batch(stmts);
+  }
 }
+
 
 const UPSERT_SYMBOL = 'INSERT INTO market_symbols (code, name, updated_at) ' +
   "VALUES (?, ?, datetime('now')) " +
