@@ -90,30 +90,22 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // ---- TEMP PROBE ②（多源可达性 + 字段完整性；Task 1 结束即删除）----
+    // ---- TEMP PROBE ③（不复权日线源 + 成交额/换手率字段；Task 1 结束即删除）----
     if (path === '/api/probe' && method === 'GET') {
       const code = '600519';
       const date = '2026-10-23';
-      const c = date.replace(/-/g, '');
       const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
       const targets = [
-        ['em_push2his',
-          'https://push2his.eastmoney.com/api/qt/stock/kline/get' +
-          `?fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
-          `&klt=101&fqt=0&secid=1.${code}&beg=${c}&end=${c}`,
-          `https://quote.eastmoney.com/sh${code}.html`],
-        ['em_push2',
-          'https://push2.eastmoney.com/api/qt/stock/kline/get' +
-          `?fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
-          `&klt=101&fqt=0&secid=1.${code}&beg=${c}&end=${c}`,
-          `https://quote.eastmoney.com/sh${code}.html`],
-        ['tx_qfq',
-          `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh${code},day,${date},${date},640,qfq`,
+        ['tx_kline_bfq',
+          `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=sh${code},day,${date},${date},10`,
           'https://gu.qq.com/'],
-        ['tx_qt',
-          `https://qt.gtimg.cn/q=sh${code}`,
+        ['tx_newfq_bfq',
+          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,${date},${date},10,qfq`,
           'https://gu.qq.com/'],
+        ['sina_daily',
+          `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=sh${code}&scale=240&ma=no&datalen=3`,
+          'https://finance.sina.com.cn/'],
         ['sina_hq',
           `https://hq.sinajs.cn/list=sh${code}`,
           'https://finance.sina.com.cn/'],
@@ -123,7 +115,7 @@ export default {
         try {
           const r = await fetch(url, { headers: { 'User-Agent': ua, 'Referer': referer } });
           const text = await r.text();
-          out[name] = { status: r.status, body: text.slice(0, 260) };
+          out[name] = { status: r.status, body: text.slice(0, 400) };
         } catch (e) {
           out[name] = { status: 0, error: String(e).slice(0, 160) };
         }
