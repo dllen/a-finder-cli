@@ -90,6 +90,18 @@ jobs:
           printf '%s' "$GITHUB_DISPATCH_TOKEN" | npx --yes wrangler@latest secret put GITHUB_DISPATCH_TOKEN
           echo "已同步 GITHUB_DISPATCH_TOKEN"
 
+      - name: 同步 SYNC_TOKEN（可选）
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          # /api/market/* 的共享密钥；与 GH 侧的 D1_SYNC_TOKEN 必须是同一个值
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::notice::未配置 SYNC_TOKEN，/api/market/* 将始终返回 401"
+            exit 0
+          fi
+          printf '%s' "$SYNC_TOKEN" | npx --yes wrangler@latest secret put SYNC_TOKEN
+          echo "已同步 SYNC_TOKEN"
+
       - name: 部署 Worker
         run: npx --yes wrangler@latest deploy
 

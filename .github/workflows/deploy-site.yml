@@ -96,6 +96,27 @@ jobs:
 
       # 行情来源：优先从 Cloudflare D1（Worker 每天抓好的数据）拉增量；
       # Worker 不可用/无新数据时（退出码 3 → fell_back=true）回退原来的直连数据源。
+      - name: 上传成分股到 D1（每日全量 upsert）
+        if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          D1_SYNC_TOKEN: ${{ secrets.D1_SYNC_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${D1_SYNC_TOKEN}" ]; then
+            echo "::notice::未配置 D1_SYNC_TOKEN，跳过成分股上传"
+            exit 0
+          fi
+          if [ ! -f hs300.db ]; then
+            echo "::notice::无本地 DB（冷启动），成分股待直连回退补齐后再上传"
+            exit 0
+          fi
+          # 新进沪深300的票若不在 market_symbols 里，Worker 永远不会抓它
+          python3 -c "import json,sqlite3;c=sqlite3.connect('hs300.db');rows=[{'code':r[0],'name':r[1]} for r in c.execute('SELECT code,name FROM hs300_metadata ORDER BY code')];print(json.dumps({'symbols':rows},ensure_ascii=False))" > /tmp/symbols.json
+          curl -sf --max-time 30 -X POST https://ycu.space/api/market/symbols \
+            -H "X-Sync-Token: ${D1_SYNC_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/symbols.json | head -c 200 || echo "::warning::成分股上传失败（Worker 不可用？）"
+
       - name: 从 D1 拉增量（Worker 抓取）
         id: pull
         if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
@@ -147,6 +168,9 @@ jobs:
             bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
 
       - name: 行情校验（决定是否继续补抓）
+        # 校验失败不阻断后续步骤：站点要尽量用「当前可得的最新数据」更新，
+        # 数据不完整的红由最后的「数据完整性门禁」统一判定。
+        continue-on-error: true
         if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         env:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}

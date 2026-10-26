@@ -93,6 +93,22 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
   不要当成 bug。线上数据以 CI 为准，本地只用于调试。
 
+# Worker 抓取行情（D1 为抓取落点）
+- **架构**：Worker 每 2 分钟 cron 驱动分片状态机（`worker/market/jobs.js`，每片 40 只，
+  Free 计划子请求上限 50），北京 15:35–23:00 抓当天日线写 D1 的 `market_prices`，
+  游标存 `sync_jobs`；GH 用 `scripts/pull_from_d1.py` 拉增量（`X-Sync-Token` 鉴权），
+  Worker 不可用时回退直连数据源。
+- **数据源**：东财从 Cloudflare 不可达（实测 520/502），主源为腾讯
+  `newfqkline` + `bfq`（**不复权**，与 Python 侧 `fqt=0` 口径一致；含换手率与成交额）；
+  降级链 `newfqkline → fqkline → 新浪 → 放弃`。复权价会静默破坏历史序列，别改。
+- **开关**：Worker secret `SYNC_ENABLED=true` 才抓；置空即回到「只触发 GH」的旧模式。
+- **鉴权**：Worker secret `SYNC_TOKEN` ↔ 仓库 secret `D1_SYNC_TOKEN`（同值）。
+- **历史数据**：Actions 手动跑 `d1-seed` workflow（用 CI 缓存里的 hs300.db 生成
+  SQL 灌入 D1，幂等），不要本地跑（本机通常没有 wrangler 登录态）。
+- **测试**：`node --test tests/test_worker_market_*.mjs`（sources/jobs/repo/api）
+  + `pytest tests/test_worker_market_parity.py`（与本地库真实行情比对）
+  + `pytest tests/test_pull_from_d1.py`。
+
 # CI 自动部署 Worker（deploy-worker.yml）
 - `.github/workflows/deploy-worker.yml`：`worker/**` 或 `wrangler.toml` 推送到 main 时自动部署
   Cloudflare Worker（D1 建表幂等 → 可选同步 DECIDE_* secrets → wrangler deploy → health 自检）。

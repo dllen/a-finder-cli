@@ -1,0 +1,81 @@
+name: d1-seed
+
+# 一次性 / 按需：把 CI 缓存里的 hs300.db 历史行情灌进 Cloudflare D1。
+# 为什么不本地跑：开发者机器上通常没有 wrangler 登录态，CI 有 CLOUDFLARE_API_TOKEN。
+# 幂等：seed SQL 全是 INSERT OR REPLACE，可重复执行。
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "只导入该日期之后（YYYY-MM-DD，留空=全量）"
+        required: false
+        default: ""
+
+concurrency:
+  group: d1-seed
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: 断言缓存里有 DB
+        run: |
+          if [ ! -f hs300.db ]; then
+            echo "::error::缓存中没有 hs300.db（先跑一次成功的 deploy-site 建立缓存）"
+            exit 1
+          fi
+          python3 -c "import sqlite3;print('本地 daily_prices 行数:', sqlite3.connect('hs300.db').execute('SELECT COUNT(*) FROM daily_prices').fetchone()[0])"
+
+      - name: 建表（幂等）
+        run: npx --yes wrangler@latest d1 execute a-finder --file=worker/schema.sql --remote --yes
+
+      - name: 生成 seed SQL
+        run: |
+          SINCE="${{ inputs.since }}"
+          if [ -n "$SINCE" ]; then
+            python3 scripts/seed_d1.py --db hs300.db --out /tmp/d1_seed.sql --since "$SINCE"
+          else
+            python3 scripts/seed_d1.py --db hs300.db --out /tmp/d1_seed.sql
+          fi
+          ls -lh /tmp/d1_seed.sql
+
+      - name: 灌入 D1
+        run: npx --yes wrangler@latest d1 execute a-finder --file=/tmp/d1_seed.sql --remote --yes
+
+      - name: 核对行数（应与本地一致）
+        run: |
+          echo "=== D1 market_prices ==="
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS rows, COUNT(DISTINCT trade_date) AS days, MAX(trade_date) AS latest FROM market_prices"
+          echo "=== D1 market_symbols ==="
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS symbols FROM market_symbols"
+          echo "=== 本地参照 ==="
+          python3 -c "import sqlite3;print(sqlite3.connect('hs300.db').execute('SELECT COUNT(*), COUNT(DISTINCT trade_date), MAX(trade_date) FROM daily_prices').fetchone())"
