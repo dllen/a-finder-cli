@@ -7,6 +7,14 @@
 // 该功能需要 secret GITHUB_DISPATCH_TOKEN（fine-grained PAT，
 // 仅授权本仓库 Actions: Read and write）。
 import { buildCookie, clearCookie, readAuth, signToken } from './auth.js';
+import { handleMarketApi } from './market/api.js';
+import {
+  beijingNow, isTradingWindow, planChunk, shouldRun, advanceJob,
+} from './market/jobs.js';
+import {
+  listSymbols, ensureJob, activeJob, upsertPrices, updateJob,
+} from './market/repo.js';
+import { fetchBars, pickBars } from './market/sources.js';
 
 const MAX_AGE = 7 * 24 * 3600;           // 7 天（秒）
 const ALLOWED_ORIGINS = [
@@ -89,6 +97,10 @@ export default {
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
+
+    // /api/market/* 与 /api/sync/start 由独立模块处理（自带鉴权）
+    const marketRes = await handleMarketApi(request, env, path);
+    if (marketRes) return marketRes;
 
     // ---- health ----
     if (path === '/api/decide/health' && method === 'GET') {
@@ -226,5 +238,58 @@ export default {
         throw new Error(`dispatch failed: HTTP ${r.status} ${r.detail.slice(0, 200)}`);
       }
     })());
+
+    // 2) 抓取状态机：每 2 分钟一次的 cron 只在这里干活
+    ctx.waitUntil(runMarketSync(env));
   },
 };
+
+/** 抓取驱动：读活跃任务 → 抓一片 → upsert → 推进游标。非交易时段秒退。 */
+async function runMarketSync(env) {
+  if (env.SYNC_ENABLED !== 'true') return;          // 开关未打开时完全不抓
+  const bj = beijingNow();
+  const job = await activeJob(env.DB);
+
+  // 15:35 之后自动建当天任务（幂等），无需外部触发
+  if (!job && isTradingWindow(bj)) {
+    const codes = await listSymbols(env.DB);
+    if (codes.length) await ensureJob(env.DB, bj.date, codes.length);
+  }
+  const active = job || await activeJob(env.DB);
+  if (!shouldRun(active, bj)) return;
+
+  const codes = await listSymbols(env.DB);
+  const { slice, done } = planChunk(codes, active.cursor);
+  if (!slice.length) {
+    await updateJob(env.DB, { ...active, status: 'done', cursor: active.total });
+    return;
+  }
+
+  const rows = [];
+  const failed = [];
+  // 并发池 6（Free 计划同时连接上限）
+  for (let i = 0; i < slice.length; i += 6) {
+    const batch = slice.slice(i, i + 6);
+    const results = await Promise.all(batch.map(async (code) => {
+      try {
+        const { rows: bars } = await fetchBars(code, bj.date);
+        return { code, rows: pickBars(bars, bj.date) };
+      } catch {
+        return { code, rows: [] };
+      }
+    }));
+    for (const r of results) {
+      if (r.rows.length) rows.push(...r.rows);
+      else failed.push(r.code);
+    }
+  }
+
+  await upsertPrices(env.DB, rows);
+  const next = advanceJob(active, {
+    advance: slice.length,
+    failedCodes: failed,
+    hardFailure: rows.length === 0 ? 'no rows from any source' : null,
+  });
+  await updateJob(env.DB, next);
+  console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
+}
