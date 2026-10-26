@@ -259,7 +259,10 @@ async function runMarketSync(env) {
   if (!shouldRun(active, bj)) return;
 
   const codes = await listSymbols(env.DB);
-  const { slice, done } = planChunk(codes, active.cursor);
+  // 目标日期以「任务 id」为准，不用 bj.date：隔夜未完成的 job 的 id 是更早的日期，
+  // 用今天去抓却推进昨天的游标会写错数据。
+  const targetDate = active.id;
+  const { slice } = planChunk(codes, active.cursor);
   if (!slice.length) {
     await updateJob(env.DB, { ...active, status: 'done', cursor: active.total });
     return;
@@ -272,8 +275,8 @@ async function runMarketSync(env) {
     const batch = slice.slice(i, i + 6);
     const results = await Promise.all(batch.map(async (code) => {
       try {
-        const { rows: bars } = await fetchBars(code, bj.date);
-        return { code, rows: pickBars(bars, bj.date) };
+        const { rows: bars } = await fetchBars(code, targetDate);
+        return { code, rows: pickBars(bars, targetDate) };
       } catch {
         return { code, rows: [] };
       }
