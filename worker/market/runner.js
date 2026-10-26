@@ -50,6 +50,7 @@ export async function runMarketSync(env, opts = {}) {
   }
   if (!active) active = await activeJob(env.DB);
   if (!shouldRun(active, bj)) {
+    await beat(`skip:${active ? active.id + '/' + active.status : 'no-active-job'}`);
     return {
       skipped: 'no-active-job-in-window',
       beijing: bj,
