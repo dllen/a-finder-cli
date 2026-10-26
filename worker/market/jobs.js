@@ -100,7 +100,12 @@ export function backfillJobId(date, days) {
   return `backfill:${date}:${days}`;
 }
 
-/** 每轮的抓取只数：回填的响应大得多，必须显著调小以免撞 CPU 10ms 上限 */
+/**
+ * 每轮的抓取只数。
+ * 日报：40（响应 ~200B/只，解析可忽略）。
+ * 回填：8（每只 ~25KB/250 行，8 只约 200KB，JSON 解析 2-4ms，仍在 Free 的 10ms 内）。
+ * 51 轮 × 2 分钟 ≈ 105 分钟；调成 6 会跑不完 15:35–23:00 的时间窗。
+ */
 export function chunkSizeFor(kind) {
-  return kind === 'backfill' ? 6 : CHUNK_SIZE;
+  return kind === 'backfill' ? 8 : CHUNK_SIZE;
 }
