@@ -64,16 +64,31 @@ cmd_sync_incremental() {
     exit 1
   fi
   # 增量 K 线：区间 + gap-fill，并发；端点不可达时 fail-fast（10s 超时不重试）
-  local start end
-  end="$(date +%F)"
-  if ! start="$(date -d "$end -1 year" +%F 2>/dev/null)"; then
-    start="$(date -v-1y +%F)"
+  # 可通过环境变量覆盖，供 CI 使用更短的窗口（更少请求 = 更少限流）：
+  #   SYNC_DAYS=45 SYNC_RETRIES=2 SYNC_CONCURRENCY=6 SYNC_RATE=6
+  #   SYNC_END_DATE=2026-10-26（默认今天；CI 显式传北京日期避免 UTC 跨日）
+  local start end days="${SYNC_DAYS:-365}" retries="${SYNC_RETRIES:-1}"
+  local concurrency="${SYNC_CONCURRENCY:-8}" rate="${SYNC_RATE:-8}"
+  end="${SYNC_END_DATE:-$(date +%F)}"
+  if ! start="$(date -d "$end -$days days" +%F 2>/dev/null)"; then
+    start="$(date -v-"${days}"d -j -f "%Y-%m-%d" "$end" +%F 2>/dev/null)"
   fi
+  if [[ -z "$start" ]]; then
+    # 兜底：按秒换算
+    start="$(python3 -c "import datetime as d,sys;print((d.date.fromisoformat('$end')-d.timedelta(days=$days)).isoformat())")"
+  fi
+  echo "增量区间: $start ~ $end（$days 天, 并发 $concurrency, 重试 $retries）"
   run_cmd sync-hs300-meta --db "$db" || echo "元数据同步失败，继续执行"
+  local sync_rc=0
   run_cmd sync-hs300-range --start "$start" --end "$end" --db "$db" \
-    --gap-fill --concurrency 8 --rate 8 --retries 1 || echo "增量行情同步失败，继续执行"
+    --gap-fill --concurrency "$concurrency" --rate "$rate" --retries "$retries" || sync_rc=$?
+  if [[ "$sync_rc" -ne 0 ]]; then
+    echo "增量行情同步失败（exit $sync_rc），继续执行后续步骤" >&2
+  fi
   if [[ "$pick_mode" == "pick-history" ]]; then
-    run_py "$ROOT_DIR/pick_history.py" --db "$db" --top "$top"
+    # 行情已在上一步同步完，这里 --no-sync 避免 pick_history 内部再跑一遍增量同步
+    # （那是第二次全量请求，纯浪费配额、提升被限流概率）
+    run_py "$ROOT_DIR/pick_history.py" --db "$db" --top "$top" --no-sync
   else
     run_cmd "$pick_mode" --db "$db" --top "$top" "${@:4}"
   fi

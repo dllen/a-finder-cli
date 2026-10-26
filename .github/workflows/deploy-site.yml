@@ -12,6 +12,9 @@ on:
     # 在 07:35 UTC 兜底发 workflow_dispatch（见 worker/index.js scheduled）。
     - cron: "30 7 * * *"
     - cron: "45 7 * * *"
+    - cron: "30 8 * * *"
+    # 补救跑：北京 16:30（08:30 UTC）。15:30 那班若因数据源延迟/限流没拿到当天行情，
+    # 一小时后再试一次；若线上已发布当天数据则整轮跳过（见 freshness 步骤）。
   workflow_dispatch:
 
 concurrency:
@@ -39,8 +42,13 @@ jobs:
 
       - name: 判定 A 股交易日
         id: trade-day
+        env:
+          TZ: Asia/Shanghai          # 让 Python 的 date.today() 取北京日期
         run: |
           python -m pip install chinese_calendar
+          # 北京日期：runner 是 UTC，07:30 UTC 与北京同一天，但手动 dispatch
+          # 可能落在北京 00:00~08:00（UTC 前一天），必须显式用 +08 的日期。
+          echo "today_bj=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
           python - <<'PY'
           import datetime, os
           from chinese_calendar import is_workday
@@ -53,8 +61,30 @@ jobs:
               print(f"{today} 非交易日（周末或节假日），跳过")
           PY
 
-      - name: Restore hs300.db from cache
+      - name: 检查是否需要跑（补救 cron 遇到「已发布」则跳过）
+        id: freshness
         if: steps.trade-day.outputs.is_trade_day == 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+        run: |
+          # 主 cron（07:30/07:45）永远跑：即使线上已有当天 picks，计划/组合/转债也要更新。
+          # 只有补救 cron（08:30 UTC）才做「已发布就跳过」的短路。
+          if [ "${{ github.event.schedule }}" != "30 8 * * *" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          published=$(curl -sf --max-time 20 https://dllen.github.io/a-finder-cli/data/dates.json \
+            | python3 -c "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")
+          if [ "$published" = "$EXPECT" ]; then
+            echo "::notice::线上已发布 $EXPECT，补救跑跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "线上最新 $published ≠ 期望 $EXPECT，继续补救"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore hs300.db from cache
+        if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: hs300.db
@@ -64,43 +94,94 @@ jobs:
           restore-keys: |
             hs300-db-
 
-      - name: 增量同步行情（多源降级，失败容忍）
-        if: steps.trade-day.outputs.is_trade_day == 'true'
+      - name: 增量同步行情（短窗口 + 重试到落地）
+        if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+          # 日常只补最近 60 天：请求少 → 限流概率低 → 当天更可能同步成功
+          SYNC_DAYS: "60"
+          SYNC_RETRIES: "2"
+          SYNC_CONCURRENCY: "6"
+          SYNC_RATE: "6"
         run: |
-          set +e
-          bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -30
-          set -e
-        continue-on-error: true
+          set -uo pipefail
+          COLD=0
+          [ -f hs300.db ] || COLD=1
+          if [ "$COLD" = "1" ]; then
+            echo "::notice::无缓存 DB，冷启动：扩大窗口到 400 天"
+            export SYNC_DAYS=400 SYNC_CONCURRENCY=8 SYNC_RATE=8 SYNC_RETRIES=3
+          fi
+          ok=0
+          for attempt in 1 2 3; do
+            echo "── 第 $attempt 次同步 ──"
+            SYNC_END_DATE="$EXPECT" \
+              bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
+            if python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" --prices-only; then
+              ok=1; break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "行情未就绪（数据源可能延迟），120s 后重试…"
+              sleep 120
+            fi
+          done
+          if [ "$ok" = "1" ]; then
+            echo "prices_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prices_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::三次同步后期望交易日 $EXPECT 的行情仍不完整"
+          fi
+        id: sync
 
       - name: 选股 + 计划 + 组合 + 可转债
-        if: steps.trade-day.outputs.is_trade_day == 'true'
+        if: steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         env:
           BACKFILL_ANCHOR: "2026-08-01"
         run: |
           set -e
-          python stock_cli.py plan build --db hs300.db --date "$(date +%F)"
-          python stock_cli.py plan build-all --db hs300.db \
+          # 计划日期对齐「库里真正的行情最新日」，而不是硬编码今天：
+          # 同步失败时不会为一个没有行情的日期生成空计划，也不会让后续步骤中断。
+          DATA_DATE=$(python3 -c "import sqlite3;print(sqlite3.connect('hs300.db').execute('SELECT MAX(trade_date) FROM daily_prices').fetchone()[0])")
+          echo "行情最新日: $DATA_DATE（期望交易日 ${{ steps.trade-day.outputs.today_bj }}）"
+          echo "## 数据日期 $DATA_DATE" >> "$GITHUB_STEP_SUMMARY"
+          python stock_cli.py plan build --db hs300.db --date "$DATA_DATE"
+          python stock_cli.py plan build-all --db hs300.db --date "$DATA_DATE" \
             --strategy linyuan --tiers 50000,100000,150000,200000,250000,300000,350000,400000,450000,500000
           python stock_cli.py plan build-all --backfill --since "$BACKFILL_ANCHOR" --db hs300.db
           # 可转债：全市场扫描慢 + 易限流，失败不中断
           python stock_cli.py cb-picks --top 20 --db hs300.db --concurrency 2 --rate 4 || true
 
       - name: 导出静态站
-        if: steps.trade-day.outputs.is_trade_day == 'true'
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         run: python export_json.py --db hs300.db --out site
 
       - name: Save hs300.db to cache
-        if: steps.trade-day.outputs.is_trade_day == 'true'
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: hs300.db
           key: hs300-db-${{ github.run_id }}
 
       - name: 部署 gh-pages
-        if: steps.trade-day.outputs.is_trade_day == 'true'
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./site
           force_orphan: true
-          commit_message: "site: 自动更新 $(date +%F)"
+          commit_message: "site: 自动更新 ${{ steps.trade-day.outputs.today_bj }}"
+
+      # 门禁：站点已经用「当前拿得到的最新数据」更新了（对用户始终可用），
+      # 但数据不完整时让 workflow 变红，避免悄无声息地把旧数据当新数据发布。
+      - name: 数据完整性门禁
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+        run: |
+          set -uo pipefail
+          python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT"
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::数据不完整：期望 $EXPECT，详见上方校验输出（站点已按最新可得数据部署）"
+            exit 1
+          fi
+          echo "✅ 数据校验通过：$EXPECT"

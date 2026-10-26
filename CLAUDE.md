@@ -67,6 +67,20 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   同步→选股→计划→组合→转债→导出→部署 gh-pages。用 chinese_calendar 判交易日，
   数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
+- **增量同步做了三件事保证「准 + 快」**：
+  1. 缺口按**市场日历**判定（`db_repository.get_market_trade_dates` +
+     `sync_service._build_missing_segments`）：只有全市场真有行情的日期才算应有数据，
+     长假/未开盘日不再反复回补；相邻缺失点在市场日历上相连时合并成一段，减少请求。
+  2. 日常窗口只补最近 60 天（冷启动 400 天），并发/限流下调到 6/6、重试 2 次；
+     同步后跑 `scripts/ci_check_data.py --prices-only` 校验，未落地就隔 120s 重试，
+     最多 3 轮 —— 数据源 15:30 后才出数的情况能自动等到。
+  3. `pick_history` 在同步后以 `--no-sync` 运行，避免内部再跑一遍增量同步（纯浪费配额）；
+     计划日期对齐 `MAX(daily_prices.trade_date)` 而不是硬编码今天，绝不生成空计划。
+- **数据门禁**：部署结束后再跑一次 `scripts/ci_check_data.py`（行情最新日/覆盖股票数/
+  选股日期/计划日期），不达标则 workflow 变红（站点仍按最新可得数据发布，对用户可用）。
+  部署/缓存/导出步骤带 `always()`，前面失败也照常发布。
+- **补救跑**：08:30 UTC（北京 16:30）第三个 cron，15:30 那班失败时再试一次；
+  若线上 `dates.json` 已是当天则整轮跳过（freshness 步骤）。
 - GitHub schedule 高负载会延迟/丢弃，有三重保险：备用 cron 07:45 UTC、
   Cloudflare Workers Cron 07:35 UTC 兜底发 workflow_dispatch（`worker/index.js` 的
   `scheduled` handler，需 secret `GITHUB_DISPATCH_TOKEN`——fine-grained PAT 仅授本仓库

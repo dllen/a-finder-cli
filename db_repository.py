@@ -365,6 +365,25 @@ def get_trade_dates(conn: sqlite3.Connection, code: str, start_date: str, end_da
     return [row[0] for row in cur.fetchall()]
 
 
+def get_market_trade_dates(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> List[str]:
+    """区间内「全市场出现过行情」的交易日（市场日历）。
+
+    用于增量同步的缺口判定：只有全市场真的有行情的日期才算「应有数据」，
+    这样法定假日、未开盘日不会被当成缺口而反复回补。
+    """
+    cur = conn.execute(
+        """
+        SELECT DISTINCT trade_date FROM daily_prices
+        WHERE trade_date BETWEEN ? AND ?
+        ORDER BY trade_date
+        """,
+        (start_date, end_date),
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
 def get_completed_codes(conn: sqlite3.Connection, job_id: str) -> Dict[str, str]:
     cur = conn.execute(
         "SELECT code, status FROM sync_checkpoints WHERE job_id = ? AND status = 'success'",

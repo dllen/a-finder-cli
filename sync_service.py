@@ -149,6 +149,42 @@ def _build_gap_segments(existing_dates: List[str], start: dt.date, end: dt.date)
     return segments
 
 
+def _compact(date_str: str) -> str:
+    """YYYY-MM-DD → YYYYMMDD（各数据源内部约定的紧凑格式）。"""
+    try:
+        return date_to_str(parse_date(date_str))
+    except Exception:
+        return date_str
+
+
+def _build_missing_segments(
+    existing_dates: List[str], expected_dates: List[str]
+) -> List[Tuple[str, str]]:
+    """按「应有交易日」找缺失段。
+
+    expected_dates 来自市场日历（全市场真有行情的日期）+ 今天，因此节假日不会
+    被判成缺口——旧实现按日历日比较，长假期间每个交易日都会对全部股票重新回补
+    一遍空区间。缺失点若在**市场日历上相邻**（中间只有周末/节假日），合并成一段，
+    减少请求次数。
+
+    返回紧凑格式 (YYYYMMDD, YYYYMMDD)，与数据源参数一致。
+    """
+    have = set(existing_dates)
+    missing_idx = [i for i, d in enumerate(expected_dates) if d not in have]
+    if not missing_idx:
+        return []
+    segments: List[Tuple[str, str]] = []
+    seg_start = prev_i = missing_idx[0]
+    for i in missing_idx[1:]:
+        if i == prev_i + 1:          # 市场日历上相邻 → 并段
+            prev_i = i
+            continue
+        segments.append((_compact(expected_dates[seg_start]), _compact(expected_dates[prev_i])))
+        seg_start = prev_i = i
+    segments.append((_compact(expected_dates[seg_start]), _compact(expected_dates[prev_i])))
+    return segments
+
+
 def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional[Callable[[int, str], None]] = None) -> Dict[str, int]:
     logger = get_logger()
     if mode not in {"incremental", "full"}:
@@ -267,6 +303,20 @@ def sync_hs300_range(
         completed = get_completed_codes(conn, job_id) if resume else {}
         failed = get_failed_codes(conn, job_id) if only_failed else {}
         code_offsets = get_fetch_offsets(conn, list(mapping.keys()))
+        # 市场日历：全市场在该区间真的有行情的日期 + 今天（今天可能尚未落地，
+        # 仍要尝试拉一次）。冷启动（库里无数据）时为空 → 回退到旧的日历日缺口判定。
+        expected_dates: Optional[List[str]] = None
+        if gap_fill:
+            from db_repository import get_market_trade_dates
+
+            market_dates = get_market_trade_dates(conn, start_date, end_date)
+            if market_dates:
+                expected_dates = list(dict.fromkeys(
+                    market_dates + [end_str]
+                ))
+                expected_dates = [d for d in expected_dates if start_date <= d <= end_str]
+                expected_dates.sort()
+
         candidates: List[Tuple[str, List[Tuple[str, str]]]] = []
         for code in sorted(mapping.keys()):
             if only_failed and code not in failed:
@@ -275,7 +325,10 @@ def sync_hs300_range(
                 continue
             if gap_fill:
                 existing = get_trade_dates(conn, code, start_date, end_date)
-                segments = _build_gap_segments(existing, start, end)
+                if expected_dates is not None:
+                    segments = _build_missing_segments(existing, expected_dates)
+                else:
+                    segments = _build_gap_segments(existing, start, end)
                 if not segments:
                     upsert_checkpoint(conn, job_id, code, start_date, end_date, "success", None)
                     continue
