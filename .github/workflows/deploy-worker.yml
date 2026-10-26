@@ -72,11 +72,17 @@ jobs:
 
       - name: 自检（health 需 d1 ok）
         run: |
-          sleep 5
-          body=$(curl -sf https://ycu.space/api/decide/health) || {
-            echo "::error::health 请求失败（路由可能尚未生效，可等 30s 手动重试 workflow_dispatch）"
+          # 路由/CDN 生效有延迟，轮询最多 ~2 分钟
+          body=""
+          for i in $(seq 1 12); do
+            body=$(curl -s --max-time 10 https://ycu.space/api/decide/health) && break
+            echo "第 $i 次：health 尚未就绪，10s 后重试…"
+            sleep 10
+          done
+          if [ -z "$body" ]; then
+            echo "::error::health 请求持续失败（2 分钟）"
             exit 1
-          }
+          fi
           echo "$body"
           echo "$body" | grep -q '"ok":true' || {
             echo "::error::health 返回 d1 异常"
