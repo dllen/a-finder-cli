@@ -10,6 +10,12 @@ on:
         description: "只导入该日期之后（YYYY-MM-DD，留空=全量）"
         required: false
         default: ""
+  # 改到 seed 脚本/schema 时自动重灌一次（幂等，INSERT OR REPLACE）
+  push:
+    branches: [main]
+    paths:
+      - "scripts/seed_d1.py"
+      - "worker/schema.sql"
 
 concurrency:
   group: d1-seed

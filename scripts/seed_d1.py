@@ -6,6 +6,9 @@
     npx wrangler@latest d1 execute a-finder --file=/tmp/d1_seed.sql --remote
 
 只生成 INSERT OR REPLACE，重复执行安全。
+
+历史数据的首次灌入由 `.github/workflows/d1-seed.yml` 在 CI 里执行
+（本机通常没有 wrangler 登录态，且 CI 缓存里有现成的 hs300.db）。
 """
 
 from __future__ import annotations
