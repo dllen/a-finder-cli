@@ -238,7 +238,14 @@ export default {
       // （表现：心跳只到 enter，任务游标永不推进）。
     })());
 
-    // 2) 抓取状态机：每 2 分钟一次的 cron 只在这里干活
-    ctx.waitUntil(runMarketSync(env));
+    // 2) 抓取状态机：直接 await（不放 waitUntil）。
+    // 原因：waitUntil 的任务会被同一 invocation 中其他 promise 的失败/取消波及，
+    // 表现为「心跳只到 enter、游标永不推进」且无法排查。抓取本来就是 cron 的主工作，
+    // cron 允许 15 分钟墙钟，直接 await 最简单也最可靠。
+    try {
+      await runMarketSync(env);
+    } catch (err) {
+      console.error('runMarketSync 异常:', String(err).slice(0, 300));
+    }
   },
 };
