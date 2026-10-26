@@ -90,35 +90,6 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // ---- TEMP PROBE ④（腾讯 bfq 不复权 + 扩展字段；Task 1 结束即删除）----
-    if (path === '/api/probe' && method === 'GET') {
-      const code = '600519';
-      const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-      const targets = [
-        ['newfq_bfq',
-          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10,bfq`,
-          'https://gu.qq.com/'],
-        ['fq_bfq',
-          `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10,bfq`,
-          'https://gu.qq.com/'],
-        ['newfq_day_only',
-          `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=sh${code},day,2026-10-19,2026-10-23,10`,
-          'https://gu.qq.com/'],
-      ];
-      const out = {};
-      for (const [name, url, referer] of targets) {
-        try {
-          const r = await fetch(url, { headers: { 'User-Agent': ua, 'Referer': referer } });
-          const text = await r.text();
-          out[name] = { status: r.status, body: text.slice(0, 700) };
-        } catch (e) {
-          out[name] = { status: 0, error: String(e).slice(0, 160) };
-        }
-      }
-      return json(out, 200, origin);
-    }
-
     // ---- health ----
     if (path === '/api/decide/health' && method === 'GET') {
       const payload = await readAuth(request, env);
