@@ -10,8 +10,8 @@ export function esc(s) {
   );
 }
 
-export function fillDateSelect(dates) {
-  const sel = $('d');
+export function fillDateSelect(dates, selectId = 'd') {
+  const sel = $(selectId);
   if (!sel) return null;
   const prev = sel.value;
   sel.innerHTML = '';

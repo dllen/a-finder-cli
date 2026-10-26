@@ -47,6 +47,11 @@ export function fetchHoldings() {
     : getJSON('/api/holdings');
 }
 
+export function fetchPortfolioDates() {
+  // 静态站的组合快照没有日期维度，调用方在 static 模式下不会走到这里
+  return getJSON('/api/portfolio/dates');
+}
+
 export function fetchPortfolioSummary(date, strategy) {
   return isStatic()
     ? getJSON(dsPath('data/portfolio/summary.json'))

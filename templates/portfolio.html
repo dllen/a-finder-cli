@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/date_filter.html' import date_filter %}
 {% set active_page = "portfolio" %}
 {% block title %}持仓组合{% endblock %}
 
@@ -6,14 +7,13 @@
 <main class="container py-4">
   <h2 class="mb-3">持仓组合 <small class="text-muted fs-6">[paper]</small></h2>
 
-  <div class="row g-2 align-items-end mb-3">
+  <div class="row g-2 align-items-center mb-3">
     <div class="col-auto">
-      <label class="form-label mb-0">日期</label>
-      <input type="date" id="pf-date" class="form-control form-control-sm" value="{{ today }}">
+      {{ date_filter('pf-date', '计划日期', compact=true) }}
     </div>
-    <div class="col-auto">
-      <label class="form-label mb-0">策略</label>
-      <select id="pf-strategy" class="form-select form-select-sm">
+    <div class="col-auto d-flex align-items-center gap-2">
+      <label class="form-label mb-0" for="pf-strategy">策略</label>
+      <select id="pf-strategy" class="form-select form-select-sm w-auto">
         <option value="" selected>全部</option>
         {{ strategy_options|safe }}
       </select>

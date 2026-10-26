@@ -1,6 +1,8 @@
 // 持仓组合页入口
 
-import { fetchPortfolioSummary, fetchPortfolioDetail, isStatic } from './api.js';
+import { fetchPortfolioSummary, fetchPortfolioDetail, fetchPortfolioDates, isStatic } from './api.js';
+import { fillDateSelect } from './dom.js';
+import { setDateFilterState } from './date-filter.js';
 
 const TIER_PALETTE = [
   '#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa',
@@ -113,6 +115,22 @@ function renderDetail(d) {
     </table>`;
 }
 
+async function loadDates() {
+  try {
+    const d = await fetchPortfolioDates();
+    const v = fillDateSelect(d.dates || [], 'pf-date');
+    if (!v) {
+      setDateFilterState('pf-date', 'error', '暂无档位计划');
+      return '';
+    }
+    setDateFilterState('pf-date', '', '');
+    return v;
+  } catch {
+    setDateFilterState('pf-date', 'error', '计划日期加载失败');
+    return '';
+  }
+}
+
 async function loadPortfolio() {
   const dateEl = document.getElementById('pf-date');
   const stratEl = document.getElementById('pf-strategy');
@@ -135,8 +153,10 @@ async function loadPortfolio() {
 }
 
 // Init
-document.addEventListener('DOMContentLoaded', () => {
-  if (isStatic()) {
+document.addEventListener('DOMContentLoaded', async () => {
+  const staticMode = isStatic();
+  if (staticMode) {
+    // 静态站只有一份组合快照，没有日期/策略维度
     const d = document.getElementById('pf-date');
     const s = document.getElementById('pf-strategy');
     if (d) d.closest('.col-auto').style.display = 'none';
@@ -146,5 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pf-date')?.addEventListener('change', loadPortfolio);
   document.getElementById('pf-strategy')?.addEventListener('change', loadPortfolio);
 
+  // API 模式：先用计划日期填充日期筛选器，默认最新一天
+  if (!staticMode) await loadDates();
   loadPortfolio();
 });

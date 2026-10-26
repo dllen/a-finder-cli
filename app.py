@@ -635,6 +635,24 @@ def create_app(db_path="hs300.db", top=10):
                 return c
         return None
 
+    @app.get("/api/portfolio/dates")
+    def api_portfolio_dates():
+        """档位组合（10W…50W）实际有 trade_plan 行的日期，倒序。
+
+        注意：`default` 档不是页面展示的档位组合，必须排除——否则日期筛选器
+        会列出只有 default 行的日期，选中后「当日计划」恒为空。
+        """
+        conn = open_conn(db_path)
+        try:
+            dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT plan_date FROM trade_plan "
+                "WHERE portfolio IS NOT NULL AND portfolio != 'default' "
+                "ORDER BY plan_date DESC"
+            ).fetchall()]
+        finally:
+            conn.close()
+        return jsonify({"dates": dates})
+
     @app.get("/api/portfolio/summary")
     def api_portfolio_summary():
         date = request.args.get("date", "")
