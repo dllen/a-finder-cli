@@ -1,7 +1,7 @@
 // /api/market/* ：只读导出 + 手动触发抓取。全部要求 X-Sync-Token。
 import {
   datesSince, rowsForDate, coverageStats, listSymbols, ensureJob, upsertSymbols,
-  missingCodes,
+  missingCodes, heartbeat,
 } from './repo.js';
 import { backfillJobId } from './jobs.js';
 import { activeJob } from './repo.js';
@@ -45,11 +45,14 @@ export async function handleMarketApi(request, env, path) {
     const stats = await coverageStats(env.DB);
     // 少了谁要能一眼看出来（停牌属正常），否则 300/301 是个谜
     const missing = await missingCodes(env.DB, stats.latest);
+    const hb = await heartbeat(env.DB);
     return json({
       latest_date: stats.latest,
       codes_on_latest: stats.codes,
       days: stats.days,
       missing_codes: missing,
+      // cron 是否在触发：至少每分钟应刷新一次
+      last_tick: hb ? { at: hb.at, beijing: hb.note } : null,
     });
   }
 

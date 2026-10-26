@@ -112,3 +112,10 @@ export async function missingCodes(DB, date) {
   ).bind(date).all();
   return (results || []).map((r) => r.code);
 }
+
+export async function heartbeat(DB) {
+  const row = await DB.prepare(
+    "SELECT at, note FROM worker_heartbeat WHERE name='cron'",
+  ).first();
+  return row || null;
+}
