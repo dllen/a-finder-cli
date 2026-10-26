@@ -74,6 +74,10 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   手动 workflow_dispatch。hs300.db 缓存 key 按 run_id 唯一（固定 key 会冻结缓存——
   actions/cache 不允许覆盖已存在的 key）。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
+- **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位
+  （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。
+  排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
+  不要当成 bug。线上数据以 CI 为准，本地只用于调试。
 
 # CI 自动部署 Worker（deploy-worker.yml）
 - `.github/workflows/deploy-worker.yml`：`worker/**` 或 `wrangler.toml` 推送到 main 时自动部署
