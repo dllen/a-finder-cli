@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   CHUNK_SIZE, beijingNow, isTradingWindow, planChunk, advanceJob, shouldRun,
+  parseJobId, backfillJobId, chunkSizeFor,
 } from '../worker/market/jobs.js';
 
 test('CHUNK_SIZE 在 Free 计划子请求限额内', () => {
@@ -75,4 +76,24 @@ test('advanceJob：个别代码失败仍推进，并记录到 note', () => {
   assert.equal(next.cursor, 3);
   assert.equal(next.status, 'done');
   assert.match(next.note, /000001/);
+});
+
+test('parseJobId 区分日报与回填', () => {
+  assert.deepEqual(parseJobId('2026-10-26'), { kind: 'daily', date: '2026-10-26', days: 1 });
+  assert.deepEqual(parseJobId('backfill:2026-10-26:730'),
+    { kind: 'backfill', date: '2026-10-26', days: 730 });
+  assert.equal(backfillJobId('2026-10-26', 730), 'backfill:2026-10-26:730');
+  assert.equal(parseJobId('').kind, 'daily');
+});
+
+test('回填分片显著小于日报（CPU 10ms 约束）', () => {
+  assert.equal(chunkSizeFor('daily'), CHUNK_SIZE);
+  assert.ok(chunkSizeFor('backfill') < CHUNK_SIZE / 4);
+});
+
+test('planChunk 支持自定义分片大小', () => {
+  const codes = Array.from({ length: 10 }, (_, i) => `60${i}`);
+  const out = planChunk(codes, 0, 4);
+  assert.equal(out.slice.length, 4);
+  assert.equal(out.nextCursor, 4);
 });

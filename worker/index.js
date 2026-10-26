@@ -10,11 +10,12 @@ import { buildCookie, clearCookie, readAuth, signToken } from './auth.js';
 import { handleMarketApi } from './market/api.js';
 import {
   beijingNow, isTradingWindow, planChunk, shouldRun, advanceJob,
+  parseJobId, chunkSizeFor,
 } from './market/jobs.js';
 import {
   listSymbols, ensureJob, activeJob, upsertPrices, updateJob,
 } from './market/repo.js';
-import { fetchBars, pickBars } from './market/sources.js';
+import { fetchBars, fetchRange, pickBars } from './market/sources.js';
 
 const MAX_AGE = 7 * 24 * 3600;           // 7 天（秒）
 const ALLOWED_ORIGINS = [
@@ -263,8 +264,10 @@ async function runMarketSync(env) {
   const codes = await listSymbols(env.DB);
   // 目标日期以「任务 id」为准，不用 bj.date：隔夜未完成的 job 的 id 是更早的日期，
   // 用今天去抓却推进昨天的游标会写错数据。
-  const targetDate = active.id;
-  const { slice } = planChunk(codes, active.cursor);
+  const meta = parseJobId(active.id);
+  const targetDate = meta.date;
+  const size = chunkSizeFor(meta.kind);
+  const { slice } = planChunk(codes, active.cursor, size);
   if (!slice.length) {
     await updateJob(env.DB, { ...active, status: 'done', cursor: active.total });
     return;
@@ -277,6 +280,12 @@ async function runMarketSync(env) {
     const batch = slice.slice(i, i + 6);
     const results = await Promise.all(batch.map(async (code) => {
       try {
+        if (meta.kind === 'backfill') {
+          // 回填：抓最近 meta.days 天的全部行（每轮只 6 只，避免 CPU 超限）
+          const beg = dayOffsetStr(targetDate, -meta.days);
+          const { rows: bars } = await fetchRange(code, beg, targetDate);
+          return { code, rows: bars };
+        }
         const { rows: bars } = await fetchBars(code, targetDate);
         return { code, rows: pickBars(bars, targetDate) };
       } catch {
@@ -297,4 +306,11 @@ async function runMarketSync(env) {
   });
   await updateJob(env.DB, next);
   console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
+}
+
+/** YYYY-MM-DD 平移若干天（回填窗口起点） */
+function dayOffsetStr(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }

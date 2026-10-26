@@ -90,3 +90,14 @@ export async function rowsForDate(DB, date) {
   ).bind(date).all();
   return results || [];
 }
+
+/** 最新交易日在 market_symbols 里却没有行情的代码（停牌/抓取失败的诊断用） */
+export async function missingCodes(DB, date) {
+  if (!date) return [];
+  const { results } = await DB.prepare(
+    'SELECT s.code FROM market_symbols s ' +
+    'LEFT JOIN market_prices p ON p.code = s.code AND p.trade_date = ? ' +
+    'WHERE p.code IS NULL ORDER BY s.code',
+  ).bind(date).all();
+  return (results || []).map((r) => r.code);
+}

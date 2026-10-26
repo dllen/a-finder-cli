@@ -40,10 +40,10 @@ export function shouldRun(job, bj) {
   return isTradingWindow(bj);
 }
 
-/** 按游标切出本片代码；done 表示本片之后没有剩余 */
-export function planChunk(codes, cursor) {
+/** 按游标切出本片代码；done 表示本片之后没有剩余。size 默认 CHUNK_SIZE（回填时传更小值） */
+export function planChunk(codes, cursor, size = CHUNK_SIZE) {
   const start = Math.min(cursor, codes.length);
-  const slice = codes.slice(start, start + CHUNK_SIZE);
+  const slice = codes.slice(start, start + size);
   const nextCursor = start + slice.length;
   return { slice, nextCursor, done: nextCursor >= codes.length };
 }
@@ -82,4 +82,25 @@ export function advanceJob(job, { advance = 0, failedCodes = [], hardFailure = n
     status,
     note: mergeNote(job.note, failedCodes.map((c) => `miss:${c}`)),
   };
+}
+
+/**
+ * 任务 id 编码任务类型：
+ *   "2026-10-26"                → 日报（抓当天，每轮 40 只，子请求上限 50）
+ *   "backfill:2026-10-26:730"   → 回填（抓最近 730 天，每轮 6 只，CPU 10ms 约束）
+ * 不用额外字段是为了避免 D1 已建表后再加列的迁移。
+ */
+export function parseJobId(id) {
+  const m = /^backfill:(\d{4}-\d{2}-\d{2}):(\d+)$/.exec(String(id || ''));
+  if (m) return { kind: 'backfill', date: m[1], days: Number(m[2]) };
+  return { kind: 'daily', date: String(id || ''), days: 1 };
+}
+
+export function backfillJobId(date, days) {
+  return `backfill:${date}:${days}`;
+}
+
+/** 每轮的抓取只数：回填的响应大得多，必须显著调小以免撞 CPU 10ms 上限 */
+export function chunkSizeFor(kind) {
+  return kind === 'backfill' ? 6 : CHUNK_SIZE;
 }

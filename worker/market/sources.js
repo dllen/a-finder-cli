@@ -135,3 +135,20 @@ export async function fetchBars(code, targetDate) {
 
   return { source: 'none', rows: [] };
 }
+
+/**
+ * 回填用：抓一只股票在 [beg, end] 区间内的全部日线（不复权）。
+ * 与 fetchBars 的区别：不过滤目标日，返回区间内每一行，并补齐 pct_change。
+ * 单只一年约 250 行、20KB，调用方必须控制每轮抓多少只（Free 计划 CPU 10ms）。
+ */
+export async function fetchRange(code, beg, end) {
+  const symbol = tencentSymbol(code);
+  const url = `${BASE}/newfqkline/get?param=${symbol},day,${beg},${end},800,bfq`;
+  const rows = parseNewfq(await getJson(url, 'https://gu.qq.com/'), code);
+  if (rows.length) {
+    return { source: 'tencent-newfq', rows: computePctChange(rows) };
+  }
+  const fb = `${BASE}/fqkline/get?param=${symbol},day,${beg},${end},800,bfq`;
+  const rows2 = parseFq(await getJson(fb, 'https://gu.qq.com/'), code);
+  return { source: rows2.length ? 'tencent-fq' : 'none', rows: computePctChange(rows2) };
+}

@@ -1,7 +1,9 @@
 // /api/market/* ：只读导出 + 手动触发抓取。全部要求 X-Sync-Token。
 import {
   datesSince, rowsForDate, coverageStats, listSymbols, ensureJob, upsertSymbols,
+  missingCodes,
 } from './repo.js';
+import { backfillJobId } from './jobs.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -39,10 +41,13 @@ export async function handleMarketApi(request, env, path) {
   // 不含任何行情明细；其余端点仍需 X-Sync-Token。
   if (path === '/api/market/health' && request.method === 'GET') {
     const stats = await coverageStats(env.DB);
+    // 少了谁要能一眼看出来（停牌属正常），否则 300/301 是个谜
+    const missing = await missingCodes(env.DB, stats.latest);
     return json({
       latest_date: stats.latest,
       codes_on_latest: stats.codes,
       days: stats.days,
+      missing_codes: missing,
     });
   }
 
@@ -73,8 +78,14 @@ export async function handleMarketApi(request, env, path) {
     const date = body.date || new Date().toISOString().slice(0, 10);
     if (!isValidDate(date)) return json({ error: 'bad date' }, 400);
     const codes = await listSymbols(env.DB);
-    await ensureJob(env.DB, date, codes.length);
-    return json({ ok: true, job: { id: date, total: codes.length } });
+
+    // kind=backfill：回填最近 N 天历史（本机无 wrangler 登录态时唯一的补历史途径）
+    const kind = body.kind === 'backfill' ? 'backfill' : 'daily';
+    const days = kind === 'backfill' ? Math.min(Number(body.days) || 730, 1500) : 1;
+    const id = kind === 'backfill' ? backfillJobId(date, days) : date;
+
+    await ensureJob(env.DB, id, codes.length);
+    return json({ ok: true, job: { id, kind, days, total: codes.length } });
   }
 
   return null;
