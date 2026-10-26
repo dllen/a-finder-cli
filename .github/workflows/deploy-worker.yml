@@ -11,6 +11,8 @@ name: deploy-worker
 #   DECIDE_USER / DECIDE_PASSWORD / DECIDE_SECRET
 # 注意：wrangler deploy 不会删除 Worker 上已存在的 secrets，
 #       所以平时部署无需提供 DECIDE_*；仅在新建/轮换时配置。
+#       若配置了 DECIDE_USER/PASSWORD，自检会额外做登录回环检查（错误凭据 401、
+#       正确凭据 200 + authed=true）；未配置则跳过该检查，不算失败。
 
 on:
   push:
@@ -44,6 +46,13 @@ jobs:
             exit 1
           fi
 
+      - name: 验证 Cloudflare 凭据（whoami）
+        run: |
+          # 先显式报缺哪个 secret，再用 whoami 验证 token 有效性（失败即 10000 认证错误）
+          [ -n "$CLOUDFLARE_API_TOKEN" ]  || { echo "::error::缺少 GitHub Secret: CLOUDFLARE_API_TOKEN"; exit 1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "::error::缺少 GitHub Secret: CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          npx --yes wrangler@latest whoami
+
       - name: 建表（D1，幂等）
         run: npx --yes wrangler@latest d1 execute a-finder --file=worker/schema.sql --remote --yes
 
@@ -71,6 +80,9 @@ jobs:
         run: npx --yes wrangler@latest deploy
 
       - name: 自检（health 需 d1 ok）
+        env:
+          DECIDE_USER: ${{ secrets.DECIDE_USER }}
+          DECIDE_PASSWORD: ${{ secrets.DECIDE_PASSWORD }}
         run: |
           # 路由/CDN 生效有延迟，轮询最多 ~2 分钟
           body=""
@@ -95,3 +107,32 @@ jobs:
             -d '{"code":"600519","shares":100,"entry_price":1500}')
           echo "HTTP $code"
           [ "$code" = "401" ] || { echo "::error::未登录写入应返回 401，实际 $code"; exit 1; }
+
+          echo "--- 登录流程检查 ---"
+          if [ -z "$DECIDE_USER" ] || [ -z "$DECIDE_PASSWORD" ]; then
+            echo "::notice::未配置 DECIDE_USER/DECIDE_PASSWORD，跳过登录回环检查（health 已确认 d1 ok）"
+            exit 0
+          fi
+          # 错误凭据应 401
+          bad=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            https://ycu.space/api/decide/login \
+            -H 'Content-Type: application/json' \
+            -d '{"user":"nobody","password":"wrong"}')
+          echo "错误凭据: HTTP $bad"
+          [ "$bad" = "401" ] || { echo "::error::错误凭据应 401，实际 $bad"; exit 1; }
+          # 正确凭据应 200 且 Set-Cookie，随后 health 应显示 authed=true
+          jar=$(mktemp)
+          good=$(curl -s -o /dev/null -w "%{http_code}" -c "$jar" -X POST \
+            https://ycu.space/api/decide/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"user\":\"$DECIDE_USER\",\"password\":\"$DECIDE_PASSWORD\"}")
+          echo "正确凭据: HTTP $good"
+          [ "$good" = "200" ] || { echo "::error::正确凭据应 200，实际 $good（Worker 上的 DECIDE_* 与 GitHub Secrets 不一致？）"; exit 1; }
+          auth_body=$(curl -s -b "$jar" https://ycu.space/api/decide/health)
+          echo "$auth_body"
+          echo "$auth_body" | grep -q '"authed":true' || {
+            echo "::error::登录后 health 应 authed=true（DECIDE_SECRET 不一致？）"
+            exit 1
+          }
+          rm -f "$jar"
+          echo "登录回环检查通过"
