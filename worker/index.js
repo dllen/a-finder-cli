@@ -223,14 +223,19 @@ export default {
   // 这里每天发，非交易日 workflow 会在「判定 A 股交易日」步骤跳过。
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
-      const r = await dispatchDeploySite(env);
-      if (r.ok) {
-        console.log('workflow_dispatch 已触发:', DISPATCH_WORKFLOW, 'ref', DISPATCH_REF);
-      } else {
-        // 抛出让这次 cron 在 Cloudflare dashboard 标记为失败，便于发现
-        console.error('workflow_dispatch 失败:', r.status, r.detail);
-        throw new Error(`dispatch failed: HTTP ${r.status} ${r.detail.slice(0, 200)}`);
+      try {
+        const r = await dispatchDeploySite(env);
+        if (r.ok) {
+          console.log('workflow_dispatch 已触发:', DISPATCH_WORKFLOW, 'ref', DISPATCH_REF);
+        } else {
+          console.error('workflow_dispatch 失败:', r.status, r.detail);
+        }
+      } catch (err) {
+        console.error('workflow_dispatch 异常:', String(err).slice(0, 200));
       }
+      // 注意：这里绝不能抛错。waitUntil 的 promise 被 reject 会让整个 invocation
+      // 标记失败并取消同一次 cron 中的其他 waitUntil 任务 —— 抓取就是这样被静默掐死的
+      // （表现：心跳只到 enter，任务游标永不推进）。
     })());
 
     // 2) 抓取状态机：每 2 分钟一次的 cron 只在这里干活
