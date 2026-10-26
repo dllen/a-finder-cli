@@ -102,6 +102,18 @@ jobs:
           printf '%s' "$SYNC_TOKEN" | npx --yes wrangler@latest secret put SYNC_TOKEN
           echo "已同步 SYNC_TOKEN"
 
+      - name: 同步 SYNC_ENABLED（可选，抓取开关）
+        env:
+          SYNC_ENABLED: ${{ secrets.SYNC_ENABLED }}
+        run: |
+          # 只有显式设为 true 时 Worker 才会抓行情；未配置/其他值 = 只做原来的 dispatch
+          if [ -z "$SYNC_ENABLED" ]; then
+            echo "::notice::未配置 SYNC_ENABLED，抓取保持关闭"
+            exit 0
+          fi
+          printf '%s' "$SYNC_ENABLED" | npx --yes wrangler@latest secret put SYNC_ENABLED
+          echo "已同步 SYNC_ENABLED=$SYNC_ENABLED"
+
       - name: 部署 Worker
         run: npx --yes wrangler@latest deploy
 
