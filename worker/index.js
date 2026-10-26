@@ -90,6 +90,36 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
+    // ---- TEMP PROBE（验证 Cloudflare 出站能否抓到行情；Task 1 结束即删除）----
+    if (path === '/api/probe' && method === 'GET') {
+      const code = '600519';
+      const date = '2026-10-23';
+      const compact = date.replace(/-/g, '');
+      const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+      const targets = [
+        ['eastmoney',
+          'https://push2his.eastmoney.com/api/qt/stock/kline/get' +
+          `?fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
+          `&klt=101&fqt=0&secid=1.${code}&beg=${compact}&end=${compact}`,
+          `https://quote.eastmoney.com/sh${code}.html`],
+        ['tencent',
+          `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh${code},day,${date},${date},640,qfq`,
+          'https://gu.qq.com/'],
+      ];
+      const out = {};
+      for (const [name, url, referer] of targets) {
+        try {
+          const r = await fetch(url, { headers: { 'User-Agent': ua, 'Referer': referer } });
+          const text = await r.text();
+          out[name] = { status: r.status, body: text.slice(0, 300) };
+        } catch (e) {
+          out[name] = { status: 0, error: String(e).slice(0, 200) };
+        }
+      }
+      return json(out, 200, origin);
+    }
+
     // ---- health ----
     if (path === '/api/decide/health' && method === 'GET') {
       const payload = await readAuth(request, env);
