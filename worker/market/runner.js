@@ -24,12 +24,15 @@ export async function runMarketSync(env, opts = {}) {
   // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
   if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
   const bj = beijingNow();
-  // 心跳：任何一次 cron 进入都会留下时间戳（不区分是否真的抓取）
-  try {
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
-    ).bind(`${bj.date} ${bj.hour}:${String(bj.minute).padStart(2, '0')}`).run();
-  } catch { /* 心跳失败不影响抓取 */ }
+  // 心跳：记录「跑到哪一步」，卡住时看 last_tick.note 就知道
+  const beat = async (stage) => {
+    try {
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
+      ).bind(stage).run();
+    } catch { /* 心跳失败不影响抓取 */ }
+  };
+  await beat('enter');
 
   // 优先级：当天的日报 > 回填。回填可能跨天（301 只 / 5 只每轮 ≈ 2 小时），
   // 若不优先日报，当天行情会被回填拖住不抓。
@@ -54,6 +57,7 @@ export async function runMarketSync(env, opts = {}) {
     };
   }
 
+  await beat(`job:${active.id}:${active.cursor}`);
   const codes = await listSymbols(env.DB);
   if (opts.dry) {
     // 只报告门禁判断结果，不抓取（HTTP 有 10ms CPU 限额，重活只能靠 cron）
@@ -74,6 +78,7 @@ export async function runMarketSync(env, opts = {}) {
     return { finished: true, job: active.id };
   }
 
+  await beat(`plan:${meta.kind}:${slice.length}`);
   const rows = [];
   const failed = [];
   try {
@@ -100,13 +105,16 @@ export async function runMarketSync(env, opts = {}) {
     }
   }
 
+  await beat(`fetched:${rows.length}:failed:${failed.length}`);
   await upsertPrices(env.DB, rows);
+  await beat(`written:${rows.length}`);
   const next = advanceJob(active, {
     advance: slice.length,
     failedCodes: failed,
     hardFailure: rows.length === 0 ? 'no rows from any source' : null,
   });
   await updateJob(env.DB, next);
+  await beat(`advanced:${next.cursor}/${active.total}`);
   console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
   return {
     job: active.id, kind: meta.kind, cursor: next.cursor, total: active.total,
