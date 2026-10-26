@@ -24,14 +24,18 @@ export async function runMarketSync(env, opts = {}) {
   // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
   if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
   const bj = beijingNow();
-  // 心跳：记录「跑到哪一步」，卡住时看 last_tick.note 就知道
-  const beat = async (stage) => {
-    try {
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
-      ).bind(stage).run();
-    } catch { /* 心跳失败不影响抓取 */ }
-  };
+  // 心跳：仅 SYNC_DEBUG=true 时写。
+  // 教训：Free 计划 cron 的 CPU 预算只有 10ms，每次 tick 多一次 D1 写入就会把预算吃光，
+  // 表现为「心跳写了、后面全部执行不到」（抓取游标永不推进）。
+  const beat = env.SYNC_DEBUG === 'true'
+    ? async (stage) => {
+        try {
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
+          ).bind(stage).run();
+        } catch { /* 心跳失败不影响抓取 */ }
+      }
+    : async () => {};
   await beat('enter');
 
   // 优先级：当天的日报 > 回填。回填可能跨天（301 只 / 5 只每轮 ≈ 2 小时），
