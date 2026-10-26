@@ -27,9 +27,10 @@ function authed(request, env) {
 /** 返回 Response 表示已处理；返回 null 表示不是本模块的路由。 */
 export async function handleMarketApi(request, env, path) {
   if (!path.startsWith('/api/market/') && path !== '/api/sync/start') return null;
-  if (!authed(request, env)) return json({ error: 'unauthorized' }, 401);
 
-  if (path === '/api/market/health') {
+  // health 公开：只返回聚合计数（最新日期/当日代码数），用于监控与巡检，
+  // 不含任何行情明细；其余端点仍需 X-Sync-Token。
+  if (path === '/api/market/health' && request.method === 'GET') {
     const stats = await coverageStats(env.DB);
     return json({
       latest_date: stats.latest,
@@ -37,6 +38,8 @@ export async function handleMarketApi(request, env, path) {
       days: stats.days,
     });
   }
+
+  if (!authed(request, env)) return json({ error: 'unauthorized' }, 401);
 
   if (path === '/api/market/dates') {
     const since = new URL(request.url).searchParams.get('since') || '1970-01-01';

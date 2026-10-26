@@ -28,19 +28,29 @@ function env(overrides = {}) {
   return { DB, SYNC_TOKEN: 'token-123', ...overrides };
 }
 
-test('无 token → 401', async () => {
+test('无 token 访问需鉴权端点 → 401', async () => {
   const res = await handleMarketApi(
-    new Request('https://x/api/market/health'), env(), '/api/market/health',
+    new Request('https://x/api/market/dates'), env(), '/api/market/dates',
   );
   assert.equal(res.status, 401);
 });
 
 test('token 错误 → 401', async () => {
   const res = await handleMarketApi(
-    new Request('https://x/api/market/health', { headers: { 'X-Sync-Token': 'bad' } }),
-    env(), '/api/market/health',
+    new Request('https://x/api/market/day/2026-10-23', { headers: { 'X-Sync-Token': 'bad' } }),
+    env(), '/api/market/day/2026-10-23',
   );
   assert.equal(res.status, 401);
+});
+
+test('health 公开（无 token 也可读聚合计数）', async () => {
+  const res = await handleMarketApi(
+    new Request('https://x/api/market/health'), env(), '/api/market/health',
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.latest_date, '2026-10-23');
+  assert.equal(body.codes_on_latest, 301);
 });
 
 test('health 返回覆盖统计', async () => {
