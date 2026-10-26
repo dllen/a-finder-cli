@@ -5,6 +5,7 @@ import {
 } from './repo.js';
 import { backfillJobId } from './jobs.js';
 import { activeJob } from './repo.js';
+import { runMarketSync } from './runner.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -57,6 +58,12 @@ export async function handleMarketApi(request, env, path) {
   if (path === '/api/market/dates') {
     const since = new URL(request.url).searchParams.get('since') || '1970-01-01';
     return json({ dates: await datesSince(env.DB, since) });
+  }
+
+  // 手动跑一轮：cron 失灵或需要立即补抓时用，返回诊断信息
+  if (path === '/api/market/tick' && request.method === 'POST') {
+    const result = await runMarketSync(env);
+    return json({ result });
   }
 
   // 任务状态：排查「抓取卡住/失败」时不用 wrangler tail

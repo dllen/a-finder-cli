@@ -8,14 +8,7 @@
 // 仅授权本仓库 Actions: Read and write）。
 import { buildCookie, clearCookie, readAuth, signToken } from './auth.js';
 import { handleMarketApi } from './market/api.js';
-import {
-  beijingNow, isTradingWindow, planChunk, shouldRun, advanceJob,
-  parseJobId, chunkSizeFor,
-} from './market/jobs.js';
-import {
-  listSymbols, ensureJob, activeJob, upsertPrices, updateJob,
-} from './market/repo.js';
-import { fetchBars, fetchRange, pickBars } from './market/sources.js';
+import { runMarketSync } from './market/runner.js';
 
 const MAX_AGE = 7 * 24 * 3600;           // 7 天（秒）
 const ALLOWED_ORIGINS = [
@@ -244,82 +237,3 @@ export default {
     ctx.waitUntil(runMarketSync(env));
   },
 };
-
-/** 抓取驱动：读活跃任务 → 抓一片 → upsert → 推进游标。非交易时段秒退。 */
-async function runMarketSync(env) {
-  // 开关：显式设为 'false' 才关闭（默认开启）。想暂停抓取只需
-  // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
-  if (env.SYNC_ENABLED === 'false') return;
-  const bj = beijingNow();
-  const job = await activeJob(env.DB);
-
-  // 15:35 之后自动建当天任务（幂等），无需外部触发
-  if (!job && isTradingWindow(bj)) {
-    const codes = await listSymbols(env.DB);
-    if (codes.length) await ensureJob(env.DB, bj.date, codes.length);
-  }
-  const active = job || await activeJob(env.DB);
-  if (!shouldRun(active, bj)) return;
-
-  const codes = await listSymbols(env.DB);
-  // 目标日期以「任务 id」为准，不用 bj.date：隔夜未完成的 job 的 id 是更早的日期，
-  // 用今天去抓却推进昨天的游标会写错数据。
-  const meta = parseJobId(active.id);
-  const targetDate = meta.date;
-  const size = chunkSizeFor(meta.kind);
-  const { slice } = planChunk(codes, active.cursor, size);
-  if (!slice.length) {
-    await updateJob(env.DB, { ...active, status: 'done', cursor: active.total });
-    return;
-  }
-
-  const rows = [];
-  const failed = [];
-  try {
-  // 并发池 6（Free 计划同时连接上限）
-  for (let i = 0; i < slice.length; i += 6) {
-    const batch = slice.slice(i, i + 6);
-    const results = await Promise.all(batch.map(async (code) => {
-      try {
-        if (meta.kind === 'backfill') {
-          // 回填：抓最近 meta.days 天的全部行（每轮只 6 只，避免 CPU 超限）
-          const beg = dayOffsetStr(targetDate, -meta.days);
-          const { rows: bars } = await fetchRange(code, beg, targetDate);
-          return { code, rows: bars };
-        }
-        const { rows: bars } = await fetchBars(code, targetDate);
-        return { code, rows: pickBars(bars, targetDate) };
-      } catch {
-        return { code, rows: [] };
-      }
-    }));
-    for (const r of results) {
-      if (r.rows.length) rows.push(...r.rows);
-      else failed.push(r.code);
-    }
-  }
-
-  await upsertPrices(env.DB, rows);
-  const next = advanceJob(active, {
-    advance: slice.length,
-    failedCodes: failed,
-    hardFailure: rows.length === 0 ? 'no rows from any source' : null,
-  });
-  await updateJob(env.DB, next);
-  console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
-  } catch (err) {
-    // 任何未捕获错误都写回任务，否则任务会静默卡在 running（本次回填就是这样卡的）
-    const failedState = advanceJob(active, {
-      advance: 0, failedCodes: [], hardFailure: String(err).slice(0, 200),
-    });
-    await updateJob(env.DB, { ...failedState, status: failedState.status === 'done' ? 'running' : failedState.status });
-    console.error(`sync ${active.id} 异常:`, String(err).slice(0, 300));
-  }
-}
-
-/** YYYY-MM-DD 平移若干天（回填窗口起点） */
-function dayOffsetStr(dateStr, days) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
