@@ -181,3 +181,112 @@ def test_get_open_positions_with_unrealized_default_includes_all(fresh_db):
                         shares=200, portfolio="10W")
     out = get_open_positions_with_unrealized(conn)
     assert out["count"] == 2  # 全部
+
+
+# ---------------------------------------------------------------------------
+# as_of（按日期回看组合状态）
+# ---------------------------------------------------------------------------
+
+def test_compute_portfolio_pnl_as_of_price_uses_that_day(fresh_db):
+    """as_of 用当日收盘价，而不是最新收盘价。"""
+    _, conn = fresh_db
+    _seed_price(conn, "600519", 110.0, "2026-09-07")
+    _seed_price(conn, "600519", 130.0, "2026-09-10")
+    insert_trade_event(conn, "2026-09-01", "600519", "open", 100.0,
+                      shares=200, portfolio="10W")
+
+    at_07 = compute_portfolio_pnl(conn, "10W", initial_capital=100000,
+                                  as_of="2026-09-07")
+    assert at_07["position_value"] == 22000      # 110 × 200
+    assert at_07["unrealized_pnl"] == 2000
+    assert at_07["cash_remaining"] == 80000
+
+    at_10 = compute_portfolio_pnl(conn, "10W", initial_capital=100000,
+                                  as_of="2026-09-10")
+    assert at_10["position_value"] == 26000      # 130 × 200
+    assert at_10["unrealized_pnl"] == 6000
+
+
+def test_compute_portfolio_pnl_as_of_ignores_later_events(fresh_db):
+    """as_of 之前的建仓计入，之后的建仓/平仓不计入。"""
+    _, conn = fresh_db
+    _seed_price(conn, "600519", 110.0, "2026-09-07")
+    insert_trade_event(conn, "2026-09-01", "600519", "open", 100.0,
+                      shares=200, portfolio="10W")
+    # 09-12 才建的第二只、09-15 才平的第一只——as_of=09-07 都不该出现
+    insert_trade_event(conn, "2026-09-12", "000001", "open", 10.0,
+                      shares=1000, portfolio="10W")
+    insert_trade_event(conn, "2026-09-15", "600519", "close", 120.0,
+                      shares=200, pnl_amt=4000.0, portfolio="10W")
+
+    out = compute_portfolio_pnl(conn, "10W", initial_capital=100000,
+                                as_of="2026-09-07")
+    assert out["positions_count"] == 1
+    assert out["shares_total"] == 200
+    assert out["realized_pnl"] == 0.0
+    assert out["cash_remaining"] == 80000
+
+    later = compute_portfolio_pnl(conn, "10W", initial_capital=100000,
+                                  as_of="2026-09-20")
+    assert later["realized_pnl"] == 4000.0
+    assert later["positions_count"] == 1          # 只剩 000001
+    assert later["shares_total"] == 1000
+
+
+def test_compute_portfolio_pnl_as_of_partial_close_uses_average_cost(fresh_db):
+    """部分平仓按移动平均成本扣减，剩余仓位成本不串轮次。"""
+    _, conn = fresh_db
+    _seed_price(conn, "600519", 100.0, "2026-09-03")
+    insert_trade_event(conn, "2026-09-01", "600519", "open", 100.0,
+                      shares=100, portfolio="10W")
+    insert_trade_event(conn, "2026-09-02", "600519", "open", 120.0,
+                      shares=100, portfolio="10W")
+    insert_trade_event(conn, "2026-09-03", "600519", "close", 130.0,
+                      shares=100, pnl_amt=2000.0, portfolio="10W")
+
+    out = compute_portfolio_pnl(conn, "10W", initial_capital=100000,
+                                as_of="2026-09-03")
+    # 剩 100 股，均价仍是 110（均价不因部分平仓变化）
+    assert out["shares_total"] == 100
+    assert out["position_value"] == 10000.0        # 100 × 100
+    assert out["realized_pnl"] == 2000.0
+    # 现金 = 100000 − (10000+12000) + 13000 = 91000
+    assert out["cash_remaining"] == 91000.0
+
+
+def test_compute_portfolio_pnl_as_of_without_as_of_keeps_current_behaviour(fresh_db):
+    """不传 as_of 时仍是原来的当前状态计算。"""
+    _, conn = fresh_db
+    _seed_price(conn, "600519", 110.0, "2026-09-07")
+    insert_open_position(conn, "600519", "2026-09-01", 100.0, 0.1, 90.0, 120.0,
+                        shares=200, portfolio="10W")
+    insert_trade_event(conn, "2026-09-01", "600519", "open", 100.0,
+                      shares=200, portfolio="10W")
+    out = compute_portfolio_pnl(conn, "10W", initial_capital=100000)
+    assert "as_of" not in out
+    assert out["total_value"] == 102000
+
+
+def test_get_open_positions_with_unrealized_as_of(fresh_db):
+    """as_of 的持仓明细：按当日价、只含当日已建的仓。"""
+    _, conn = fresh_db
+    _seed_price(conn, "600519", 110.0, "2026-09-07")
+    _seed_price(conn, "000001", 12.0, "2026-09-07")
+    insert_trade_event(conn, "2026-09-01", "600519", "open", 100.0,
+                      shares=200, portfolio="10W")
+    insert_trade_event(conn, "2026-09-05", "000001", "open", 10.0,
+                      shares=500, portfolio="10W")
+
+    h = get_open_positions_with_unrealized(conn, portfolio="10W", as_of="2026-09-07")
+    assert h["as_of"] == "2026-09-07"
+    assert h["count"] == 2
+    assert h["shares_total"] == 700
+    by_code = {it["code"]: it for it in h["items"]}
+    assert by_code["600519"]["floating_pnl"] == 2000.0     # (110-100)×200
+    assert by_code["000001"]["floating_pnl"] == 1000.0     # (12-10)×500
+    assert h["floating_pnl"] == 3000.0
+
+    # 只看 09-01..09-04：第二只还没建仓
+    h2 = get_open_positions_with_unrealized(conn, portfolio="10W", as_of="2026-09-02")
+    assert h2["count"] == 1
+    assert h2["items"][0]["code"] == "600519"

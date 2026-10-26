@@ -656,16 +656,26 @@ def create_app(db_path="hs300.db", top=10):
     @app.get("/api/portfolio/summary")
     def api_portfolio_summary():
         date = request.args.get("date", "")
+        as_of = date or None
         conn = open_conn(db_path)
         try:
             tiers = []
             for capital in CAPITAL_TIERS:
                 label = f"{capital // 10000}W"
-                pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
-                last = conn.execute(
-                    "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio=?",
-                    (label,),
-                ).fetchone()[0]
+                pnl = compute_portfolio_pnl(
+                    conn, label, initial_capital=capital, as_of=as_of
+                )
+                if as_of:
+                    last = conn.execute(
+                        "SELECT MAX(plan_date) FROM trade_plan "
+                        "WHERE portfolio=? AND plan_date<=?",
+                        (label, as_of),
+                    ).fetchone()[0]
+                else:
+                    last = conn.execute(
+                        "SELECT MAX(plan_date) FROM trade_plan WHERE portfolio=?",
+                        (label,),
+                    ).fetchone()[0]
                 tiers.append({
                     "label": label,
                     "capital": capital,
@@ -679,7 +689,7 @@ def create_app(db_path="hs300.db", top=10):
                 })
         finally:
             conn.close()
-        return jsonify({"date": date, "tiers": tiers})
+        return jsonify({"date": date, "as_of": as_of, "tiers": tiers})
 
     @app.get("/api/portfolio/<label>")
     def api_portfolio_detail(label):
@@ -688,10 +698,15 @@ def create_app(db_path="hs300.db", top=10):
             return jsonify({"error": f"unknown portfolio: {label}"}), 404
         date = request.args.get("date", "")
         strategy = request.args.get("strategy", "")
+        as_of = date or None
         conn = open_conn(db_path)
         try:
-            pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
-            holdings = get_open_positions_with_unrealized(conn, portfolio=label)
+            pnl = compute_portfolio_pnl(
+                conn, label, initial_capital=capital, as_of=as_of
+            )
+            holdings = get_open_positions_with_unrealized(
+                conn, portfolio=label, as_of=as_of
+            )
             if strategy:
                 codes = [r[0] for r in conn.execute(
                     "SELECT DISTINCT code FROM trade_plan "

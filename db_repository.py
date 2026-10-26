@@ -702,7 +702,15 @@ def get_open_positions_with_unrealized(
     conn: sqlite3.Connection,
     *,
     portfolio: Optional[str] = None,
+    as_of: Optional[str] = None,
 ) -> Dict:
+    """持仓 + 浮动盈亏。
+
+    as_of 为 None：当前状态（open_positions + 最新收盘）。
+    as_of=YYYY-MM-DD：该日收盘的持仓（按 trade_events 重建 + 该日或更早最近收盘价）。
+    """
+    if as_of and portfolio is not None:
+        return _positions_with_unrealized_as_of(conn, portfolio, as_of)
     sql = (
         """SELECT op.code, op.entry_date, op.entry_price, op.size_pct,
                   op.stop_price, op.tp_price, op.shares,
@@ -754,13 +762,201 @@ def get_open_positions_with_unrealized(
     }
 
 
+def _last_close_on_or_before(
+    conn: sqlite3.Connection, code: str, as_of: str
+) -> Optional[float]:
+    """as_of 当日或之前最近一个交易日的收盘价（停牌/未同步时回退到更早）。"""
+    row = conn.execute(
+        """SELECT close FROM daily_prices
+           WHERE code=? AND trade_date<=?
+           ORDER BY trade_date DESC LIMIT 1""",
+        (code, as_of),
+    ).fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def rebuild_positions_as_of(
+    conn: sqlite3.Connection,
+    portfolio: str,
+    as_of: str,
+) -> Dict[str, Dict]:
+    """按 trade_events 重建 as_of（含当日）收盘后的持仓。
+
+    用移动平均成本：open 累加 shares/cost；close 按当前均价扣减。
+    同一 code 清仓后再建仓也能算对（成本不跨轮次混算）。
+    返回 {code: {"shares", "cost", "avg_entry", "entry_date"}}，只含 shares>0。
+    """
+    rows = conn.execute(
+        """SELECT plan_date, event_id, code, event_type, price, shares
+           FROM trade_events
+           WHERE portfolio=? AND plan_date<=? AND event_type IN ('open','close')
+           ORDER BY plan_date, event_id""",
+        (portfolio, as_of),
+    ).fetchall()
+
+    state: Dict[str, Dict] = {}
+    for plan_date, _eid, code, etype, price, shares in rows:
+        n = int(shares or 0)
+        if n <= 0 or price is None:
+            continue
+        st = state.setdefault(
+            code, {"shares": 0, "cost": 0.0, "entry_date": plan_date}
+        )
+        if etype == "open":
+            if st["shares"] == 0:
+                st["entry_date"] = plan_date
+            st["shares"] += n
+            st["cost"] += float(price) * n
+        else:  # close
+            if st["shares"] <= 0:
+                continue
+            take = min(n, st["shares"])
+            avg = st["cost"] / st["shares"] if st["shares"] else 0.0
+            st["cost"] -= avg * take
+            st["shares"] -= take
+
+    out: Dict[str, Dict] = {}
+    for code, st in state.items():
+        if st["shares"] <= 0:
+            continue
+        avg_entry = st["cost"] / st["shares"] if st["shares"] else 0.0
+        out[code] = {
+            "shares": st["shares"],
+            "cost": round(st["cost"], 4),
+            "avg_entry": round(avg_entry, 4),
+            "entry_date": st["entry_date"],
+        }
+    return out
+
+
+def _positions_meta(conn: sqlite3.Connection, portfolio: str, code: str) -> Dict:
+    """取该 code 在 portfolio 里的 name / stop / tp / size_pct（用于展示）。"""
+    row = conn.execute(
+        """SELECT m.name, op.stop_price, op.tp_price, op.size_pct
+           FROM (SELECT 1) dummy
+           LEFT JOIN open_positions op
+                  ON op.code=? AND op.portfolio=?
+           LEFT JOIN hs300_metadata m ON m.code=?
+           ORDER BY op.entry_date DESC, op.pos_id DESC
+           LIMIT 1""",
+        (code, portfolio, code),
+    ).fetchone()
+    if not row:
+        return {"name": None, "stop_price": None, "tp_price": None, "size_pct": None}
+    name, stop, tp, size = row
+    return {"name": name, "stop_price": stop, "tp_price": tp, "size_pct": size}
+
+
+def _compute_portfolio_pnl_as_of(
+    conn: sqlite3.Connection,
+    portfolio: str,
+    initial_capital: int,
+    as_of: str,
+) -> Dict:
+    """as_of 当日收盘的组合状态：现金、持仓市值、已实现/未实现盈亏。"""
+    agg = conn.execute(
+        """SELECT
+             COALESCE(SUM(CASE WHEN event_type='open'  THEN price*shares ELSE 0 END), 0.0),
+             COALESCE(SUM(CASE WHEN event_type='close' THEN price*shares ELSE 0 END), 0.0),
+             COALESCE(SUM(CASE WHEN event_type='close' THEN pnl_amt     ELSE 0 END), 0.0)
+           FROM trade_events
+           WHERE portfolio=? AND plan_date<=? AND event_type IN ('open','close')""",
+        (portfolio, as_of),
+    ).fetchone()
+    buy_cost, close_proceeds, realized_pnl = (float(x or 0.0) for x in agg)
+    cash_remaining = round(initial_capital - buy_cost + close_proceeds, 2)
+
+    positions = rebuild_positions_as_of(conn, portfolio, as_of)
+    position_value = 0.0
+    cost_basis = 0.0
+    for code, st in positions.items():
+        px = _last_close_on_or_before(conn, code, as_of)
+        cost_basis += st["cost"]
+        if px is not None:
+            position_value += px * st["shares"]
+    position_value = round(position_value, 2)
+    unrealized_pnl = round(position_value - cost_basis, 2)
+    total_value = round(cash_remaining + position_value, 2)
+    return {
+        "portfolio": portfolio,
+        "initial_capital": initial_capital,
+        "as_of": as_of,
+        "cash_remaining": cash_remaining,
+        "position_value": position_value,
+        "total_value": total_value,
+        "realized_pnl": round(realized_pnl, 2),
+        "unrealized_pnl": unrealized_pnl,
+        "return_rate": round(total_value / initial_capital - 1, 6) if initial_capital else 0.0,
+        "positions_count": len(positions),
+        "shares_total": sum(st["shares"] for st in positions.values()),
+    }
+
+
+def _positions_with_unrealized_as_of(
+    conn: sqlite3.Connection,
+    portfolio: str,
+    as_of: str,
+) -> Dict:
+    """as_of 当日收盘的持仓明细（供 /api/portfolio/<label> 的「当前持仓」表）。"""
+    positions = rebuild_positions_as_of(conn, portfolio, as_of)
+    items = []
+    shares_total = 0
+    floating_total = 0.0
+    pct_sum = 0.0
+    pct_count = 0
+    for code, st in sorted(positions.items(), key=lambda kv: (kv[1]["entry_date"], kv[0])):
+        meta = _positions_meta(conn, portfolio, code)
+        px = _last_close_on_or_before(conn, code, as_of)
+        shares = st["shares"]
+        entry = st["avg_entry"]
+        floating = None
+        if px is not None and entry:
+            floating = round((px - entry) * shares, 2)
+            floating_total += floating
+            pct_sum += (px - entry) / entry * 100
+            pct_count += 1
+        shares_total += shares
+        stop, tp = meta["stop_price"], meta["tp_price"]
+        items.append({
+            "code": code,
+            "name": meta["name"],
+            "entry_date": st["entry_date"],
+            "entry_price": entry,
+            "size_pct": meta["size_pct"],
+            "stop_price": stop,
+            "tp_price": tp,
+            "shares": shares,
+            "current_price": px,
+            "floating_pnl": floating,
+            "stop_pnl": round((stop - entry) * shares, 2) if (stop is not None and entry) else None,
+            "tp_pnl": round((tp - entry) * shares, 2) if (tp is not None and entry) else None,
+        })
+    avg = round(pct_sum / pct_count, 2) if pct_count else None
+    return {
+        "count": len(items),
+        "size_total": round(sum(i["size_pct"] for i in items if i["size_pct"]), 4),
+        "shares_total": shares_total,
+        "floating_pnl": round(floating_total, 2),
+        "avg_unrealized_pct": avg,
+        "items": items,
+        "as_of": as_of,
+    }
+
+
 def compute_portfolio_pnl(
     conn: sqlite3.Connection,
     portfolio: str,
     *,
     initial_capital: int,
+    as_of: Optional[str] = None,
 ) -> Dict:
-    """Cash carry + position mark-to-market + realized/unrealized P&L + return rate."""
+    """Cash carry + position mark-to-market + realized/unrealized P&L + return rate.
+
+    as_of 为 None 时按当前状态计算（open_positions + 最新收盘，历史行为）；
+    传 YYYY-MM-DD 时按 as_of 当日收盘重建（trade_events + 该日收盘价）。
+    """
+    if as_of:
+        return _compute_portfolio_pnl_as_of(conn, portfolio, initial_capital, as_of)
     # 1. realized_pnl: Σ trade_events.pnl_amt WHERE event_type='close' AND portfolio=?
     realized_pnl_row = conn.execute(
         "SELECT COALESCE(SUM(pnl_amt), 0.0) FROM trade_events "
