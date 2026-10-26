@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS market_prices (
   code       TEXT NOT NULL,
   trade_date TEXT NOT NULL,
   open REAL, close REAL, high REAL, low REAL,
-  volume REAL, amount REAL, pct_change REAL,
+  volume REAL, amount REAL, turnover REAL, pct_change REAL,
   PRIMARY KEY (code, trade_date)
 );
 CREATE INDEX IF NOT EXISTS idx_mp_date ON market_prices(trade_date);
@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
 ```
 
 建表脚本并入现有 `worker/schema.sql`（`deploy-worker.yml` 已幂等执行它）。
+
+**字段依据**：`market_data.build_market_from_db` 读取 `close, volume, turnover, amount, pct_change`，
+`strategies/volume_price.py` 用 `pct_change`，`strategies/backtest.py` 用 `turnover/amount`，
+所以这五个字段必须齐全（`turnover` 漏掉会让 `Stock.turnover` 全是 0，成交额类策略退化）。
+`amplitude` 与 `change` 分析链路未使用，不入表；`pull_from_d1.py` 写 SQLite 时这两列置 NULL。
+东财/腾讯的响应里都能拿到 turnover（东财 f61=换手率，腾讯 qfq 返回换手率字段），无需额外请求。
 
 ## 抓取状态机
 
@@ -150,7 +156,7 @@ crons = ["35 7 * * *", "*/2 * * * *"]   # 07:35 兜底 dispatch（现状）+ 每
 |---|---|---|---|
 | `/api/market/health` | GET | `{latest_date, codes_on_latest, jobs:[...]}` | GH 判断是否需要补数 |
 | `/api/market/dates` | GET | `{dates:[...]}`（`?since=` 可限） | GH 决定补哪几天 |
-| `/api/market/day/:date` | GET | `{date, rows:[{code,trade_date,open,close,high,low,volume,amount,pct_change}]}` | GH 取一天（301 行 ≈ 60 KB） |
+| `/api/market/day/:date` | GET | `{date, rows:[{code,trade_date,open,close,high,low,volume,amount,turnover,pct_change}]}` | GH 取一天（301 行 ≈ 60 KB） |
 | `/api/sync/start` | POST | `{ok, job}` | 手动触发当天抓取 |
 
 鉴权：`X-Sync-Token` 与 Worker secret `SYNC_TOKEN` 比对，不匹配返回 401。GH 侧把它存为仓库 secret `D1_SYNC_TOKEN`。
