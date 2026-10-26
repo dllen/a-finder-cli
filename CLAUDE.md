@@ -101,8 +101,10 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **数据源**：东财从 Cloudflare 不可达（实测 520/502），主源为腾讯
   `newfqkline` + `bfq`（**不复权**，与 Python 侧 `fqt=0` 口径一致；含换手率与成交额）；
   降级链 `newfqkline → fqkline → 新浪 → 放弃`。复权价会静默破坏历史序列，别改。
-- **开关**：Worker secret `SYNC_ENABLED=true` 才抓；置空即回到「只触发 GH」的旧模式。
-- **鉴权**：Worker secret `SYNC_TOKEN` ↔ 仓库 secret `D1_SYNC_TOKEN`（同值）。
+- **开关**：默认开启；显式 `wrangler secret put SYNC_ENABLED` 写 `false` 才停抓。
+- **鉴权（软）**：未配置 Worker secret `SYNC_TOKEN` 时只读端点公开（A 股日线本就是公开
+  信息，自托管够用）；一旦配置，则必须提供匹配的 `X-Sync-Token`，此时 GH 侧需配同值的
+  仓库 secret `D1_SYNC_TOKEN`。零配置即可跑通整条链路。
 - **历史数据**：Actions 手动跑 `d1-seed` workflow（用 CI 缓存里的 hs300.db 生成
   SQL 灌入 D1，幂等），不要本地跑（本机通常没有 wrangler 登录态）。
 - **测试**：`node --test tests/test_worker_market_*.mjs`（sources/jobs/repo/api）

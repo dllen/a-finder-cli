@@ -122,6 +122,14 @@ test('POST /api/market/symbols 空数组 → 400', async () => {
   assert.equal(res.status, 400);
 });
 
+test('未配置 SYNC_TOKEN 时只读端点公开（软鉴权）', async () => {
+  const openEnv = env({ SYNC_TOKEN: '' });
+  const res = await handleMarketApi(
+    new Request('https://x/api/market/dates'), openEnv, '/api/market/dates',
+  );
+  assert.equal(res.status, 200);
+});
+
 test('未知子路径 → null（交回主分发器 404）', async () => {
   const out = await handleMarketApi(
     new Request('https://x/api/market/unknown', { headers: { 'X-Sync-Token': 'token-123' } }),

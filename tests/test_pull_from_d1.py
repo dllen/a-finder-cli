@@ -149,3 +149,25 @@ def test_pull_computes_pct_change_when_missing(db):
     ).fetchone()[0]
     # 前一日收盘 100 → (110-100)/100*100 = 10.0
     assert abs(pct - 10.0) < 1e-6
+
+
+def test_pull_without_token_uses_public_read(db):
+    """软鉴权：不传 token 时也能拉（Worker 未配 token 的场景）。"""
+    path, _ = db
+    payloads = {
+        "health": {"latest_date": "2026-10-23"},
+        "dates": {"dates": ["2026-10-23"]},
+        "days": {"2026-10-23": {"date": "2026-10-23",
+                                 "rows": [_row("600519", "2026-10-23", 110.0)]}},
+    }
+    fetch_json = _fetcher(payloads)
+    result = pull.pull(path, "https://w", "", max_days=60, fetch_json=fetch_json)
+    assert result["fell_back"] is False
+    assert result["written"] == 1
+
+
+def test_cli_without_token_is_not_hard_failure(db, monkeypatch):
+    path, _ = db
+    monkeypatch.delenv("D1_SYNC_TOKEN", raising=False)
+    # 网络不可用 → WorkerError → fell_back → 退出码 3（不是 2）
+    assert pull.main(["--db", path, "--worker", "https://127.0.0.1:9", "--token", ""]) == 3

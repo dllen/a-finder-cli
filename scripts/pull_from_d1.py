@@ -29,7 +29,8 @@ class WorkerError(RuntimeError):
 
 
 def _http_json(url: str, token: str) -> Dict:
-    req = urllib.request.Request(url, headers={"X-Sync-Token": token})
+    headers = {"X-Sync-Token": token} if token else {}
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -135,8 +136,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if not args.token:
-        print("::error::缺少 SYNC token（--token 或 D1_SYNC_TOKEN）", file=sys.stderr)
-        return 2
+        # 软鉴权：Worker 未配置 SYNC_TOKEN 时只读端点公开，无需 token 即可拉取；
+        # 若 Worker 配了 token 而我们没带，会 401 → 走回退（退出码 3）。
+        print("::notice::未提供 SYNC token，按公开只读模式拉取", file=sys.stderr)
 
     result = pull(args.db, args.worker, args.token, max_days=args.max_days)
     print(json.dumps(result, ensure_ascii=False))

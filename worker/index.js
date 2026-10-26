@@ -246,7 +246,9 @@ export default {
 
 /** 抓取驱动：读活跃任务 → 抓一片 → upsert → 推进游标。非交易时段秒退。 */
 async function runMarketSync(env) {
-  if (env.SYNC_ENABLED !== 'true') return;          // 开关未打开时完全不抓
+  // 开关：显式设为 'false' 才关闭（默认开启）。想暂停抓取只需
+  // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
+  if (env.SYNC_ENABLED === 'false') return;
   const bj = beijingNow();
   const job = await activeJob(env.DB);
 

@@ -19,9 +19,16 @@ function json(data, status = 200) {
   });
 }
 
+/**
+ * 软鉴权：
+ *   - 配置了 Worker secret SYNC_TOKEN → 所有端点必须带匹配的 X-Sync-Token
+ *   - 未配置（默认）→ 只读端点公开（A 股日线是公开信息，个人自托管场景足够）
+ *   - 写端点（symbols / sync-start）在未配置 token 时也放行，避免自托管被自己锁死
+ * 想收紧：`wrangler secret put SYNC_TOKEN`，同时给 GitHub 仓库配 D1_SYNC_TOKEN（同值）。
+ */
 function authed(request, env) {
-  const token = request.headers.get('X-Sync-Token');
-  return Boolean(env.SYNC_TOKEN) && token === env.SYNC_TOKEN;
+  if (!env.SYNC_TOKEN) return true;
+  return request.headers.get('X-Sync-Token') === env.SYNC_TOKEN;
 }
 
 /** 返回 Response 表示已处理；返回 null 表示不是本模块的路由。 */

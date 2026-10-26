@@ -102,10 +102,7 @@ jobs:
           D1_SYNC_TOKEN: ${{ secrets.D1_SYNC_TOKEN }}
         run: |
           set -uo pipefail
-          if [ -z "${D1_SYNC_TOKEN}" ]; then
-            echo "::notice::未配置 D1_SYNC_TOKEN，跳过成分股上传"
-            exit 0
-          fi
+          # 软鉴权：Worker 未配置 SYNC_TOKEN 时该端点公开；配了就必须带 token
           if [ ! -f hs300.db ]; then
             echo "::notice::无本地 DB（冷启动），成分股待直连回退补齐后再上传"
             exit 0
@@ -137,7 +134,7 @@ jobs:
           set -e
           echo "pull 退出码: $rc"
           if [ "$rc" -eq 2 ]; then
-            echo "::error::缺少 D1_SYNC_TOKEN，无法从 Worker 拉取"
+            echo "::error::pull_from_d1.py 参数错误"
             exit 1
           fi
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
