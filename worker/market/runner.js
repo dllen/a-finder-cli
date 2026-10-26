@@ -24,6 +24,12 @@ export async function runMarketSync(env, opts = {}) {
   // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
   if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
   const bj = beijingNow();
+  // 心跳：任何一次 cron 进入都会留下时间戳（不区分是否真的抓取）
+  try {
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
+    ).bind(`${bj.date} ${bj.hour}:${String(bj.minute).padStart(2, '0')}`).run();
+  } catch { /* 心跳失败不影响抓取 */ }
 
   // 优先级：当天的日报 > 回填。回填可能跨天（301 只 / 5 只每轮 ≈ 2 小时），
   // 若不优先日报，当天行情会被回填拖住不抓。

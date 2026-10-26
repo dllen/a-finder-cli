@@ -49,3 +49,11 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     updated_at TEXT NOT NULL,
     note       TEXT
 );
+
+-- 心跳：每次 cron 进入抓取逻辑时写一条，用于判断 cron 是否在触发
+-- （排查「任务卡 pending」时最直接的证据）
+CREATE TABLE IF NOT EXISTS worker_heartbeat (
+    name TEXT PRIMARY KEY,
+    at   TEXT NOT NULL,
+    note TEXT
+);
