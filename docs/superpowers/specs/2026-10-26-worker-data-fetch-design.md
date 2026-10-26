@@ -195,16 +195,34 @@ crons = ["35 7 * * *", "*/2 * * * *"]   # 07:35 兜底 dispatch（现状）+ 每
 | 成分股初始化 | 同上，从 `hs300_metadata` 生成 `market_symbols` 的 INSERT |
 | GH 缓存丢失（需要全历史） | `GET /api/market/dates` + 逐日拉 277 天（GH 无子请求限制，约 3 分钟）；或 `wrangler d1 export` 拿 CSV 直接灌 sqlite3 |
 
-## 数据源与反爬风险（前置验证）
+## 数据源与反爬（已实测，2026-10-26）
 
-Worker 出站 IP 是 Cloudflare 边缘节点，东财可能比家宽更敏感。**实施第一步不是写状态机，而是探针**：
+探针通过 CI 部署到现有 Worker（临时路由，验证后已移除），实测四个源：
 
-1. 部署一个只抓 `600519` 单只的临时端点，`wrangler dev --remote` 本地调用验证
-2. 通过判据：HTTP 200 且返回当天 K 线行
-3. 不通过 → 依次试腾讯 `fqkline`（需 `Referer: https://gu.qq.com/`）、新浪
-4. 三源全不通 → 本设计整体放弃，改为「Worker 只做 GH 触发兜底」（退回到本会话已有的方案）
+| 源 | 端点 | 结果 |
+|---|---|---|
+| 东财（主域） | `push2his.eastmoney.com/api/qt/stock/kline/get` | **HTTP 520** —— Cloudflare 出站被拒 |
+| 东财（备域） | `push2.eastmoney.com/...` | **HTTP 502** |
+| 腾讯 前复权 `fqkline` | `web.ifzq.gtimg.cn/appstock/app/fqkline/get` | 200，仅 6 字段（无成交额/换手率） |
+| 腾讯 **不复权 `newfqkline`** | `web.ifzq.gtimg.cn/appstock/app/newfqkline/get?...bfq` | **200，11 字段** ✅ |
+| 新浪日线 | `money.finance.sina.com.cn/.../getKLineData` | 200，仅 OHLCV（成交量单位为**股**，腾讯是**手**） |
 
-**这个探针结果决定后续工程量，必须在写状态机之前完成。**
+**结论：东财从 Worker 完全不可达，主源改用腾讯 `newfqkline` + `bfq`（不复权）。**
+不复权是硬要求——Python 侧 `data_prices` 存的是 `fqt=0`（不复权），复权价会让历史序列断裂。
+
+腾讯 `newfqkline` 行格式（11 字段）：
+
+```
+["2026-10-12","1262.95","1288.00","1288.00","1261.00","31556.00",{},"0.25","404285.76","0.00","0.00"]
+   日期         开        收        高        低        量(手)   {}   换手率%   成交额(万)
+```
+
+映射：`open=1, close=2, high=3, low=4, volume=5, turnover=7, amount=8×10000`。
+`pct_change` 腾讯不提供 → Worker 用窗口内前一交易日收盘价计算；窗口首行无法计算则留空，
+由 GH 侧 `pull_from_d1.py` 用本地库前收盘补算（已有实现）。
+
+降级链：`newfqkline(bfq)` → `fqkline(bfq)`（无成交额/换手率）→ 新浪日线（成交量需 ÷100）。
+东财不再在链上（不可达），代码中保留但默认禁用，便于将来复测。
 
 ## 测试策略
 

@@ -38,112 +38,28 @@
 
 ---
 
-## Task 1: 前置探针 —— Worker 能否抓到东财（决策门）
+## Task 1: 前置探针（已完成 ✅）
 
-**这是全计划唯一的决策点。** 探针不通，整个方案终止（回到"Worker 只触发 GH"的现状）。
+**结论（2026-10-26 实测，通过 CI 部署临时路由 `/api/probe` 验证，验证后已移除）**
 
-**Files:**
-- Create: `worker/probe.js`（临时文件，Task 2 之后删除）
-- Modify: `wrangler.toml:2`（临时把 `main` 指向 probe.js）
+| 源 | 结果 |
+|---|---|
+| 东财 `push2his.eastmoney.com` | **HTTP 520** —— Cloudflare 出站被拒 |
+| 东财 `push2.eastmoney.com` | **HTTP 502** |
+| 腾讯 `newfqkline` + `bfq`（不复权） | **HTTP 200，11 字段**（含换手率/成交额）✅ |
+| 腾讯 `fqkline` + `bfq` | HTTP 200，6 字段（仅 OHLCV） |
+| 新浪日线 | HTTP 200，仅 OHLCV（成交量单位是**股**） |
 
-- [ ] **Step 1: 写最小探针**
+**决定**：主源 = 腾讯 `newfqkline` + `bfq`（不复权，与 Python 侧 `fqt=0` 一致），
+降级链 = `newfqkline` → `fqkline` → 新浪 → 放弃。东财不再可用，代码中保留但默认禁用。
 
-创建 `worker/probe.js`：
+**已提交**：探针提交 `d2341cf`、清理提交 `e106a71`（`worker/index.js` 已恢复原状，
+`git status` 干净）。结论已写入 spec「数据源与反爬」一节。
 
-```js
-// 临时探针：验证 Worker 出站能否抓到东财日 K。验证完删除。
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-
-function secid(code) {
-  return code.startsWith('6') ? `1.${code}` : `0.${code}`;
-}
-
-async function tryEastmoney(code, date) {
-  const compact = date.replace(/-/g, '');
-  const url = 'https://push2his.eastmoney.com/api/qt/stock/kline/get' +
-    `?fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
-    `&klt=101&fqt=0&secid=${secid(code)}&beg=${compact}&end=${compact}`;
-  const resp = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      'Referer': `https://quote.eastmoney.com/${code.startsWith('6') ? 'sh' : 'sz'}${code}.html`,
-    },
-  });
-  const text = await resp.text();
-  return { status: resp.status, body: text.slice(0, 400) };
-}
-
-async function tryTencent(code, date) {
-  const symbol = code.startsWith('6') ? `sh${code}` : `sz${code}`;
-  const url = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get' +
-    `?param=${symbol},day,${date},${date},640,qfq`;
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': UA, 'Referer': 'https://gu.qq.com/' },
-  });
-  const text = await resp.text();
-  return { status: resp.status, body: text.slice(0, 400) };
-}
-
-export default {
-  async fetch(request) {
-    const out = {
-      eastmoney: await tryEastmoney('600519', '2026-10-23'),
-      tencent: await tryTencent('600519', '2026-10-23'),
-    };
-    return new Response(JSON.stringify(out, null, 2), {
-      headers: { 'Content-Type': 'application/json' },
-    });
-  },
-};
-```
-
-- [ ] **Step 2: 临时指向探针并部署**
-
-```bash
-# 备份原配置
-cp wrangler.toml /tmp/wrangler.toml.bak
-sed -i '' 's|^main = "worker/index.js"|main = "worker/probe.js"|' wrangler.toml
-npx --yes wrangler@latest deploy
-```
-
-Expected: 部署成功，输出含 `Deployed a-finder-api`。
-
-- [ ] **Step 3: 调用探针并判定**
-
-```bash
-curl -s https://ycu.space/api/probe | python3 -m json.tool
-```
-
-三个分支，据此决定后续：
-
-| 结果 | 含义 | 动作 |
-|---|---|---|
-| `eastmoney.body` 含 `"klines":["2026-10-23,..."]` | 东财可用 | 继续 Task 2，主源用东财 |
-| `eastmoney.status != 200` 但 `tencent.body` 含 `"qfqday"` | 东财拒、腾讯通 | 继续 Task 2，但 Task 3 主源改为腾讯（并把 `turnover` 记为 0、由 GH 补算 `pct_change`） |
-| 两者都失败 | Worker 出站被封 | **终止整个计划**，把探针结论写入 spec 并通知用户回到「Worker 只触发 GH」 |
-
-- [ ] **Step 4: 恢复配置并清理**
-
-```bash
-mv /tmp/wrangler.toml.bak wrangler.toml
-rm worker/probe.js
-npx --yes wrangler@latest deploy    # 恢复原 Worker
-git status --short                  # 应为空
-```
-
-- [ ] **Step 5: 把探针结果记录进 spec**
-
-在 spec 的「数据源与反爬风险」一节追加一行（把 `X` 换成实测结果）：
-
-```markdown
-**探针实测（YYYY-MM-DD）**：东财 status=X，腾讯 status=X → 主源用 <东财|腾讯>。
-```
-
-```bash
-git add docs/superpowers/specs/2026-10-26-worker-data-fetch-design.md
-git commit -m "docs(spec): 记录 Worker 出站探针实测结果"
-```
+- [x] 探针部署与实测
+- [x] 探针路由移除、Worker 恢复
+- [x] spec 记录结论
+- [x] plan Task 3 按结论重写（腾讯 bfq 主源 + 字段映射 + pct_change 补算）
 
 ---
 
@@ -423,40 +339,45 @@ git commit -m "feat(d1): market_prices/market_symbols/sync_jobs 三张表 + seed
 
 ## Task 3: Worker 数据源抓取与解析
 
+**背景（Task 1 实测）**：东财从 Cloudflare 不可达（520/502），主源为
+**腾讯 `newfqkline` + `bfq`（不复权，11 字段，含换手率与成交额）**；
+降级源为腾讯 `fqkline`（6 字段）与新浪日线（成交量单位是股）。
+
 **Files:**
 - Create: `worker/market/sources.js`
-- Create: `tests/fixtures/em_600519.json`, `tests/fixtures/tx_600519.json`
+- Create: `tests/fixtures/tx_newfq_bfq_600519.json`, `tests/fixtures/tx_fq_bfq_600519.json`
 - Test: `tests/test_worker_market_sources.mjs`
 
-- [ ] **Step 1: 抓两份真实响应作为 fixture（一次性，之后离线）**
+- [ ] **Step 1: 抓真实响应作为 fixture（一次性，之后离线）**
+
+东财从 Cloudflare 不可达（Task 1 实测 520/502），主源为腾讯 `newfqkline` + `bfq`。
+同时抓一份腾讯 `fqkline`（降级源，仅 6 字段）作对照。
 
 ```bash
 mkdir -p tests/fixtures
-python3 - <<'PY'
+python3 - <<'PY_FIXTURE'
 import json, urllib.request
 
-UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36'}
+UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                    'AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
+      'Referer': 'https://gu.qq.com/'}
+BASE = 'https://web.ifzq.gtimg.cn/appstock/app'
 
-def get(url, referer):
-    req = urllib.request.Request(url, headers={**UA, 'Referer': referer})
+def get(url):
+    req = urllib.request.Request(url, headers=UA)
     return json.load(urllib.request.urlopen(req, timeout=20))
 
-em = get(
-    'https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1,f2,f3,f4,f5,f6'
-    '&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=0
-&secid=1.600519&beg=20261019&end=20261023',
-    'https://quote.eastmoney.com/sh600519.html')
-json.dump(em, open('tests/fixtures/em_600519.json', 'w'), ensure_ascii=False)
+newfq = get(f'{BASE}/newfqkline/get?param=sh600519,day,2026-10-19,2026-10-23,10,bfq')
+json.dump(newfq, open('tests/fixtures/tx_newfq_bfq_600519.json', 'w'), ensure_ascii=False)
 
-tx = get(
-    'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,2026-10-19,2026-10-23,640,qfq',
-    'https://gu.qq.com/')
-json.dump(tx, open('tests/fixtures/tx_600519.json', 'w'), ensure_ascii=False)
-print('fixtures ok:', len(em['data']['klines']), 'em rows')
-PY
+fq = get(f'{BASE}/fqkline/get?param=sh600519,day,2026-10-19,2026-10-23,10,bfq')
+json.dump(fq, open('tests/fixtures/tx_fq_bfq_600519.json', 'w'), ensure_ascii=False)
+
+print('fixtures ok:', len(newfq['data']['sh600519']['day']), 'newfq rows')
+PY_FIXTURE
 ```
 
-Expected: 打印 `fixtures ok: 5 em rows`（一周 5 个交易日）。
+Expected: 打印 `fixtures ok: 5 newfq rows`。
 
 - [ ] **Step 2: 写解析器的失败测试**
 
@@ -468,55 +389,85 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
-  parseEastmoney, parseTencent, pickBars, secidFor,
+  parseNewfq, parseFq, pickBars, computePctChange, tencentSymbol, fetchBars,
 } from '../worker/market/sources.js';
 
-const em = JSON.parse(readFileSync(new URL('./fixtures/em_600519.json', import.meta.url)));
-const tx = JSON.parse(readFileSync(new URL('./fixtures/tx_600519.json', import.meta.url)));
+const newfq = JSON.parse(readFileSync(
+  new URL('./fixtures/tx_newfq_bfq_600519.json', import.meta.url)));
+const fq = JSON.parse(readFileSync(
+  new URL('./fixtures/tx_fq_bfq_600519.json', import.meta.url)));
 
-test('parseEastmoney 字段映射：日期/OHLC/量额/换手/涨跌幅', () => {
-  const rows = parseEastmoney(em, '600519');
+test('parseNewfq 映射 11 字段：OHLCV + 换手率 + 成交额（万元→元）', () => {
+  const rows = parseNewfq(newfq, '600519');
+  assert.equal(rows.length, 5);
+  const r = rows.find((x) => x.trade_date === '2026-10-23');
+  assert.ok(r, '应含 2026-10-23');
+  assert.equal(r.open, 1311.84);
+  assert.equal(r.close, 1335.0);
+  assert.equal(r.high, 1343.88);
+  assert.equal(r.low, 1310.0);
+  assert.equal(r.volume, 57686);            // 单位：手
+  assert.equal(r.turnover, 0.46);           // 换手率 %（10-15 那行，见下一条）
+});
+
+test('parseNewfq 成交额按万元换算成元', () => {
+  const rows = parseNewfq(newfq, '600519');
+  const r = rows.find((x) => x.trade_date === '2026-10-12');
+  assert.equal(r.amount, 404285.76 * 10000);
+  assert.equal(r.turnover, 0.25);
+});
+
+test('parseFq 降级源只有 6 字段：amount/turnover 记 0', () => {
+  const rows = parseFq(fq, '600519');
   assert.equal(rows.length, 5);
   const r = rows[0];
-  assert.match(r.trade_date, /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal(typeof r.close, 'number');
-  assert.equal(typeof r.open, 'number');
-  assert.equal(typeof r.volume, 'number');
-  assert.equal(typeof r.amount, 'number');
-  assert.equal(typeof r.turnover, 'number');   // 换手率必须解析（回测依赖）
-  assert.equal(typeof r.pct_change, 'number');
-  assert.equal(r.code, '600519');
-});
-
-test('parseEastmoney 无数据返回空数组', () => {
-  assert.deepEqual(parseEastmoney({ data: null }, '600519'), []);
-  assert.deepEqual(parseEastmoney({}, '600519'), []);
-});
-
-test('parseTencent 只映射 OHLCV，其余为 0', () => {
-  const rows = parseTencent(tx, '600519');
-  assert.ok(rows.length >= 1);
-  const r = rows[0];
-  assert.match(r.trade_date, /^\d{4}-\d{2}-\d{2}$/);
   assert.equal(r.amount, 0);
   assert.equal(r.turnover, 0);
-  assert.equal(r.pct_change, 0);
+  assert.equal(typeof r.close, 'number');
+});
+
+test('parseNewfq 无数据返回空数组', () => {
+  assert.deepEqual(parseNewfq({ code: 0, data: null }, '600519'), []);
+  assert.deepEqual(parseNewfq({}, '600519'), []);
+  assert.deepEqual(parseFq({}, '600519'), []);
 });
 
 test('pickBars 只保留目标交易日', () => {
-  const rows = parseEastmoney(em, '600519');
-  const target = rows[rows.length - 1].trade_date;
-  const picked = pickBars(rows, target);
+  const rows = parseNewfq(newfq, '600519');
+  const picked = pickBars(rows, '2026-10-23');
   assert.equal(picked.length, 1);
-  assert.equal(picked[0].trade_date, target);
+  assert.equal(picked[0].trade_date, '2026-10-23');
   assert.deepEqual(pickBars(rows, '1999-01-01'), []);
 });
 
-test('secidFor 沪市/深市前缀', () => {
-  assert.equal(secidFor('600519'), '1.600519');
-  assert.equal(secidFor('688981'), '1.688981');
-  assert.equal(secidFor('000001'), '0.000001');
-  assert.equal(secidFor('300750'), '0.300750');
+test('computePctChange 用窗口内前一行收盘价补算', () => {
+  const rows = parseNewfq(newfq, '600519');
+  const filled = computePctChange(rows);
+  const target = filled.find((r) => r.trade_date === '2026-10-23');
+  const prev = filled.find((r) => r.trade_date === '2026-10-22');
+  const expected = (target.close - prev.close) / prev.close * 100;
+  assert.ok(Math.abs(target.pct_change - expected) < 1e-9);
+  // 窗口首行没有前值 → 保持 null
+  assert.equal(filled[0].pct_change, null);
+});
+
+test('tencentSymbol 沪市/深市/科创板前缀', () => {
+  assert.equal(tencentSymbol('600519'), 'sh600519');
+  assert.equal(tencentSymbol('688981'), 'sh688981');
+  assert.equal(tencentSymbol('000001'), 'sz000001');
+  assert.equal(tencentSymbol('300750'), 'sz300750');
+});
+
+test('fetchBars 在网络不可用时返回 none 且不抛错', async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('offline'); };
+  try {
+    const out = await fetchBars('600519', '2026-10-23');
+    assert.equal(out.source, 'none');
+    assert.deepEqual(out.rows, []);
+  } finally {
+    globalThis.fetch = orig;
+  }
 });
 ```
 
@@ -528,14 +479,12 @@ Expected: FAIL — `Cannot find module '../worker/market/sources.js'`
 - [ ] **Step 4: 实现 `worker/market/sources.js`**
 
 ```js
-// 行情抓取与解析：东财 push2his（主）→ 腾讯 fqkline（备）。
-// 只负责「一只股票一个窗口」的 K 线；调用方决定窗口与降级策略。
+// 行情抓取与解析。
+// Task 1 实测：东财从 Cloudflare 不可达（520/502），主源为腾讯不复权日线。
+// 降级链：newfqkline(bfq) → fqkline(bfq) → 新浪日线 → 放弃（返回 none）。
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-
-export function secidFor(code) {
-  return /^(6|688)/.test(code) ? `1.${code}` : `0.${code}`;
-}
+const BASE = 'https://web.ifzq.gtimg.cn/appstock/app';
 
 export function tencentSymbol(code) {
   return /^(6|688)/.test(code) ? `sh${code}` : `sz${code}`;
@@ -546,34 +495,17 @@ const num = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** 东财 klines: "日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手率" */
-export function parseEastmoney(payload, code) {
-  const klines = payload?.data?.klines;
-  if (!Array.isArray(klines)) return [];
-  const rows = [];
-  for (const line of klines) {
-    const p = String(line).split(',');
-    if (p.length < 11) continue;
-    rows.push({
-      code,
-      trade_date: p[0],
-      open: num(p[1]),
-      close: num(p[2]),
-      high: num(p[3]),
-      low: num(p[4]),
-      volume: num(p[5]),
-      amount: num(p[6]),
-      pct_change: num(p[8]),
-      turnover: num(p[10]),
-    });
-  }
-  return rows;
+function nodeOf(payload, code) {
+  return payload?.data?.[tencentSymbol(code)] || null;
 }
 
-/** 腾讯 qfqday: [日期, 开, 收, 高, 低, 量]，其余字段腾讯不提供 */
-export function parseTencent(payload, code) {
-  const node = payload?.data?.[tencentSymbol(code)];
-  const bars = node?.qfqday || node?.day;
+/**
+ * newfqkline(bfq) 行格式（11 字段，不复权）：
+ * [日期, 开, 收, 高, 低, 量(手), {}, 换手率%, 成交额(万元), 0.00, 0.00]
+ */
+export function parseNewfq(payload, code) {
+  const node = nodeOf(payload, code);
+  const bars = node?.day || node?.qfqday;
   if (!Array.isArray(bars)) return [];
   const rows = [];
   for (const b of bars) {
@@ -586,17 +518,52 @@ export function parseTencent(payload, code) {
       high: num(b[3]),
       low: num(b[4]),
       volume: num(b[5]),
-      amount: 0,
-      pct_change: 0,
-      turnover: 0,
+      turnover: b.length > 7 ? num(b[7]) : 0,
+      amount: b.length > 8 ? num(b[8]) * 10000 : 0,   // 万元 → 元
+      pct_change: null,
     });
   }
   return rows;
 }
 
-/** 只保留指定交易日的行（抓 5 天窗口是为了兼容节假日） */
+/** fqkline 降级源：只有 6 字段 [日期, 开, 收, 高, 低, 量(手)] */
+export function parseFq(payload, code) {
+  const node = nodeOf(payload, code);
+  const bars = node?.day || node?.qfqday;
+  if (!Array.isArray(bars)) return [];
+  const rows = [];
+  for (const b of bars) {
+    if (!Array.isArray(b) || b.length < 6) continue;
+    rows.push({
+      code,
+      trade_date: String(b[0]),
+      open: num(b[1]),
+      close: num(b[2]),
+      high: num(b[3]),
+      low: num(b[4]),
+      volume: num(b[5]),
+      turnover: 0,
+      amount: 0,
+      pct_change: null,
+    });
+  }
+  return rows;
+}
+
+/** 只保留目标交易日的行（窗口抓多天是为了拿到前收盘价并兼容节假日） */
 export function pickBars(rows, targetDate) {
   return rows.filter((r) => r.trade_date === targetDate);
+}
+
+/** 用前一行收盘价补 pct_change；窗口首行无法计算，保持 null 交给 GH 补 */
+export function computePctChange(rows) {
+  return rows.map((r, i) => {
+    if (r.pct_change !== null && r.pct_change !== undefined) return r;
+    if (i === 0) return { ...r, pct_change: null };
+    const prev = rows[i - 1];
+    if (!prev.close) return { ...r, pct_change: null };
+    return { ...r, pct_change: (r.close - prev.close) / prev.close * 100 };
+  });
 }
 
 async function getJson(url, referer) {
@@ -611,46 +578,50 @@ async function getJson(url, referer) {
   }
 }
 
-/** 抓一只股票最近 windowDays 天的 K 线；东财失败自动降级腾讯。 */
-export async function fetchBars(code, targetDate, { windowDays = 7 } = {}) {
-  const beg = dayOffset(targetDate, -windowDays);
-  const emBeg = beg.replace(/-/g, '');
-  const emEnd = targetDate.replace(/-/g, '');
-  const ref = `https://quote.eastmoney.com/${/^(6|688)/.test(code) ? 'sh' : 'sz'}${code}.html`;
-  const emUrl = 'https://push2his.eastmoney.com/api/qt/stock/kline/get' +
-    `?fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
-    `&klt=101&fqt=0&secid=${secidFor(code)}&beg=${emBeg}&end=${emEnd}`;
-  const em = await getJson(emUrl, ref);
-  let rows = parseEastmoney(em, code);
-  if (rows.length) return { source: 'eastmoney', rows };
-
-  const txUrl = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get' +
-    `?param=${tencentSymbol(code)},day,${beg},${targetDate},640,qfq`;
-  const tx = await getJson(txUrl, 'https://gu.qq.com/');
-  rows = parseTencent(tx, code);
-  return { source: rows.length ? 'tencent' : 'none', rows };
-}
-
-export function dayOffset(dateStr, days) {
+function dayOffset(dateStr, days) {
   const d = new Date(`${dateStr}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 抓一只股票在 targetDate 的日线（不复权）。
+ * 抓 8 天窗口：既拿到前收盘价算 pct_change，也能覆盖长假后首日。
+ * 返回 { source, rows }，rows 已只含目标日并已补齐 pct_change。
+ */
+export async function fetchBars(code, targetDate) {
+  const symbol = tencentSymbol(code);
+  const beg = dayOffset(targetDate, -8);
+
+  // 主源：newfqkline + bfq（含换手率/成交额）
+  const primary = `${BASE}/newfqkline/get?param=${symbol},day,${beg},${targetDate},10,bfq`;
+  let rows = parseNewfq(await getJson(primary, 'https://gu.qq.com/'), code);
+  if (rows.length) {
+    return { source: 'tencent-newfq', rows: pickBars(computePctChange(rows), targetDate) };
+  }
+
+  // 降级源：fqkline + bfq（仅 OHLCV）
+  const fallback = `${BASE}/fqkline/get?param=${symbol},day,${beg},${targetDate},10,bfq`;
+  rows = parseFq(await getJson(fallback, 'https://gu.qq.com/'), code);
+  if (rows.length) {
+    return { source: 'tencent-fq', rows: pickBars(computePctChange(rows), targetDate) };
+  }
+
+  return { source: 'none', rows: [] };
 }
 ```
 
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `node --test tests/test_worker_market_sources.mjs`
-Expected: `# pass 5`、`# fail 0`
+Expected: `# pass 8`、`# fail 0`
 
 - [ ] **Step 6: 提交**
 
 ```bash
 git add worker/market/sources.js tests/test_worker_market_sources.mjs tests/fixtures/
-git commit -m "feat(worker): 行情抓取与解析（东财主 / 腾讯备，含换手率）"
+git commit -m "feat(worker): 行情抓取改为腾讯不复权日线（东财从 CF 不可达）"
 ```
-
----
 
 ## Task 4: 抓取状态机（纯函数）
 
@@ -1395,7 +1366,11 @@ git commit -m "feat(worker): /api/market/* 鉴权路由 + scheduled 抓取驱动
 
 ---
 
-## Task 7: 解析结果与 Python 数据源一致（parity）
+## Task 7: 解析结果与真实行情一致（parity）
+
+东财不可达后，"与 Python data_providers 对同一份 fixture 比对"失去意义（Python 侧
+东财解析器拿不到同样的响应）。改为更强的校验：**Worker 解析结果 vs 本地 `hs300.db`
+里已存的真实行情**（那批数据是东财不复权口径入库的，两地应是同一份交易所数据）。
 
 **Files:**
 - Test: `tests/test_worker_market_parity.py`
@@ -1405,56 +1380,37 @@ git commit -m "feat(worker): /api/market/* 鉴权路由 + scheduled 抓取驱动
 创建 `tests/test_worker_market_parity.py`：
 
 ```python
-"""Worker 的 K 线解析必须与 Python data_providers 一致。
+"""Worker 解析出来的日线必须与本地库（东财口径入库）一致。
 
-同一份东财 fixture，两边各解析一次，逐字段比对。
+fixture 是腾讯 newfqkline(bfq) 的真实响应；本地库 hs300.db 里同一天的数据
+是早前从东财 fqt=0 拉取的。两边都是"不复权交易所数据"，应逐字段相等
+（pct_change 允许因小数位差异有 0.01 的容差）。
 """
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = ROOT / "tests" / "fixtures" / "em_600519.json"
+FIXTURE = ROOT / "tests" / "fixtures" / "tx_newfq_bfq_600519.json"
+DB = ROOT / "hs300.db"
 
 pytestmark = pytest.mark.skipif(
-    not FIXTURE.exists(), reason="fixture 未抓取（见计划 Task 3 Step 1）"
+    not FIXTURE.exists() or not DB.exists(),
+    reason="需要 fixture 与本地 hs300.db（两者都缺失时跳过）",
 )
 
 
-def _parse_with_python() -> dict:
-    """复用 data_providers 的解析逻辑（抓取函数里的解析部分）。"""
-    import data_providers as dp
-
-    raw = json.loads(FIXTURE.read_text())
-    klines = raw["data"]["klines"]
-    rows = {}
-    for entry in klines:
-        p = entry.split(",")
-        if len(p) < 11:
-            continue
-        rows[p[0]] = {
-            "open": float(p[1]), "close": float(p[2]),
-            "high": float(p[3]), "low": float(p[4]),
-            "volume": float(p[5]), "amount": float(p[6]),
-            "pct_change": float(p[8]), "turnover": float(p[10]),
-        }
-    assert rows, "fixture 里应有 K 线"
-    return rows
-
-
-def _parse_with_worker() -> dict:
+def _worker_rows() -> dict:
     script = (
         "import { readFileSync } from 'node:fs';"
-        "import { parseEastmoney } from './worker/market/sources.js';"
+        "import { parseNewfq, computePctChange } from './worker/market/sources.js';"
         f"const raw = JSON.parse(readFileSync({str(FIXTURE)!r}, 'utf8'));"
-        "const rows = parseEastmoney(raw, '600519');"
+        "const rows = computePctChange(parseNewfq(raw, '600519'));"
         "const out = {};"
-        "for (const r of rows) out[r.trade_date] = {"
-        "  open: r.open, close: r.close, high: r.high, low: r.low,"
-        "  volume: r.volume, amount: r.amount,"
-        "  pct_change: r.pct_change, turnover: r.turnover };"
+        "for (const r of rows) out[r.trade_date] = r;"
         "console.log(JSON.stringify(out));"
     )
     res = subprocess.run(
@@ -1465,27 +1421,60 @@ def _parse_with_worker() -> dict:
     return json.loads(res.stdout)
 
 
-def test_worker_parse_matches_python():
-    py = _parse_with_python()
-    js = _parse_with_worker()
-    assert set(py) == set(js), "日期集合必须一致"
-    for date in py:
-        for field in ("open", "close", "high", "low", "volume", "amount",
-                      "pct_change", "turnover"):
-            assert py[date][field] == pytest.approx(js[date][field]), \
-                f"{date}.{field} 不一致: python={py[date][field]} js={js[date][field]}"
+def _db_rows(dates) -> dict:
+    conn = sqlite3.connect(str(DB))
+    try:
+        rows = {}
+        for d in dates:
+            r = conn.execute(
+                "SELECT open, close, high, low, volume, amount, turnover, pct_change "
+                "FROM daily_prices WHERE code='600519' AND trade_date=?", (d,)
+            ).fetchone()
+            if r:
+                rows[d] = {"open": r[0], "close": r[1], "high": r[2], "low": r[3],
+                           "volume": r[4], "amount": r[5], "turnover": r[6],
+                           "pct_change": r[7]}
+        return rows
+    finally:
+        conn.close()
+
+
+def test_worker_parse_matches_local_db():
+    js = _worker_rows()
+    common = sorted(set(js) & set(_db_rows(list(js))))
+    assert common, "fixture 日期与本地库没有交集（库太旧？）"
+
+    db = _db_rows(common)
+    for date in common:
+        for field in ("open", "close", "high", "low", "volume"):
+            assert js[date][field] == pytest.approx(db[date][field]), \
+                f"{date}.{field}: worker={js[date][field]} db={db[date][field]}"
+
+        # 换手率与成交额：腾讯给 %/万元，东财给 %/元，换算后应一致
+        if db[date]["turnover"]:
+            assert js[date]["turnover"] == pytest.approx(db[date]["turnover"], abs=0.02), \
+                f"{date}.turnover: worker={js[date]['turnover']} db={db[date]['turnover']}"
+        if db[date]["amount"]:
+            assert js[date]["amount"] == pytest.approx(db[date]["amount"], rel=0.01), \
+                f"{date}.amount: worker={js[date]['amount']} db={db[date]['amount']}"
+
+        # pct_change：Worker 用前收盘算，东财给现成值，容差 0.02
+        if js[date]["pct_change"] is not None and db[date]["pct_change"]:
+            assert js[date]["pct_change"] == pytest.approx(
+                db[date]["pct_change"], abs=0.02), \
+                f"{date}.pct_change: worker={js[date]['pct_change']} db={db[date]['pct_change']}"
 ```
 
 - [ ] **Step 2: 运行测试**
 
 Run: `python3 -m pytest tests/test_worker_market_parity.py -q`
-Expected: `1 passed`
+Expected: `1 passed`（若本地 `hs300.db` 已删除则 `1 skipped`，属正常）
 
 - [ ] **Step 3: 提交**
 
 ```bash
 git add tests/test_worker_market_parity.py
-git commit -m "test(worker): K 线解析与 Python data_providers 的 parity 测试"
+git commit -m "test(worker): 解析结果与本地库真实行情 parity（不复权口径一致）"
 ```
 
 ---
