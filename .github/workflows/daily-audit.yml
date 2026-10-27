@@ -2,7 +2,9 @@ name: daily-audit
 
 # 每晚 21:00（北京）巡检数据产出：三层体检 → 自动补齐 → 复检 → 发布 → 报告。
 #
-# 与 deploy-site.yml 完全解耦：巡检失败不影响早班发布，反之亦然。
+# 与 deploy-site.yml 是各自独立的 workflow，**失败互不影响**（巡检失败不影响早班发布，
+# 反之亦然）；但两者**共用 hs300.db 缓存**（`hs300-db-*` 前缀、restore-keys 互相兜底），
+# 所以「解耦」指失败隔离，不是数据隔离。
 # 为什么要有这条链路：GitHub schedule 对该仓库不可靠（10-26 的 07:30 那班
 # 延迟到 14:27 UTC，10-27 三班一次都没触发），且缺口一旦静默发生没人知道。
 on:
@@ -57,6 +59,16 @@ jobs:
           print(f'today_bj={d.isoformat()}')
           print(f'is_trade_day={str(ok).lower()}')
           " | tee -a "$GITHUB_OUTPUT"
+          # cron 排的是「周一到周五」，但长假（如国庆）会落在这上面。那天跑巡检只是
+          # 「巡检历史」，没有当日新增产出 —— 明确写进 Step Summary，别让绿色心跳
+          # 被读成「今天的数据已更新」。
+          if grep -qx 'is_trade_day=false' "$GITHUB_OUTPUT"; then
+            {
+              echo "### 非交易日，仅巡检历史"
+              echo ""
+              echo "今天（$(grep -m1 '^today_bj=' "$GITHUB_OUTPUT" | cut -d= -f2)）不是 A 股交易日：本次按近 30 天窗口检查历史数据，不期待当日新增行情/选股/计划。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: 三层体检
         id: audit
