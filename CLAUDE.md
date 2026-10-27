@@ -118,6 +118,27 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
   不要当成 bug。线上数据以 CI 为准，本地只用于调试。
 
+# 每日巡检与自动补齐（daily-audit.yml）
+- 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检，与 deploy-site 完全解耦。
+- **体检基准**：`market_calendar.trading_days` 算出的真实交易日（近 30 天），
+  **完全独立于库内数据**。这是关键 —— 缺口判定若以「库的最后一天」为基准，
+  整天漏抓的那天在基准里不可见，永远查不出来（2026-10-26 实际踩过）。
+- **三层判定**：L1 行情（该日 < 280 只）、L2 选股（该日无行）、L3 计划（任一应有档位无行）。
+  L1 缺时只报 L1，派生的 L2/L3 记入 suppressed，避免噪声。
+  L2/L3 不设行数阈值 —— 选股数量天然波动（55~77 条），设阈值会大量误报。
+- **修复边界**：L2/L3 自动补（纯计算）；L1 只补近 7 天（更早的复权口径可能已变，
+  填历史会污染序列，宁可报警）；转债永不自动补（数据源只有实时快照）。
+  只补缺失日期，**绝不重算已有日期**，产出幂等。
+- **修完必须复检**：否则会重演「补了行情但选股没补上却以为修好了」。
+- **通知**：三种结局三种措辞 —— ✅ 通过（每日心跳）/ 🛠 已自动修复 / 🚨 需人工。
+  心跳是刻意设计的：静默失败最难排查，「今天没收到消息」本身就是信号。
+- **手工使用**：
+  ```bash
+  python3 scripts/audit_coverage.py --db hs300.db            # 体检
+  python3 scripts/repair_gaps.py --db hs300.db --dry-run     # 看会修什么
+  python3 scripts/repair_gaps.py --db hs300.db               # 真修
+  ```
+
 # 行情数据路径（GH 直连，Cloudflare 不存行情）
 - **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。
   站点只发布它消费的 JSON（picks/plan/portfolio/decide），**原始行情不进 gh-pages**。
