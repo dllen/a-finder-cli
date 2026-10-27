@@ -2,13 +2,11 @@ name = "a-finder-api"
 main = "worker/index.js"
 compatibility_date = "2026-10-25"
 
-# 注意：TOML 里顶层键必须写在任何 [table] / [[array-of-tables]] 之前，
-# 否则会被解析成上一个表的字段 —— 曾经把 routes 写在 [[d1_databases]] 之后，
-# 于是它变成了 d1_databases[0].routes（wrangler 只给一句 warning），
-# 顶层 routes 从未生效，线上路由实际是靠 dashboard 里另配的。
-routes = [
-  { pattern = "ycu.space/api/*", zone_name = "ycu.space" }
-]
+# 路由：`ycu.space/api/*` 在 Cloudflare dashboard 里配置（Workers → a-finder-api →
+# Settings → Triggers）。不写在这里的原因：配置里的 route 需要 token 具备
+# Zone → Workers Routes: Edit 权限，而当前 CLOUDFLARE_API_TOKEN 只有
+# Workers Scripts + D1；写进配置会让 deploy 直接失败（实测）。
+# 若以后要交给配置管理，先给 token 补 Workers Routes 权限再加回来。
 
 [[d1_databases]]
 binding = "DB"
