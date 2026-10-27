@@ -1,0 +1,1764 @@
+# 数据产出保障体系（每日巡检 + 自动补齐）实施计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 增加一条独立于 GitHub schedule 的晚间巡检链路，每晚 21:00 体检三层数据（行情/选股/计划）、自动补齐近期缺口、并无论成败都发出可感知的报告。
+
+**Architecture:** 抽出共享交易日历模块 `market_calendar.py`（同步与巡检共用，显式区分语义）；新增纯判定脚本 `scripts/audit_coverage.py`（无写副作用，可单测）与修复脚本 `scripts/repair_gaps.py`（消费体检结果，注入式命令执行器便于测试）；由新的 `daily-audit.yml` 串起「体检 → 修复 → 复检 → 发布 → 通知」，与既有发布链路 `deploy-site.yml` 完全解耦。
+
+**Tech Stack:** Python 3.11、SQLite、`chinese_calendar`、GitHub Actions、ntfy.sh（可选）、pytest（Python 单测）、`node --test`（既有 JS 单测不涉及）。
+
+**设计文档:** `docs/superpowers/specs/2026-10-27-daily-audit-design.md`
+
+---
+
+## 文件结构
+
+| 文件 | 职责 | 状态 |
+|---|---|---|
+| `market_calendar.py` | A 股交易日历唯一口径（同步/巡检共用） | 新建 |
+| `tests/test_market_calendar.py` | 日历单测（周末/节假日/调休/降级） | 新建 |
+| `sync_service.py` | 改用 `market_calendar`，删除私有日历函数 | 修改 |
+| `tests/test_sync_gap_calendar.py` | 改为从 `market_calendar` 导入 | 修改 |
+| `scripts/audit_coverage.py` | 三层缺口判定（纯函数，无写副作用） | 新建 |
+| `tests/test_audit_coverage.py` | 体检单测（含 10-26 漏检回归） | 新建 |
+| `scripts/repair_gaps.py` | 按体检结果补齐（注入式 runner） | 新建 |
+| `tests/test_repair_gaps.py` | 修复单测（选择逻辑 + 幂等） | 新建 |
+| `scripts/notify_audit.py` | 报告格式化 + ntfy 推送 | 新建 |
+| `tests/test_notify_audit.py` | 通知单测 | 新建 |
+| `.github/workflows/daily-audit.yml` | 21:00 巡检链路 | 新建 |
+| `CLAUDE.md` | 记录巡检链路与排查顺序 | 修改 |
+
+**依赖方向（单向，无环）：**
+
+```
+market_calendar  ←  sync_service
+                 ←  scripts/audit_coverage
+                          ←  scripts/repair_gaps
+                                 ←  scripts/notify_audit
+                                        ←  .github/workflows/daily-audit.yml
+```
+
+---
+
+## Task 1: 共享交易日历模块
+
+**Files:**
+- Create: `market_calendar.py`
+- Test: `tests/test_market_calendar.py`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/test_market_calendar.py`：
+
+```python
+"""交易日历单测：同步与巡检共用的唯一口径。"""
+
+import datetime as dt
+
+import pytest
+
+import market_calendar as mc
+
+
+@pytest.fixture(autouse=True)
+def _reset():
+    """每个测试前后重置日历可用性缓存，避免测试间串味。"""
+    mc._reset_workday_cache()
+    yield
+    mc._reset_workday_cache()
+
+
+def test_weekend_excluded():
+    """2026-10-24/25 是周六周日 → 不在交易日里。"""
+    days = mc.trading_days(dt.date(2026, 10, 23), dt.date(2026, 10, 27))
+    assert days == ["2026-10-23", "2026-10-26", "2026-10-27"]
+
+
+def test_national_day_holiday_excluded():
+    """2026-10-01 起国庆长假 → 假期内无交易日。"""
+    days = mc.trading_days(dt.date(2026, 9, 30), dt.date(2026, 10, 9))
+    assert "2026-10-01" not in days
+    assert "2026-10-02" not in days
+    assert days, "长假两侧应仍有交易日"
+
+
+def test_makeup_weekend_excluded_by_default():
+    """调休补班的周末在 chinese_calendar 里是工作日，但 A 股不开市 → 默认排除。"""
+    days = mc.trading_days(dt.date(2026, 9, 1), dt.date(2026, 9, 30))
+    assert all(dt.date.fromisoformat(d).weekday() < 5 for d in days)
+
+
+def test_makeup_weekend_kept_when_known_and_enabled():
+    """显式开启且该日在 known 里 → 保留（同步侧语义：库里有就认）。"""
+    days = mc.trading_days(
+        dt.date(2026, 9, 1), dt.date(2026, 9, 30),
+        include_known_weekend=True, known={"2026-09-27"},
+    )
+    assert "2026-09-27" in days
+
+
+def test_calendar_unavailable_returns_empty(monkeypatch):
+    """chinese_calendar 不可用 → 返回 []，绝不猜。"""
+    mc._WORKDAY_FN = None
+    mc._WORKDAY_LOADED = True
+    assert mc.trading_days(dt.date(2026, 10, 1), dt.date(2026, 10, 31)) == []
+
+
+def test_empty_range():
+    assert mc.trading_days(dt.date(2026, 10, 27), dt.date(2026, 10, 26)) == []
+
+
+def test_single_trading_day():
+    assert mc.trading_days(dt.date(2026, 10, 26), dt.date(2026, 10, 26)) == ["2026-10-26"]
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `.venv/bin/python -m pytest tests/test_market_calendar.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'market_calendar'`
+
+- [ ] **Step 3: 最小实现**
+
+创建 `market_calendar.py`：
+
+```python
+"""A 股交易日历：同步与巡检共用的唯一口径。
+
+为什么独立成模块：日历口径一旦散落多处就会漂移。2026-10-26 的漏检
+（缺口以「库的最后一天」为基准，缺的那天在基准里不可见）就是口径散落的代价。
+
+两种调用语义必须显式区分：
+  - 同步（sync_service）：库里有调休日数据就认 → include_known_weekend=True
+  - 巡检（scripts/audit_coverage）：要客观基准 → include_known_weekend=False
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from typing import Iterable, List, Optional
+
+_WORKDAY_FN = None
+_WORKDAY_LOADED = False
+
+
+def _reset_workday_cache() -> None:
+    """测试用：清空日历可用性缓存，让 monkeypatch 生效。"""
+    global _WORKDAY_FN, _WORKDAY_LOADED
+    _WORKDAY_FN = None
+    _WORKDAY_LOADED = False
+
+
+def _workday_fn():
+    """懒加载 chinese_calendar.is_workday；不可用时返回 None。"""
+    global _WORKDAY_FN, _WORKDAY_LOADED
+    if not _WORKDAY_LOADED:
+        _WORKDAY_LOADED = True
+        try:
+            from chinese_calendar import is_workday
+
+            _WORKDAY_FN = is_workday
+        except Exception:
+            _WORKDAY_FN = None
+    return _WORKDAY_FN
+
+
+def trading_days(
+    start: dt.date,
+    end: dt.date,
+    *,
+    include_known_weekend: bool = False,
+    known: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """[start, end] 内真正的 A 股交易日（ISO 字符串，升序）。
+
+    chinese_calendar 的 is_workday 为 True 但属于周末（调休补班）时，A 股不开市：
+      - include_known_weekend=False → 一律排除（巡检用：客观基准）
+      - include_known_weekend=True  → 该日在 known 里则保留（同步用：库里有就认）
+
+    chinese_calendar 不可用时返回 []（调用方自行降级，绝不猜）。
+    """
+    wd = _workday_fn()
+    if wd is None:
+        return []
+
+    known_set = set(known or ())
+    days: List[str] = []
+    cur = start
+    while cur <= end:
+        try:
+            workday = bool(wd(cur))
+        except Exception:
+            return []
+        if workday:
+            iso = cur.isoformat()
+            if cur.weekday() < 5:
+                days.append(iso)
+            elif include_known_weekend and iso in known_set:
+                days.append(iso)
+        cur += dt.timedelta(days=1)
+    return days
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `.venv/bin/python -m pytest tests/test_market_calendar.py -v`
+Expected: 7 passed
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add market_calendar.py tests/test_market_calendar.py
+git commit -m "feat(calendar): 抽出共享交易日历模块
+
+同步与巡检共用同一口径，显式区分语义：
+- 同步（include_known_weekend=True）：库里有调休日数据就认
+- 巡检（默认 False）：客观基准，避免残留数据掩盖缺口
+
+chinese_calendar 不可用时返回 []（不猜），调用方各自降级。"
+```
+
+---
+
+## Task 2: 同步侧改用共享日历
+
+**Files:**
+- Modify: `sync_service.py`（删除 `_trading_days_from_calendar`，调用 `market_calendar`）
+- Test: `tests/test_sync_gap_calendar.py`（改 import）
+
+- [ ] **Step 1: 改测试的导入（先让它失败）**
+
+编辑 `tests/test_sync_gap_calendar.py`，把这一行：
+
+```python
+from sync_service import _trading_days_from_calendar
+```
+
+改为：
+
+```python
+from market_calendar import trading_days
+
+
+def _trading_days_from_calendar(start, end, known):
+    """兼容包装：同步侧语义（库里有调休日就认）。"""
+    return trading_days(start, end, include_known_weekend=True, known=known) or None
+```
+
+同时在文件顶部 `import pytest` 之后补 `import market_calendar as mc` 与 autouse fixture：
+
+```python
+@pytest.fixture(autouse=True)
+def _reset_calendar_cache():
+    mc._reset_workday_cache()
+    yield
+    mc._reset_workday_cache()
+```
+
+Run: `.venv/bin/python -m pytest tests/test_sync_gap_calendar.py -v`
+Expected: PASS（包装函数已提供等价语义）
+
+- [ ] **Step 2: 在 sync_service 中改用 market_calendar**
+
+编辑 `sync_service.py`：删除整个 `_trading_days_from_calendar` 函数（从 `def _trading_days_from_calendar(` 到其 `return days or None` 行结束），并在调用处（约第 356 行）改为：
+
+```python
+            from market_calendar import trading_days
+
+            expected_from_calendar = (
+                trading_days(start, end, include_known_weekend=True, known=set(market_dates))
+                or None
+            )
+```
+
+保持后续 `if expected_from_calendar:` / `elif market_dates:` 分支不变 —— `None` 与原来的返回语义一致，行为等价。
+
+- [ ] **Step 3: 跑全量日历与同步测试**
+
+Run: `.venv/bin/python -m pytest tests/test_market_calendar.py tests/test_sync_gap_calendar.py tests/test_sync_service.py -v`
+Expected: 全部 passed
+
+- [ ] **Step 4: 跑全量测试确认无回归**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: 全部 passed（数量应 ≥ 537）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add sync_service.py tests/test_sync_gap_calendar.py
+git commit -m "refactor(sync): 改用共享交易日历模块
+
+删除 sync_service._trading_days_from_calendar（私有函数跨模块调用是坏味道），
+改由 market_calendar.trading_days 提供同一口径，同步侧显式传
+include_known_weekend=True 保持既有行为（库里有调休日数据就认）。"
+```
+
+---
+
+## Task 3: 三层缺口体检脚本
+
+**Files:**
+- Create: `scripts/audit_coverage.py`
+- Test: `tests/test_audit_coverage.py`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/test_audit_coverage.py`：
+
+```python
+"""三层缺口体检单测。
+
+核心回归：库里有 10-27 而缺 10-26 时，必须能检出 10-26
+（2026-10-27 线上数据缺失就是因为基准取自库内数据，缺的那天不可见）。
+"""
+
+import datetime as dt
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from db_repository import open_db
+
+_SPEC = importlib.util.spec_from_file_location(
+    "audit_coverage",
+    Path(__file__).resolve().parent.parent / "scripts" / "audit_coverage.py",
+)
+audit_mod = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(audit_mod)
+
+TODAY = dt.date(2026, 10, 27)
+FULL_PORTFOLIOS = ["5W", "10W", "15W", "20W", "25W", "30W", "35W",
+                   "40W", "45W", "50W", "default"]
+
+
+@pytest.fixture
+def db(tmp_path):
+    path = str(tmp_path / "audit.db")
+    conn = open_db(path)
+    yield path, conn
+    conn.close()
+
+
+def _seed_prices(conn, date, n=300):
+    for i in range(n):
+        conn.execute(
+            "INSERT INTO daily_prices (code, trade_date, open, close, high, low,"
+            " volume, amount) VALUES (?,?,1,1,1,1,1,1)",
+            (f"6000{i:03d}", date),
+        )
+    conn.commit()
+
+
+def _seed_picks(conn, date):
+    conn.execute(
+        "INSERT INTO daily_picks (date, rank, kind, code, name, strategy,"
+        " buy, stop, target, score, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (date, 1, "均线", "600519", "贵州茅台", "均线突破", 1.0, 0.9, 1.2, 80.0, "2026-10-27T20:00:00"),
+    )
+    conn.commit()
+
+
+def _seed_plan(conn, date, portfolios=None):
+    for pf in (portfolios or FULL_PORTFOLIOS):
+        conn.execute(
+            "INSERT INTO trade_plan (plan_date, portfolio, code, action, plan_price,"
+            " size_pct, stop_price, tp_price, rr_ratio, status, reason,"
+            " rationale_json, params_hash, created_at, shares)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (date, pf, "600519", "buy", 100.0, 0.1, 90.0, 120.0, 2.0,
+             "ok", "", "{}", "hash1", "2026-10-27T20:00:00", 100),
+        )
+    conn.commit()
+
+
+def _seed_full_day(conn, date):
+    _seed_prices(conn, date)
+    _seed_picks(conn, date)
+    _seed_plan(conn, date)
+
+
+def test_all_layers_complete_no_gaps(db):
+    path, conn = db
+    for d in ("2026-10-23", "2026-10-26", "2026-10-27"):
+        _seed_full_day(conn, d)
+    report = audit_mod.audit(path, today=TODAY)
+    assert report.ok
+    assert report.gaps == []
+
+
+def test_detects_missing_day_even_when_db_has_later_date(db):
+    """核心回归：库里有 10-27，10-26 整天缺失 → 必须检出（旧实现看不见）。"""
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    report = audit_mod.audit(path, today=TODAY)
+    assert not report.ok
+    assert "2026-10-26" in [g.date for g in report.gaps]
+
+
+def test_l1_gap_suppresses_l2_l3(db):
+    """行情缺失时只报 L1，不报派生出来的 L2/L3（避免噪声）。"""
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    _seed_prices(conn, "2026-10-26", n=100)          # 只有 100 只 → L1 缺
+    report = audit_mod.audit(path, today=TODAY)
+    gap_1026 = [g for g in report.gaps if g.date == "2026-10-26"]
+    assert [g.layer for g in gap_1026] == ["L1"]
+    assert any(g.date == "2026-10-26" and g.layer in ("L2", "L3")
+               for g in report.suppressed)
+
+
+def test_l2_gap_detected(db):
+    path, conn = db
+    _seed_prices(conn, "2026-10-26")
+    _seed_plan(conn, "2026-10-26")
+    report = audit_mod.audit(path, today=TODAY)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"]
+    assert [g.layer for g in gap] == ["L2"]
+
+
+def test_few_picks_rows_not_a_gap(db):
+    """选股行数天然波动 → 只看有没有行，不设行数阈值（否则大量误报）。"""
+    path, conn = db
+    _seed_prices(conn, "2026-10-26")
+    _seed_picks(conn, "2026-10-26")                   # 仅 1 行
+    _seed_plan(conn, "2026-10-26")
+    report = audit_mod.audit(path, today=TODAY)
+    assert report.ok
+
+
+def test_l3_gap_when_portfolio_missing(db):
+    path, conn = db
+    _seed_prices(conn, "2026-10-26")
+    _seed_picks(conn, "2026-10-26")
+    _seed_plan(conn, "2026-10-26", portfolios=["10W", "default"])
+    report = audit_mod.audit(path, today=TODAY)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"]
+    assert [g.layer for g in gap] == ["L3"]
+    assert "5W" in gap[0].detail
+
+
+def test_calendar_unavailable_raises(db):
+    path, conn = db
+    _seed_full_day(conn, "2026-10-26")
+    import market_calendar as mc
+    mc._WORKDAY_FN = None
+    mc._WORKDAY_LOADED = True
+    try:
+        with pytest.raises(audit_mod.CalendarUnavailable):
+            audit_mod.audit(path, today=TODAY)
+    finally:
+        mc._reset_workday_cache()
+
+
+def test_cli_exit_codes(db, capsys):
+    path, conn = db
+    for d in ("2026-10-23", "2026-10-26", "2026-10-27"):
+        _seed_full_day(conn, d)
+    assert audit_mod.main(["--db", path, "--today", "2026-10-27"]) == 0
+    conn.execute("DELETE FROM daily_picks WHERE date='2026-10-26'")
+    conn.commit()
+    assert audit_mod.main(["--db", path, "--today", "2026-10-27"]) == 1
+    assert audit_mod.main(["--db", str(Path(path).parent / "nope.db")]) == 2
+
+
+def test_cli_json_output(db, capsys):
+    path, conn = db
+    _seed_full_day(conn, "2026-10-26")
+    audit_mod.main(["--db", path, "--today", "2026-10-27", "--json"])
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert "gaps" in payload and "expected_dates" in payload
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `.venv/bin/python -m pytest tests/test_audit_coverage.py -v`
+Expected: FAIL — `FileNotFoundError` / `No module named 'audit_coverage'`
+
+- [ ] **Step 3: 实现脚本**
+
+创建 `scripts/audit_coverage.py`：
+
+```python
+#!/usr/bin/env python3
+"""三层数据缺口体检：行情(L1) / 选股(L2) / 计划(L3)。
+
+基准是 chinese_calendar 算出的真实交易日（默认近 30 天），**完全独立于库内数据**。
+这是与 scripts/check_gaps.py 的根本差异：后者以库内已有日期为基准，因此
+「库里有 10-27 而缺 10-26」时永远看不见 10-26（2026-10-27 实际踩过这个坑）。
+
+层级关系：L1 缺时只报 L1，不报派生的 L2/L3（没有行情算不出选股）。
+
+用法：
+    python3 scripts/audit_coverage.py --db hs300.db
+    python3 scripts/audit_coverage.py --db hs300.db --window-days 30 --json
+
+退出码：0 = 无缺口；1 = 有缺口；2 = 无法判定（日历不可用/库读取失败）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import sqlite3
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from market_calendar import trading_days  # noqa: E402
+
+WINDOW_DAYS = 30
+MIN_CODES = 280
+EXPECTED_PORTFOLIOS = ("5W", "10W", "15W", "20W", "25W", "30W",
+                       "35W", "40W", "45W", "50W", "default")
+
+
+class CalendarUnavailable(RuntimeError):
+    """交易日历不可用，无法判定基准。"""
+
+
+@dataclass(frozen=True)
+class Gap:
+    date: str
+    layer: str          # "L1" | "L2" | "L3"
+    detail: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"date": self.date, "layer": self.layer, "detail": self.detail}
+
+
+@dataclass
+class Report:
+    today: str
+    window_days: int
+    expected_dates: List[str] = field(default_factory=list)
+    gaps: List[Gap] = field(default_factory=list)
+    suppressed: List[Gap] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.gaps
+
+    def by_layer(self) -> Dict[str, List[str]]:
+        out: Dict[str, List[str]] = {}
+        for g in self.gaps:
+            out.setdefault(g.layer, []).append(g.date)
+        return out
+
+    def to_dict(self) -> Dict:
+        return {
+            "today": self.today,
+            "ok": self.ok,
+            "window_days": self.window_days,
+            "expected_dates": self.expected_dates,
+            "gaps": [g.to_dict() for g in self.gaps],
+            "suppressed": [g.to_dict() for g in self.suppressed],
+        }
+
+
+def _read_layer_counts(db_path: str, since: str):
+    """读三层的覆盖情况。返回 (行情每日只数, 选股有行的日期, 计划每日档位集合)。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        prices = {
+            d: n for d, n in conn.execute(
+                "SELECT trade_date, COUNT(DISTINCT code) FROM daily_prices"
+                " WHERE trade_date >= ? GROUP BY trade_date", (since,))
+        }
+        picks = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT date FROM daily_picks WHERE date >= ?", (since,))
+        }
+        plans: Dict[str, set] = {}
+        for d, pf in conn.execute(
+            "SELECT DISTINCT plan_date, portfolio FROM trade_plan WHERE plan_date >= ?",
+            (since,),
+        ):
+            plans.setdefault(d, set()).add(pf)
+    finally:
+        conn.close()
+    return prices, picks, plans
+
+
+def audit(
+    db_path: str,
+    *,
+    today: Optional[dt.date] = None,
+    window_days: int = WINDOW_DAYS,
+    min_codes: int = MIN_CODES,
+) -> Report:
+    """三层体检。基准来自交易日历，与库内数据无关。"""
+    today = today or dt.date.today()
+    start = today - dt.timedelta(days=window_days)
+    expected = trading_days(start, today)
+    if not expected:
+        raise CalendarUnavailable(
+            "交易日历不可用（chinese_calendar 未安装或该年份无数据），无法判定基准")
+
+    if not Path(db_path).exists():
+        raise FileNotFoundError(f"数据库不存在: {db_path}")
+
+    prices, picks, plans = _read_layer_counts(db_path, start.isoformat())
+    report = Report(today=today.isoformat(), window_days=window_days,
+                    expected_dates=expected)
+
+    for d in expected:
+        # L1 行情
+        codes = prices.get(d, 0)
+        if codes < min_codes:
+            report.gaps.append(Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）"))
+            # L1 缺 → L2/L3 判定无意义，记 suppressed 备查，不报
+            if d not in picks:
+                report.suppressed.append(Gap(d, "L2", "无选股（派生自 L1 缺失）"))
+            missing_pf = [p for p in EXPECTED_PORTFOLIOS if p not in plans.get(d, set())]
+            if missing_pf:
+                report.suppressed.append(
+                    Gap(d, "L3", f"缺档位 {','.join(missing_pf)}（派生自 L1 缺失）"))
+            continue
+
+        # L2 选股：只看有没有行（行数天然波动，不设阈值）
+        if d not in picks:
+            report.gaps.append(Gap(d, "L2", "无选股数据"))
+            continue   # 选股没有 → 计划同样无从生成
+
+        # L3 计划：每个应有档位都要有行
+        have = plans.get(d, set())
+        missing_pf = [p for p in EXPECTED_PORTFOLIOS if p not in have]
+        if missing_pf:
+            report.gaps.append(Gap(d, "L3", f"缺档位 {','.join(missing_pf)}"))
+
+    return report
+
+
+def _print_human(report: Report) -> None:
+    total = len(report.expected_dates)
+    print(f"体检区间：最近 {report.window_days} 天，应有 {total} 个交易日")
+    if report.ok:
+        print(f"✅ 三层无缺口（{report.expected_dates[0]} ~ {report.expected_dates[-1]}）")
+        return
+    print(f"❌ 发现 {len(report.gaps)} 处缺口：")
+    for g in report.gaps:
+        print(f"   [{g.layer}] {g.date} — {g.detail}")
+    if report.suppressed:
+        print(f"   （另有 {len(report.suppressed)} 处派生缺口因 L1 缺失未单独统计）")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="三层数据缺口体检")
+    ap.add_argument("--db", default="hs300.db")
+    ap.add_argument("--today", default=None, help="基准日 YYYY-MM-DD（默认今天，测试用）")
+    ap.add_argument("--window-days", type=int, default=WINDOW_DAYS)
+    ap.add_argument("--min-codes", type=int, default=MIN_CODES)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--out", default=None, help="把 JSON 报告写入该文件")
+    args = ap.parse_args(argv)
+
+    today = dt.date.fromisoformat(args.today) if args.today else None
+    try:
+        report = audit(args.db, today=today, window_days=args.window_days,
+                       min_codes=args.min_codes)
+    except CalendarUnavailable as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 2
+    except (FileNotFoundError, sqlite3.Error) as exc:
+        print(f"::error::读取数据库失败: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        _print_human(report)
+
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return 0 if report.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `.venv/bin/python -m pytest tests/test_audit_coverage.py -v`
+Expected: 全部 passed
+
+- [ ] **Step 5: 在真实库上跑一次（观察输出是否合理）**
+
+Run: `.venv/bin/python scripts/audit_coverage.py --db hs300.db`
+Expected: 输出「体检区间：最近 30 天，应有 N 个交易日」；今天（10-27）刚补完数据，三层应基本齐全，如仍有缺口则记录具体日期供后续 Task 6 验证
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add scripts/audit_coverage.py tests/test_audit_coverage.py
+git commit -m "feat(audit): 三层数据缺口体检脚本
+
+基准用 chinese_calendar 的真实交易日，完全独立于库内数据 ——
+修掉「库里有 10-27 而缺 10-26 时看不见 10-26」的漏检（10-27 实际踩过）。
+
+- L1 行情：该日不足 280 只 → 缺
+- L2 选股：该日无行 → 缺（不设行数阈值，行数天然波动）
+- L3 计划：任一应有档位无行 → 缺
+- L1 缺时只报 L1，L2/L3 记入 suppressed（避免噪声）
+
+退出码：0 无缺口 / 1 有缺口 / 2 无法判定。"
+```
+
+---
+
+## Task 4: 缺口修复脚本
+
+**Files:**
+- Create: `scripts/repair_gaps.py`
+- Test: `tests/test_repair_gaps.py`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/test_repair_gaps.py`：
+
+```python
+"""缺口修复单测：选择逻辑 + 命令构造 + 幂等。
+
+命令执行器是注入的，测试不真正跑 CLI。
+"""
+
+import datetime as dt
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+_SPEC = importlib.util.spec_from_file_location(
+    "repair_gaps", ROOT / "scripts" / "repair_gaps.py")
+repair_mod = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(repair_mod)
+
+_SPEC2 = importlib.util.spec_from_file_location(
+    "audit_coverage", ROOT / "scripts" / "audit_coverage.py")
+audit_mod = importlib.util.module_from_spec(_SPEC2)
+_SPEC2.loader.exec_module(audit_mod)
+
+TODAY = dt.date(2026, 10, 27)
+
+
+def _report(gaps, suppressed=None):
+    return audit_mod.Report(
+        today=TODAY.isoformat(), window_days=30,
+        expected_dates=["2026-10-23", "2026-10-26", "2026-10-27"],
+        gaps=[audit_mod.Gap(*g) for g in gaps],
+        suppressed=[audit_mod.Gap(*g) for g in (suppressed or [])],
+    )
+
+
+def test_no_gaps_produces_no_actions():
+    assert repair_mod.plan_repairs(_report([]), db_path="hs300.db", today=TODAY) == []
+
+
+def test_recent_l1_gap_plans_price_sync():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L1", "行情只有 100 只")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert len(actions) == 1
+    a = actions[0]
+    assert a.layer == "L1"
+    assert a.dates == ("2026-10-26",)
+    cmd = a.commands[0]
+    assert "sync-hs300-range" in cmd
+    assert "--gap-fill" in cmd
+    assert "2026-10-26" in cmd
+
+
+def test_old_l1_gap_not_planned():
+    """超过 7 天的行情缺口不自动修（复权口径一致性风险）。"""
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-10", "L1", "行情只有 0 只")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert actions == []
+
+
+def test_l2_gap_plans_pick_history():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股数据")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert len(actions) == 1
+    assert actions[0].layer == "L2"
+    cmd = actions[0].commands[0]
+    assert "pick_history.py" in cmd
+    assert "--date" in cmd and "2026-10-26" in cmd
+    assert "--no-sync" in cmd
+
+
+def test_l3_gap_plans_default_then_backfill():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L3", "缺档位 5W,10W")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert len(actions) == 1
+    cmds = actions[0].commands
+    assert len(cmds) == 2
+    assert "build" in cmds[0] and "--date" in cmds[0]
+    assert "build-all" in cmds[1] and "--backfill" in cmds[1]
+    assert "--since" in cmds[1] and "2026-10-26" in cmds[1]
+
+
+def test_multiple_l2_dates_merge_into_one_action():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股"), ("2026-10-27", "L2", "无选股")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert len(actions) == 1
+    assert actions[0].dates == ("2026-10-26", "2026-10-27")
+    assert len(actions[0].commands) == 2      # 每个日期一条 pick_history
+
+
+def test_run_repairs_reports_failure_and_keeps_going():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股"), ("2026-10-27", "L3", "缺档位")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    calls = []
+
+    def fake_runner(cmd):
+        calls.append(cmd)
+        if "pick_history.py" in cmd:
+            return (1, "boom")
+        return (0, "ok")
+
+    outcomes = repair_mod.run_repairs(actions, runner=fake_runner)
+    assert len(outcomes) == 2
+    assert outcomes[0].ok is False          # L2 失败
+    assert outcomes[1].ok is True           # L3 仍执行（不中断整体）
+    assert len(calls) == 3                  # 1 条 pick_history + 2 条 plan
+
+
+def test_dry_run_does_not_execute():
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    calls = []
+
+    def fake_runner(cmd):
+        calls.append(cmd)
+        return (0, "ok")
+
+    outcomes = repair_mod.run_repairs(actions, runner=fake_runner, dry_run=True)
+    assert calls == []
+    assert len(outcomes) == 1
+
+
+def test_cli_dry_run_exit_zero(capsys, tmp_path):
+    db = tmp_path / "x.db"
+    from db_repository import open_db
+    conn = open_db(str(db))
+    conn.close()
+    rc = repair_mod.main(["--db", str(db), "--today", "2026-10-27", "--dry-run"])
+    assert rc in (0, 1)
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `.venv/bin/python -m pytest tests/test_repair_gaps.py -v`
+Expected: FAIL — `No module named 'repair_gaps'`
+
+- [ ] **Step 3: 实现脚本**
+
+创建 `scripts/repair_gaps.py`：
+
+```python
+#!/usr/bin/env python3
+"""按体检结果补齐缺口：L1 行情（仅近 7 天）/ L2 选股 / L3 计划。
+
+原则：
+  - 只补「缺失的日期」，绝不重算已有日期（当天产物不动）
+  - L1 超过 MAX_PRICE_DAYS 天只报警不自动修（复权口径可能已变，填历史会污染序列）
+  - 某项失败不影响其它项（继续修下一项）
+
+命令执行器通过参数注入，测试不真正跑 CLI。
+
+用法：
+    python3 scripts/repair_gaps.py --db hs300.db --report /tmp/audit.json --dry-run
+    python3 scripts/repair_gaps.py --db hs300.db --report /tmp/audit.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+MAX_PRICE_DAYS = 7      # 行情缺口自动修复的时间窗（天）
+TOP_PICKS = 20
+
+Runner = Callable[[Sequence[str]], Tuple[int, str]]
+
+
+@dataclass(frozen=True)
+class RepairAction:
+    layer: str
+    dates: Tuple[str, ...]
+    commands: Tuple[Tuple[str, ...], ...]
+    reason: str
+
+
+@dataclass
+class Outcome:
+    action: RepairAction
+    ok: bool
+    output: str = ""
+
+
+def _py(*args: str) -> Tuple[str, ...]:
+    return (sys.executable, *args)
+
+
+def _plan_l1(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+    if not dates:
+        return None
+    lo, hi = min(dates), max(dates)
+    return RepairAction(
+        layer="L1",
+        dates=tuple(dates),
+        commands=(
+            _py(str(ROOT / "stock_cli.py"), "sync-hs300-range",
+                "--start", lo, "--end", hi, "--db", db_path,
+                "--gap-fill", "--concurrency", "6", "--rate", "6", "--retries", "2"),
+        ),
+        reason=f"补抓 {lo}~{hi} 的行情缺口",
+    )
+
+
+def _plan_l2(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+    if not dates:
+        return None
+    cmds = tuple(
+        _py(str(ROOT / "pick_history.py"), "--db", db_path,
+            "--top", str(TOP_PICKS), "--date", d, "--no-sync")
+        for d in dates
+    )
+    return RepairAction(layer="L2", dates=tuple(dates), commands=cmds,
+                        reason=f"补算 {len(dates)} 天的选股")
+
+
+def _plan_l3(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+    if not dates:
+        return None
+    cmds: List[Tuple[str, ...]] = [
+        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        for d in dates
+    ]
+    # build-all --backfill 会跑两轮（无策略 + 每个策略各一遍），与 a-finder.sh site
+    # 的第 3/4 步同源，因此产出的 params_hash 形状与 CI 一致。
+    cmds.append(
+        _py(str(ROOT / "stock_cli.py"), "plan", "build-all",
+            "--backfill", "--since", min(dates), "--db", db_path)
+    )
+    return RepairAction(layer="L3", dates=tuple(dates), commands=tuple(cmds),
+                        reason=f"补算 {len(dates)} 天的交易计划（含各策略轮次）")
+
+
+def plan_repairs(
+    report,
+    *,
+    db_path: str,
+    today: Optional[dt.date] = None,
+    max_price_days: int = MAX_PRICE_DAYS,
+) -> List[RepairAction]:
+    """把体检报告翻译成修复动作（不执行）。"""
+    today = today or dt.date.today()
+    horizon = (today - dt.timedelta(days=max_price_days)).isoformat()
+
+    by_layer: Dict[str, List[str]] = {}
+    for g in report.gaps:
+        by_layer.setdefault(g.layer, []).append(g.date)
+
+    actions: List[RepairAction] = []
+
+    l1 = sorted(d for d in by_layer.get("L1", []) if d >= horizon)
+    act = _plan_l1(l1, db_path)
+    if act:
+        actions.append(act)
+
+    l2 = sorted(by_layer.get("L2", []))
+    act = _plan_l2(l2, db_path)
+    if act:
+        actions.append(act)
+
+    l3 = sorted(by_layer.get("L3", []))
+    act = _plan_l3(l3, db_path)
+    if act:
+        actions.append(act)
+
+    return actions
+
+
+def _default_runner(cmd: Sequence[str]) -> Tuple[int, str]:
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    tail = (proc.stdout or "")[-1500:] + (proc.stderr or "")[-1500:]
+    return proc.returncode, tail
+
+
+def run_repairs(
+    actions: Sequence[RepairAction],
+    *,
+    runner: Runner = _default_runner,
+    dry_run: bool = False,
+) -> List[Outcome]:
+    """依次执行修复动作；单项失败不中断后续动作。"""
+    outcomes: List[Outcome] = []
+    for action in actions:
+        if dry_run:
+            outcomes.append(Outcome(action=action, ok=True, output="[dry-run] 未执行"))
+            continue
+        ok = True
+        output = ""
+        for cmd in action.commands:
+            print(f"$ {' '.join(cmd)}")
+            rc, out = runner(cmd)
+            output += out
+            if rc != 0:
+                ok = False
+                print(f"  ✗ 退出码 {rc}")
+                break
+            print("  ✓")
+        outcomes.append(Outcome(action=action, ok=ok, output=output))
+    return outcomes
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="按体检报告补齐数据缺口")
+    ap.add_argument("--db", default="hs300.db")
+    ap.add_argument("--report", default=None, help="audit_coverage.py --out 生成的 JSON")
+    ap.add_argument("--today", default=None, help="基准日 YYYY-MM-DD（测试用）")
+    ap.add_argument("--max-price-days", type=int, default=MAX_PRICE_DAYS)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--out", default=None, help="把修复结果写入该 JSON 文件")
+    args = ap.parse_args(argv)
+
+    today = dt.date.fromisoformat(args.today) if args.today else None
+
+    # 没有报告文件时自己跑一次体检（便于手工使用）
+    if args.report:
+        payload = json.loads(Path(args.report).read_text(encoding="utf-8"))
+        from audit_coverage import Gap, Report
+
+        report = Report(
+            today=payload["today"],
+            window_days=payload["window_days"],
+            expected_dates=payload.get("expected_dates", []),
+            gaps=[Gap(**g) for g in payload.get("gaps", [])],
+            suppressed=[Gap(**g) for g in payload.get("suppressed", [])],
+        )
+    else:
+        from audit_coverage import audit
+
+        report = audit(args.db, today=today)
+
+    actions = plan_repairs(
+        report, db_path=args.db, today=today,
+        max_price_days=args.max_price_days,
+    )
+
+    if not actions:
+        print("无需修复")
+        result = {"actions": [], "outcomes": []}
+        if args.out:
+            Path(args.out).write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0
+
+    print(f"计划修复 {len(actions)} 组：")
+    for a in actions:
+        print(f"  [{a.layer}] {a.reason}")
+
+    outcomes = run_repairs(actions, dry_run=args.dry_run)
+
+    payload = {
+        "actions": [
+            {"layer": a.layer, "dates": list(a.dates), "reason": a.reason}
+            for a in actions
+        ],
+        "outcomes": [
+            {"layer": o.action.layer, "dates": list(o.action.dates),
+             "ok": o.ok, "reason": o.action.reason}
+            for o in outcomes
+        ],
+    }
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    failed = [o for o in outcomes if not o.ok]
+    if failed:
+        for o in failed:
+            print(f"::error::修复失败 [{o.action.layer}] {o.action.reason}",
+                  file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `.venv/bin/python -m pytest tests/test_repair_gaps.py -v`
+Expected: 全部 passed
+
+- [ ] **Step 5: 在真实库上 dry-run（确认选择正确）**
+
+Run: `.venv/bin/python scripts/repair_gaps.py --db hs300.db --dry-run`
+Expected: 打印「计划修复 N 组」或「无需修复」，不执行任何命令
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add scripts/repair_gaps.py tests/test_repair_gaps.py
+git commit -m "feat(audit): 缺口修复脚本（注入式执行器，可单测）
+
+- L1 行情：仅修近 7 天（更早复权口径可能已变，填历史会污染序列）
+- L2 选股：pick_history --date D --no-sync（纯计算）
+- L3 计划：plan build --date D + plan build-all --backfill --since D
+  （与 a-finder.sh site 第 3/4 步同源，params_hash 形状与 CI 一致）
+- 只补缺失日期，绝不重算已有日期
+- 单项失败不中断后续项"
+```
+
+---
+
+## Task 5: 报告与通知
+
+**Files:**
+- Create: `scripts/notify_audit.py`
+- Test: `tests/test_notify_audit.py`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/test_notify_audit.py`：
+
+```python
+"""巡检通知格式化单测。"""
+
+import importlib.util
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+_SPEC = importlib.util.spec_from_file_location(
+    "notify_audit", ROOT / "scripts" / "notify_audit.py")
+nf = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(nf)
+
+
+def test_pass_message_is_heartbeat():
+    title, body = nf.format_message(
+        status="pass", today="2026-10-27", gaps=[], repaired=[], remaining=[])
+    assert "✅" in title
+    assert "2026-10-27" in body
+    assert len(body) < 300, "心跳消息要短"
+
+
+def test_repaired_message_lists_what_was_fixed():
+    title, body = nf.format_message(
+        status="repaired", today="2026-10-27",
+        gaps=[{"date": "2026-10-26", "layer": "L2", "detail": "无选股数据"}],
+        repaired=[{"layer": "L2", "dates": ["2026-10-26"], "reason": "补算 1 天的选股"}],
+        remaining=[])
+    assert "🛠" in title
+    assert "2026-10-26" in body
+    assert "L2" in body
+
+
+def test_manual_message_is_alarm():
+    title, body = nf.format_message(
+        status="manual", today="2026-10-27",
+        gaps=[
+            {"date": "2026-10-10", "layer": "L1", "detail": "行情只有 0 只（阈值 280）"},
+        ],
+        repaired=[],
+        remaining=[{"date": "2026-10-10", "layer": "L1",
+                    "detail": "行情只有 0 只（阈值 280）"}],
+    )
+    assert "🚨" in title
+    assert "2026-10-10" in body
+    assert "L1" in body
+
+
+def test_body_lists_layers_not_flat_noise():
+    title, body = nf.format_message(
+        status="manual", today="2026-10-27",
+        gaps=[{"date": f"2026-10-{d:02d}", "layer": "L2", "detail": "无选股"}
+              for d in (20, 21, 22)],
+        repaired=[],
+        remaining=[{"date": f"2026-10-{d:02d}", "layer": "L2", "detail": "无选股"}
+                   for d in (20, 21, 22)],
+    )
+    assert "L2" in body
+    # 连续日期应收敛表达，不逐个铺开
+    assert body.count("2026-10-20") <= 2
+
+
+def test_no_db_is_manual_not_pass():
+    """缓存里没有 hs300.db 时不能报「通过」——那等于宣称体检过但实际没体检。"""
+    assert nf.decide_status(gaps=[], repaired=[], remaining=[], no_db=True) == "manual"
+    title, body = nf.format_message(
+        status="manual", today="2026-10-27", gaps=[], repaired=[],
+        remaining=[], no_db=True)
+    assert "🚨" in title
+    assert "数据库" in body
+
+
+def test_status_from_outcomes():
+    """全部修复成功 → repaired；有失败 → manual。"""
+    assert nf.decide_status(gaps=[], repaired=[], remaining=[]) == "pass"
+    assert nf.decide_status(
+        gaps=[{"date": "d", "layer": "L2", "detail": ""}],
+        repaired=[{"layer": "L2", "dates": ["d"], "reason": ""}],
+        remaining=[]) == "repaired"
+    assert nf.decide_status(
+        gaps=[{"date": "d", "layer": "L1", "detail": ""}],
+        repaired=[], remaining=[{"date": "d", "layer": "L1", "detail": ""}]) == "manual"
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `.venv/bin/python -m pytest tests/test_notify_audit.py -v`
+Expected: FAIL — `No module named 'notify_audit'`
+
+- [ ] **Step 3: 实现脚本**
+
+创建 `scripts/notify_audit.py`：
+
+```python
+#!/usr/bin/env python3
+"""巡检报告格式化 + 通知推送。
+
+三种结局：通过（每日心跳）/ 已自动修复 / 需人工。
+通知通道分级降级：ntfy（若配了 NTFY_TOPIC）→ GitHub Step Summary（总是写）。
+
+为什么要有心跳：静默失败最难排查。2026-10-26 站点被清空、10-27 cron 未触发，
+都是靠人发现的。有了心跳，「今天没收到消息」本身就是信号。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Dict, List, Sequence
+
+
+def decide_status(*, gaps, repaired, remaining, no_db: bool = False) -> str:
+    # 没有数据库 = 什么都没体检，绝不能报「通过」
+    if no_db:
+        return "manual"
+    if not gaps:
+        return "pass"
+    if not remaining:
+        return "repaired"
+    return "manual"
+
+
+def _summarize(items: Sequence[Dict], key: str = "layer") -> str:
+    """按层聚合日期，连续区间收敛成 a~b，避免逐日铺开。"""
+    by_layer: Dict[str, List[str]] = {}
+    for it in items:
+        by_layer.setdefault(it[key], []).append(it["date"])
+
+    parts = []
+    for layer in sorted(by_layer):
+        dates = sorted(set(by_layer[layer]))
+        if len(dates) == 1:
+            parts.append(f"{layer} {dates[0]}")
+        elif len(dates) <= 2:
+            parts.append(f"{layer} {', '.join(dates)}")
+        else:
+            parts.append(f"{layer} {dates[0]}~{dates[-1]}（{len(dates)} 天）")
+    return "；".join(parts)
+
+
+def format_message(
+    *,
+    status: str,
+    today: str,
+    gaps: Sequence[Dict],
+    repaired: Sequence[Dict],
+    remaining: Sequence[Dict],
+    no_db: bool = False,
+) -> tuple[str, str]:
+    """返回 (标题, 正文)。"""
+    if no_db:
+        return (
+            "🚨 巡检无法执行：没有数据库",
+            f"🚨 {today} 巡检无法执行：Actions 缓存里没有 hs300.db\n"
+            f"常见原因：早班 deploy-site 从未成功跑过，或缓存已过期\n"
+            f"建议：手动跑 bash a-finder.sh fallback 或触发一次 deploy-site",
+        )
+
+    if status == "pass":
+        title = "✅ 数据巡检通过"
+        body = (f"✅ {today} 巡检通过｜当天数据已发布｜近 30 天三层无缺口\n"
+                f"（心跳：收到这条说明巡检链路活着）")
+        return title, body
+
+    if status == "repaired":
+        title = "🛠 数据缺口已自动修复"
+        body = (f"🛠 {today} 巡检发现缺口并已修复\n"
+                f"发现：{_summarize(gaps)}\n"
+                f"修复：{'；'.join(a['reason'] for a in repaired)}\n"
+                f"复检：通过")
+        return title, body
+
+    title = "🚨 数据缺口需人工处理"
+    lines = [f"🚨 {today} 巡检发现无法自动修复的缺口",
+             f"剩余：{_summarize(remaining)}"]
+    if repaired:
+        lines.append(f"已修复：{'；'.join(a['reason'] for a in repaired)}")
+    lines.append("常见原因：行情缺口超过 7 天（复权口径风险）或数据源当日无数据")
+    lines.append("建议：手动跑 bash a-finder.sh fallback 或检查数据源")
+    return title, "\n".join(lines)
+
+
+def write_step_summary(title: str, body: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"## {title}\n\n```\n{body}\n```\n\n")
+    except OSError:
+        pass
+
+
+def post_ntfy(topic: str, title: str, body: str, *, priority: str = "default") -> bool:
+    if not topic:
+        return False
+    req = urllib.request.Request(
+        f"https://ntfy.sh/{topic}",
+        data=body.encode("utf-8"),
+        headers={
+            "Title": title.encode("utf-8"),
+            "Priority": priority,
+            "Tags": "chart_with_upwards_trend",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20):
+            return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"::warning::ntfy 推送失败: {exc}", file=sys.stderr)
+        return False
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="巡检报告通知")
+    ap.add_argument("--audit", default=None, help="体检 JSON（含 gaps）")
+    ap.add_argument("--repair", default=None, help="修复结果 JSON（含 outcomes）")
+    ap.add_argument("--today", default=None)
+    ap.add_argument("--topic", default=os.environ.get("NTFY_TOPIC", ""))
+    ap.add_argument("--no-db", action="store_true",
+                    help="缓存里没有数据库（此时不能报通过）")
+    args = ap.parse_args(argv)
+
+    gaps: List[Dict] = []
+    if args.audit:
+        gaps = json.loads(Path(args.audit).read_text(encoding="utf-8")).get("gaps", [])
+
+    repaired: List[Dict] = []
+    remaining: List[Dict] = []
+    if args.repair:
+        payload = json.loads(Path(args.repair).read_text(encoding="utf-8"))
+        repaired = [o for o in payload.get("outcomes", []) if o.get("ok")]
+        failed_dates = {d for o in payload.get("outcomes", []) if not o.get("ok")
+                        for d in o.get("dates", [])}
+        remaining = [g for g in gaps if g["date"] in failed_dates]
+        if failed_dates:
+            remaining = remaining or gaps
+    elif gaps:
+        remaining = list(gaps)
+
+    status = decide_status(gaps=gaps, repaired=repaired, remaining=remaining,
+                           no_db=args.no_db)
+    today = args.today or "今天"
+    title, body = format_message(status=status, today=today, gaps=gaps,
+                                 repaired=repaired, remaining=remaining,
+                                 no_db=args.no_db)
+
+    print(body)
+    write_step_summary(title, body)
+    if args.topic:
+        post_ntfy(args.topic, title, body,
+                  priority="high" if status == "manual" else "default")
+    else:
+        print("::notice::未配置 NTFY_TOPIC，仅写入 Step Summary")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `.venv/bin/python -m pytest tests/test_notify_audit.py -v`
+Expected: 全部 passed
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add scripts/notify_audit.py tests/test_notify_audit.py
+git commit -m "feat(audit): 巡检报告格式化与通知推送
+
+三种结局三种措辞：✅ 通过（每日心跳）/ 🛠 已自动修复 / 🚨 需人工。
+通道分级降级：ntfy（若配 NTFY_TOPIC）→ Step Summary（总是写）。
+连续日期收敛表达（a~b），避免逐日铺开造成噪声。"
+```
+
+---
+
+## Task 6: 巡检 workflow
+
+**Files:**
+- Create: `.github/workflows/daily-audit.yml`
+
+- [ ] **Step 1: 写 workflow**
+
+创建 `.github/workflows/daily-audit.yml`：
+
+```yaml
+name: daily-audit
+
+# 每晚 21:00（北京）巡检数据产出：三层体检 → 自动补齐 → 复检 → 发布 → 报告。
+#
+# 与 deploy-site.yml 完全解耦：巡检失败不影响早班发布，反之亦然。
+# 为什么要有这条链路：GitHub schedule 对该仓库不可靠（10-26 的 07:30 那班
+# 延迟到 14:27 UTC，10-27 三班一次都没触发），且缺口一旦静默发生没人知道。
+on:
+  schedule:
+    # 13:00 UTC = 21:00 北京，给早班 8 次机会（07:30–09:00 UTC）留足余量
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # 需要推 gh-pages
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: 判定今天是否 A 股交易日
+        id: trade-day
+        run: |
+          set -uo pipefail
+          python3 -c "
+          import datetime as dt
+          from chinese_calendar import is_workday
+          d = dt.date.today()
+          ok = is_workday(d) and d.weekday() < 5
+          print(f'today_bj={d.isoformat()}')
+          print(f'is_trade_day={str(ok).lower()}')
+          " | tee -a "$GITHUB_OUTPUT"
+
+      - name: 三层体检
+        id: audit
+        run: |
+          set -uo pipefail
+          if [ ! -f hs300.db ]; then
+            echo "::error::缓存里没有 hs300.db：早班从未成功跑过或缓存已过期"
+            echo "no_db=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          set +e
+          python3 scripts/audit_coverage.py --db hs300.db --json --out /tmp/audit.json
+          rc=$?
+          set -e
+          echo "audit_rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::体检无法判定（日历不可用或库读取失败）"
+            exit 1
+          fi
+          echo "（$rc = 1 表示有缺口，符合预期时会继续修复）"
+
+      - name: 自动修复
+        id: repair
+        if: steps.audit.outputs.audit_rc == '1'
+        run: |
+          set -uo pipefail
+          set +e
+          python3 scripts/repair_gaps.py --db hs300.db --report /tmp/audit.json --out /tmp/repair.json
+          rc=$?
+          set -e
+          echo "repair_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "（1 = 部分修复失败，继续复检并报警）"
+
+      - name: 复检
+        id: recheck
+        if: steps.audit.outputs.audit_rc == '1'
+        run: |
+          set -uo pipefail
+          set +e
+          python3 scripts/audit_coverage.py --db hs300.db --json --out /tmp/audit2.json
+          rc=$?
+          set -e
+          echo "recheck_rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: 导出修复后的数据（仅在确实修好时）
+        id: export
+        if: steps.recheck.outputs.recheck_rc == '0'
+        run: |
+          set -uo pipefail
+          python3 export_json.py --db hs300.db --out site
+          python3 scripts/verify_site_export.py --site site
+
+      - name: 部署 gh-pages（仅在导出校验通过时）
+        if: steps.export.outcome == 'success'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: true
+          commit_message: "audit: 补齐缺口并更新 ${{ steps.trade-day.outputs.today_bj }}"
+
+      - name: 保存修复后的 hs300.db 到缓存
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+
+      - name: 通知
+        if: always()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          set -uo pipefail
+          AUDIT=/tmp/audit.json
+          [ -f /tmp/audit2.json ] && AUDIT=/tmp/audit2.json
+          REPAIR=/tmp/repair.json
+          ARGS="--today ${{ steps.trade-day.outputs.today_bj }}"
+          [ -f "$AUDIT" ] && ARGS="$ARGS --audit $AUDIT"
+          [ -f "$REPAIR" ] && ARGS="$ARGS --repair $REPAIR"
+          if [ "${{ steps.audit.outputs.no_db }}" = "true" ]; then
+            ARGS="$ARGS --no-db"
+          fi
+          python3 scripts/notify_audit.py $ARGS
+```
+
+- [ ] **Step 2: 校验 YAML 与 run 块语法**
+
+Run:
+```bash
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/daily-audit.yml')); print('YAML OK')"
+```
+Expected: `YAML OK`
+
+Run:
+```bash
+python3 - <<'EOF'
+import yaml, subprocess, tempfile, os
+wf = yaml.safe_load(open('.github/workflows/daily-audit.yml'))
+bad = 0
+for s in wf['jobs']['audit']['steps']:
+    if not s.get('run'): continue
+    with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as f:
+        f.write(s['run']); p = f.name
+    r = subprocess.run(['bash','-n',p], capture_output=True, text=True)
+    print(('OK  ' if r.returncode==0 else 'FAIL'), s.get('name'))
+    if r.returncode: print(r.stderr[:300]); bad += 1
+    os.unlink(p)
+print('失败数:', bad)
+EOF
+```
+Expected: 每步 `OK`，`失败数: 0`
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add .github/workflows/daily-audit.yml
+git commit -m "feat(ci): 每日巡检 workflow（21:00 北京）
+
+体检 → 自动修复 → 复检 → 导出校验 → 部署 → 通知。
+与 deploy-site.yml 完全解耦：巡检失败不影响早班发布。
+
+- 体检无法判定（rc=2）直接失败并告警，不静默跳过
+- 仅在复检通过时才导出/部署（避免用半修好的数据覆盖线上）
+- 复用 verify_site_export.py 守卫（10-26 站点被清空的教训）
+- 通知 always() 执行，未配 NTFY_TOPIC 时写 Step Summary"
+```
+
+---
+
+## Task 7: 文档与端到端验证
+
+**Files:**
+- Modify: `CLAUDE.md`
+
+- [ ] **Step 1: 更新 CLAUDE.md**
+
+在「# CI 自动部署（deploy-site.yml）」章节之后插入新章节：
+
+```markdown
+# 每日巡检与自动补齐（daily-audit.yml）
+- 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检，与 deploy-site 完全解耦。
+- **体检基准**：`market_calendar.trading_days` 算出的真实交易日（近 30 天），
+  **完全独立于库内数据**。这是关键 —— 缺口判定若以「库的最后一天」为基准，
+  整天漏抓的那天在基准里不可见，永远查不出来（2026-10-26 实际踩过）。
+- **三层判定**：L1 行情（该日 < 280 只）、L2 选股（该日无行）、L3 计划（任一应有档位无行）。
+  L1 缺时只报 L1，派生的 L2/L3 记入 suppressed，避免噪声。
+  L2/L3 不设行数阈值 —— 选股数量天然波动（55~77 条），设阈值会大量误报。
+- **修复边界**：L2/L3 自动补（纯计算）；L1 只补近 7 天（更早的复权口径可能已变，
+  填历史会污染序列，宁可报警）；转债永不自动补（数据源只有实时快照）。
+  只补缺失日期，**绝不重算已有日期**，产出幂等。
+- **修完必须复检**：否则会重演「补了行情但选股没补上却以为修好了」。
+- **通知**：三种结局三种措辞 —— ✅ 通过（每日心跳）/ 🛠 已自动修复 / 🚨 需人工。
+  心跳是刻意设计的：静默失败最难排查，「今天没收到消息」本身就是信号。
+- **手工使用**：
+  ```bash
+  python3 scripts/audit_coverage.py --db hs300.db            # 体检
+  python3 scripts/repair_gaps.py --db hs300.db --dry-run     # 看会修什么
+  python3 scripts/repair_gaps.py --db hs300.db               # 真修
+  ```
+```
+
+- [ ] **Step 2: 跑全量测试**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: 全部 passed
+
+- [ ] **Step 3: 端到端验证 —— 体检对真实库给出正确结论**
+
+Run: `.venv/bin/python scripts/audit_coverage.py --db hs300.db`
+Expected: 输出体检区间与缺口列表（当前库 10-26/10-27 已补齐，应基本无缺口；若有则记录）
+
+- [ ] **Step 4: 端到端验证 —— 幂等性（关键）**
+
+对同一日期连续跑两次 `build-all`，确认行数不变：
+
+```bash
+.venv/bin/python -c "
+import sqlite3
+c = sqlite3.connect('hs300.db')
+print('before:', c.execute(\"SELECT COUNT(*) FROM trade_plan WHERE plan_date='2026-10-26'\").fetchone()[0])
+"
+.venv/bin/python stock_cli.py plan build-all --date 2026-10-26 --db hs300.db
+.venv/bin/python -c "
+import sqlite3
+c = sqlite3.connect('hs300.db')
+print('after :', c.execute(\"SELECT COUNT(*) FROM trade_plan WHERE plan_date='2026-10-26'\").fetchone()[0])
+"
+```
+Expected: `before` 与 `after` 相同（params_hash 相同 → ON CONFLICT 更新而非追加）
+
+- [ ] **Step 5: 端到端验证 —— 模拟缺口后能检出并修复**
+
+在临时库上验证（不动真实库）：
+
+```bash
+cp hs300.db /tmp/e2e.db
+.venv/bin/python -c "
+import sqlite3
+c = sqlite3.connect('/tmp/e2e.db')
+c.execute(\"DELETE FROM daily_picks WHERE date='2026-10-26'\")
+c.execute(\"DELETE FROM trade_plan WHERE plan_date='2026-10-26'\")
+c.commit()
+print('已人为删除 10-26 的选股与计划')
+"
+.venv/bin/python scripts/audit_coverage.py --db /tmp/e2e.db
+# 期望：报告 [L2] 2026-10-26 无选股数据
+.venv/bin/python scripts/repair_gaps.py --db /tmp/e2e.db --out /tmp/e2e-repair.json
+# 期望：执行 pick_history + plan build/build-all，最终退出码 0
+.venv/bin/python scripts/audit_coverage.py --db /tmp/e2e.db
+# 期望：✅ 三层无缺口
+```
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add CLAUDE.md
+git commit -m "docs: 记录每日巡检链路与排查顺序
+
+新增「每日巡检与自动补齐」章节：体检基准为何独立于库内数据、
+三层判定规则、修复边界（7 天/转债/不重算当天）、复检必要性、
+每日心跳的意义，以及手工使用方式。"
+```
+
+---
+
+## 验收标准
+
+完成全部 7 个 Task 后，以下全部成立：
+
+- [ ] `.venv/bin/python -m pytest tests/ -q` 全绿（含新增 4 个测试文件）
+- [ ] `python3 scripts/audit_coverage.py --db hs300.db` 能对当前库给出正确结论
+- [ ] `python3 scripts/repair_gaps.py --db hs300.db --dry-run` 正确列出待修项
+- [ ] `.github/workflows/daily-audit.yml` YAML 与所有 run 块语法通过
+- [ ] 幂等性验证：同一日期跑两次 `build-all`，行数不变
+- [ ] 模拟缺口验证：删掉某天选股/计划 → 体检检出 → 修复 → 复检通过
+- [ ] CLAUDE.md 记录了巡检链路
+
+## 已知限制（不在本计划范围）
+
+- 转债历史无法自动补（数据源只有实时快照，`cb_pipeline` 已拒绝错标）
+- 超过 7 天的行情缺口只报警不自动修（复权口径一致性）
+- 巡检依赖 Actions cache 里有 `hs300.db`；若缓存彻底丢失，需先手动跑一次发布链路
