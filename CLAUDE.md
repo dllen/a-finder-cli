@@ -68,9 +68,10 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
 - **增量同步做了三件事保证「准 + 快」**：
-  1. 缺口按**市场日历**判定（`db_repository.get_market_trade_dates` +
-     `sync_service._build_missing_segments`）：只有全市场真有行情的日期才算应有数据，
-     长假/未开盘日不再反复回补；相邻缺失点在市场日历上相连时合并成一段，减少请求。
+  1. 缺口按**真实交易日历**判定（`chinese_calendar` → `_trading_days_from_calendar` →
+     `sync_service._build_missing_segments`）：只有 A 股真正开市的日期才算应有数据，
+     长假不再反复回补；调休补班的周末不算（除非库里已有数据）；相邻缺失点合并成一段。
+     日历不可用时回退到「市场日历（库里已有日期）+ 尾部窗口」。
   2. 日常窗口只补最近 60 天（冷启动 400 天），并发/限流下调到 6/6、重试 2 次；
      同步后跑 `scripts/ci_check_data.py --prices-only` 校验，未落地就隔 120s 重试，
      最多 3 轮 —— 数据源 15:30 后才出数的情况能自动等到。
@@ -93,23 +94,24 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
   不要当成 bug。线上数据以 CI 为准，本地只用于调试。
 
-# Worker 抓取行情（D1 为抓取落点）
-- **架构**：Worker 每 2 分钟 cron 驱动分片状态机（`worker/market/jobs.js`，每片 40 只，
-  Free 计划子请求上限 50），北京 15:35–23:00 抓当天日线写 D1 的 `market_prices`，
-  游标存 `sync_jobs`；GH 用 `scripts/pull_from_d1.py` 拉增量（`X-Sync-Token` 鉴权），
-  Worker 不可用时回退直连数据源。
-- **数据源**：东财从 Cloudflare 不可达（实测 520/502），主源为腾讯
-  `newfqkline` + `bfq`（**不复权**，与 Python 侧 `fqt=0` 口径一致；含换手率与成交额）；
-  降级链 `newfqkline → fqkline → 新浪 → 放弃`。复权价会静默破坏历史序列，别改。
-- **开关**：默认开启；显式 `wrangler secret put SYNC_ENABLED` 写 `false` 才停抓。
-- **鉴权（软）**：未配置 Worker secret `SYNC_TOKEN` 时只读端点公开（A 股日线本就是公开
-  信息，自托管够用）；一旦配置，则必须提供匹配的 `X-Sync-Token`，此时 GH 侧需配同值的
-  仓库 secret `D1_SYNC_TOKEN`。零配置即可跑通整条链路。
-- **历史数据**：Actions 手动跑 `d1-seed` workflow（用 CI 缓存里的 hs300.db 生成
-  SQL 灌入 D1，幂等），不要本地跑（本机通常没有 wrangler 登录态）。
-- **测试**：`node --test tests/test_worker_market_*.mjs`（sources/jobs/repo/api）
-  + `pytest tests/test_worker_market_parity.py`（与本地库真实行情比对）
-  + `pytest tests/test_pull_from_d1.py`。
+# 行情数据路径（GH 直连，Cloudflare 不存行情）
+- **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。
+  站点只发布它消费的 JSON（picks/plan/portfolio/decide），**原始行情不进 gh-pages**。
+- **Worker 只做两件事**：`/api/decide/*`（决策台持仓，D1 仅 `real_positions` /
+  `real_cb_positions` 两张表）与 07:35 UTC 兜底 dispatch cron。不要再加第三个职责。
+- **不要再把行情写进 D1**：免费版行写入仅 10 万/天，一次 650 天回填 19.5 万行就打爆，
+  打爆后的表现是「数据写进去了但游标不推进」，极难排查（2026-10-26 折腾数小时）。
+- **已废弃的两条路线**（设计文档留在 `docs/superpowers/specs/`，需要时再查）：
+  - Worker 抓取 + D1 存储（2026-10-26）：受 CPU 10ms + D1 行配额双重限制
+  - R2 + JSON（2026-10-27）：R2 未开通，用户只用免费额度
+- **数据源能力**：东财从 Cloudflare 不可达（实测 520/502），但 **GitHub Actions 可以直连**；
+  腾讯 `newfqkline`（`bfq` 不复权）可作为降级源，缺 `amount/turnover`。
+- **同步的三个已修缺陷**（别退回去）：
+  1. 应有交易日必须来自 `chinese_calendar`，不能只靠「库里已有日期」——否则整天漏抓的
+     日子永远补不上（例：10-26 缺、10-27 已入库）
+  2. gap-fill 模式不能被 `sync_checkpoints` 短路，否则重试空转
+  3. 纯周末缺口段要丢弃（部分数据源对纯非交易日区间返回 501）
+
 
 # CI 自动部署 Worker（deploy-worker.yml）
 - `.github/workflows/deploy-worker.yml`：`worker/**` 或 `wrangler.toml` 推送到 main 时自动部署
@@ -146,6 +148,9 @@ Layered modules (top-level flat modules + a few packages):
 - Logs land in `logs/fetch_success.log` and `logs/fetch_failed.log` during sync; web log is `web.log`; daemonized CLI log is `a-finder.log` (via `a-finder.sh daemon`).
 - New strategies: drop a detector in `strategies/`, register in `strategies/__init__.STRATEGIES`. For factor strategies, extend `multi_factor_base.py`.
 - New schema columns: add a `db/migrations/<YYYY_MM_DD>_<name>.sql` file; do not edit `db_schema.py` for already-deployed DBs.
+- **新增 Cloudflare 资源前先核对免费额度与 token 权限**：给 `wrangler.toml` 加资源绑定
+  （R2 / routes / 新 D1 表）需要 token 具备对应权限，否则 `wrangler deploy` 直接失败，
+  而 CI 只显示一条报错（2026-10-26 因 `routes` 缺 Zone 权限，部署连续失败数小时）。
 
 ## Notes for Future Sessions
 
