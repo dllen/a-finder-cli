@@ -2,17 +2,32 @@ name = "a-finder-api"
 main = "worker/index.js"
 compatibility_date = "2026-10-25"
 
+# 注意：TOML 里顶层键必须写在任何 [table] / [[array-of-tables]] 之前，
+# 否则会被解析成上一个表的字段 —— 曾经把 routes 写在 [[d1_databases]] 之后，
+# 于是它变成了 d1_databases[0].routes（wrangler 只给一句 warning），
+# 顶层 routes 从未生效，线上路由实际是靠 dashboard 里另配的。
+routes = [
+  { pattern = "ycu.space/api/*", zone_name = "ycu.space" }
+]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "a-finder"
 database_id = "e9348772-e7ae-43aa-a119-19f707ab1821"
 
-routes = [
-  { pattern = "ycu.space/api/*", zone_name = "ycu.space" }
-]
-
 [triggers]
 crons = ["35 7 * * *", "* * * * *"]
 # 07:35 UTC：兜底触发 GitHub Actions 来消费 D1
 # 每分钟：驱动行情抓取状态机（Worker 自己判时段，非交易时段秒退）
-# 用 */2 实测疑似未触发（任务长时间 pending、cursor 不动），改 * 更保险
+
+# 观测性：持久化 Worker 日志（cron 抓取排查离不开它）
+# dashboard → Workers & Pages → a-finder-api → Logs 可查最近调用；
+# 未开启时 console.log 只在实时 tail 可见，事后无据可查。
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
