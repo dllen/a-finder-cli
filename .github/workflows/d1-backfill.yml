@@ -1,0 +1,121 @@
+name: d1-backfill
+
+# 把历史行情补进 Cloudflare D1。
+#
+# 为什么走 CI 而不是 Worker 回填：Worker Free 计划的 CPU 只有 10ms，一次抓多只就会
+# 超时（表现为数据写进去了但游标不推进）；而 GitHub Actions 没有这个限制，
+# 且 CI 本来就有 CLOUDFLARE_API_TOKEN 可以 wrangler d1 execute。
+#
+# 顺带把卡住的 Worker 回填任务标记完成（否则 cron 会每分钟继续啃它）。
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "起始日期 YYYY-MM-DD（默认按 days 推算）"
+        required: false
+        default: ""
+      end:
+        description: "结束日期 YYYY-MM-DD（默认今天）"
+        required: false
+        default: ""
+      skip_fetch:
+        description: "true = 不抓行情，只用缓存库里已有的数据灌 D1"
+        required: false
+        default: "false"
+  # 改动本文件即自动跑一次（幂等），省得手动点 Run workflow
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/d1-backfill.yml"
+
+concurrency:
+  group: d1-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: 计算日期区间
+        id: range
+        run: |
+          END="${{ inputs.end }}"
+          [ -z "$END" ] && END="$(TZ=Asia/Shanghai date +%F)"
+          START="${{ inputs.start }}"
+          [ -z "$START" ] && START="$(TZ=Asia/Shanghai date -d "$END -760 days" +%F)"
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+          echo "区间：$START ~ $END"
+
+      - name: 抓历史行情进 SQLite（CI 可直连数据源）
+        if: inputs.skip_fetch != 'true'
+        run: |
+          set -uo pipefail
+          echo "=== 抓取 ${{ steps.range.outputs.start }} ~ ${{ steps.range.outputs.end }} ==="
+          # 失败容忍：抓到多少算多少，下面按库里实际有的数据灌 D1
+          set +e
+          python3 stock_cli.py sync-hs300-range \
+            --start "${{ steps.range.outputs.start }}" \
+            --end "${{ steps.range.outputs.end }}" \
+            --db hs300.db \
+            --concurrency 6 --rate 6 --retries 3 --backoff 0.8 2>&1 | tail -30
+          echo "sync 退出码: $?"
+          set -e
+          python3 -c "import sqlite3;print('本地库:', sqlite3.connect('hs300.db').execute('SELECT COUNT(*), COUNT(DISTINCT trade_date), MIN(trade_date), MAX(trade_date) FROM daily_prices').fetchone())"
+
+      - name: 生成 seed SQL
+        run: |
+          python3 scripts/seed_d1.py --db hs300.db --out /tmp/d1_backfill.sql \
+            --since "${{ steps.range.outputs.start }}"
+          ls -lh /tmp/d1_backfill.sql
+
+      - name: 灌入 D1
+        run: |
+          npx --yes wrangler@latest d1 execute a-finder --file=/tmp/d1_backfill.sql --remote --yes
+
+      - name: 清掉卡住的 Worker 回填任务
+        run: |
+          # Worker 回填受 10ms CPU 限制推进极慢，历史已由本 workflow 补齐，标记完成即可
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "UPDATE sync_jobs SET status='done', note='superseded by d1-backfill workflow' WHERE id LIKE 'backfill:%'"
+
+      - name: 核对 D1 与本地库
+        run: |
+          echo "=== D1 ==="
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS rows, COUNT(DISTINCT trade_date) AS days, MIN(trade_date) AS first, MAX(trade_date) AS last FROM market_prices"
+          echo "=== 本地 ==="
+          python3 -c "import sqlite3;print(sqlite3.connect('hs300.db').execute('SELECT COUNT(*), COUNT(DISTINCT trade_date), MIN(trade_date), MAX(trade_date) FROM daily_prices').fetchone())"
+
+      - name: Save hs300.db to cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
