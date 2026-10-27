@@ -103,3 +103,43 @@ def test_market_calendar_ignores_dates_outside_range(db):
 def test_market_calendar_empty_on_cold_start(db):
     _, conn = db
     assert get_market_trade_dates(conn, "2026-10-01", "2026-10-31") == []
+
+
+# ---------------------------------------------------------------------------
+# 交易日历（chinese_calendar）：修复「库里没有的日子永远补不上」
+# ---------------------------------------------------------------------------
+
+import datetime as dt
+
+from sync_service import _trading_days_from_calendar
+
+
+def test_calendar_marks_missing_trading_day():
+    """10-26（周一）在库里缺失，但真实交易日历必须包含它，否则永远补不上。"""
+    days = _trading_days_from_calendar(dt.date(2026, 10, 19), dt.date(2026, 10, 27), set())
+    if days is None:
+        pytest.skip("未安装 chinese_calendar")
+    assert "2026-10-26" in days
+    assert "2026-10-24" not in days      # 周六
+    assert "2026-10-25" not in days      # 周日
+
+
+def test_calendar_excludes_makeup_weekend_unless_known():
+    """调休补班的周末在 chinese_calendar 里是工作日，但股市不开市 ——
+    除非库里已有该日数据，否则不应计入应有交易日。"""
+    days = _trading_days_from_calendar(dt.date(2026, 10, 1), dt.date(2026, 10, 12), set())
+    if days is None:
+        pytest.skip("未安装 chinese_calendar")
+    assert all(dt.date.fromisoformat(d).weekday() < 5 for d in days)
+
+
+def test_weekend_only_segment_is_dropped():
+    """库到周五、今天周六 → 尾部只有周末，不应产生请求段。"""
+    assert _build_missing_segments(["2026-10-23"], ["2026-10-23", "2026-10-24"]) == []
+
+
+def test_mixed_trailing_segment_kept():
+    """尾部含交易日则保留（10-26 是周一）。"""
+    segs = _build_missing_segments(
+        ["2026-10-23"], ["2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27"])
+    assert segs == [("20261024", "20261027")]

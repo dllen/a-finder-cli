@@ -77,13 +77,15 @@ cmd_sync_incremental() {
     # 兜底：按秒换算
     start="$(python3 -c "import datetime as d,sys;print((d.date.fromisoformat('$end')-d.timedelta(days=$days)).isoformat())")"
   fi
-  echo "增量区间: $start ~ $end（$days 天, 并发 $concurrency, 重试 $retries）"
+  # 变量必须加花括号：macOS 自带 bash 3.2 会把紧跟的中文括号吞进变量名
+  # （报 unbound variable，CI 的 bash 5 不会，但本地调试会踩）
+  echo "增量区间: ${start} ~ ${end}（${days} 天, 并发 ${concurrency}, 重试 ${retries}）"
   run_cmd sync-hs300-meta --db "$db" || echo "元数据同步失败，继续执行"
   local sync_rc=0
   run_cmd sync-hs300-range --start "$start" --end "$end" --db "$db" \
     --gap-fill --concurrency "$concurrency" --rate "$rate" --retries "$retries" || sync_rc=$?
   if [[ "$sync_rc" -ne 0 ]]; then
-    echo "增量行情同步失败（exit $sync_rc），继续执行后续步骤" >&2
+    echo "增量行情同步失败（exit ${sync_rc}），继续执行后续步骤" >&2
   fi
   if [[ "$pick_mode" == "pick-history" ]]; then
     # 行情已在上一步同步完，这里 --no-sync 避免 pick_history 内部再跑一遍增量同步
@@ -261,7 +263,7 @@ cmd_portfolio() {
   echo "db=$db out=$out push=$push"
   echo ""
 
-  echo "[1/2] 回补交易计划（since $BACKFILL_ANCHOR）..."
+  echo "[1/2] 回补交易计划（since ${BACKFILL_ANCHOR}）..."
   run_cmd plan build-all --backfill --since "$BACKFILL_ANCHOR" --db "$db"
 
   echo "[2/2] 生成 portfolio 数据到 $out/data/portfolio..."

@@ -149,12 +149,49 @@ def _build_gap_segments(existing_dates: List[str], start: dt.date, end: dt.date)
     return segments
 
 
+def parse_date_compact(date_str: str) -> dt.date:
+    """解析紧凑日期 YYYYMMDD（缺口段使用的格式）。"""
+    s = str(date_str).strip()
+    if len(s) == 8 and s.isdigit():
+        return dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+    return parse_date(s)
+
+
 def _compact(date_str: str) -> str:
     """YYYY-MM-DD → YYYYMMDD（各数据源内部约定的紧凑格式）。"""
     try:
         return date_to_str(parse_date(date_str))
     except Exception:
         return date_str
+
+
+def _trading_days_from_calendar(
+    start: dt.date, end: dt.date, known: set
+) -> Optional[List[str]]:
+    """用 chinese_calendar 算出 [start, end] 内真正的 A 股交易日（ISO 字符串）。
+
+    返回 None 表示日历不可用（未安装/该年份无数据），调用方回退到「市场日历 + 尾部窗口」。
+
+    注意：调休补班的周末在 chinese_calendar 里是「工作日」，但股市不开市 ——
+    除非该日已经在库里（known），否则不算交易日，避免永远重复抓空。
+    """
+    try:
+        from chinese_calendar import is_workday
+    except Exception:
+        return None
+
+    days: List[str] = []
+    cur = start
+    while cur <= end:
+        iso = cur.isoformat()
+        try:
+            workday = is_workday(cur)
+        except Exception:
+            return None
+        if workday and (cur.weekday() < 5 or iso in known):
+            days.append(iso)
+        cur += dt.timedelta(days=1)
+    return days or None
 
 
 def _build_missing_segments(
@@ -182,7 +219,11 @@ def _build_missing_segments(
         segments.append((_compact(expected_dates[seg_start]), _compact(expected_dates[prev_i])))
         seg_start = prev_i = i
     segments.append((_compact(expected_dates[seg_start]), _compact(expected_dates[prev_i])))
-    return segments
+    # 纯周末段没有交易日可拉，且部分数据源对纯非交易日区间返回 501 → 丢弃
+    return [
+        (a, b) for a, b in segments
+        if _segment_has_weekday(parse_date_compact(a), parse_date_compact(b))
+    ]
 
 
 def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional[Callable[[int, str], None]] = None) -> Dict[str, int]:
@@ -310,18 +351,35 @@ def sync_hs300_range(
             from db_repository import get_market_trade_dates
 
             market_dates = get_market_trade_dates(conn, start_date, end_date)
-            if market_dates:
-                expected_dates = list(dict.fromkeys(
-                    market_dates + [end_str]
-                ))
+            # 优先用真实交易日历：市场日历来自「库里已有日期」，看不到从未抓到过的
+            # 那一天（例如 10-26 整天漏抓、而 10-27 已入库时，10-26 永远补不上）。
+            expected_from_calendar = _trading_days_from_calendar(start, end, set(market_dates))
+            if expected_from_calendar:
+                expected_dates = expected_from_calendar
+            elif market_dates:
+                # 市场日历来自「库里已有的日期」，因此**库落后时它看不到中间缺的日子**
+                # （例：库停在 10-23，10-24~10-27 全在日历之外 → 永远补不上）。
+                # 所以把「最后一个已知交易日之后的所有日历日」也算进应有日期；
+                # 周末/假日多抓一次无害（返回空），且抓到新数据后尾部窗口自然收缩。
+                last = parse_date(market_dates[-1])
+                trailing = []
+                cursor_day = last + dt.timedelta(days=1)
+                end_day = parse_date(end_date)
+                while cursor_day <= end_day:
+                    trailing.append(cursor_day.isoformat())  # 必须是 ISO，与市场日历同格式
+                    cursor_day += dt.timedelta(days=1)
+
+                expected_dates = sorted(set(market_dates + trailing))
                 expected_dates = [d for d in expected_dates if start_date <= d <= end_str]
-                expected_dates.sort()
 
         candidates: List[Tuple[str, List[Tuple[str, str]]]] = []
         for code in sorted(mapping.keys()):
             if only_failed and code not in failed:
                 continue
-            if resume and code in completed:
+            # gap_fill 模式下不能信 resume 的 checkpoint：上一轮即使「成功」也可能
+            # 只覆盖了当时能看到的缺口，之后又发现新缺口（例如整天漏抓的日子）。
+            # 缺口判定本身是廉价的本地查询，直接跳过 checkpoint 才能让重试真正生效。
+            if resume and code in completed and not gap_fill:
                 continue
             if gap_fill:
                 existing = get_trade_dates(conn, code, start_date, end_date)
