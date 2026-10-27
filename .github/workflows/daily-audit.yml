@@ -1,0 +1,153 @@
+name: daily-audit
+
+# 每晚 21:00（北京）巡检数据产出：三层体检 → 自动补齐 → 复检 → 发布 → 报告。
+#
+# 与 deploy-site.yml 完全解耦：巡检失败不影响早班发布，反之亦然。
+# 为什么要有这条链路：GitHub schedule 对该仓库不可靠（10-26 的 07:30 那班
+# 延迟到 14:27 UTC，10-27 三班一次都没触发），且缺口一旦静默发生没人知道。
+on:
+  schedule:
+    # 13:00 UTC = 21:00 北京，给早班 8 次机会（07:30–09:00 UTC）留足余量
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # 需要推 gh-pages
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: 判定今天日期与是否交易日
+        id: trade-day
+        run: |
+          set -uo pipefail
+          python3 -c "
+          import datetime as dt
+          from chinese_calendar import is_workday
+          d = dt.date.today()
+          ok = is_workday(d) and d.weekday() < 5
+          print(f'today_bj={d.isoformat()}')
+          print(f'is_trade_day={str(ok).lower()}')
+          " | tee -a "$GITHUB_OUTPUT"
+
+      - name: 三层体检
+        id: audit
+        run: |
+          set -uo pipefail
+          if [ ! -f hs300.db ]; then
+            echo "::error::缓存里没有 hs300.db：早班从未成功跑过或缓存已过期"
+            echo "no_db=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          set +e
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit.json
+          rc=$?
+          set -e
+          echo "audit_rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::体检无法判定（日历不可用或库读取失败）—— 绝不当作无缺口"
+            exit 1
+          fi
+          echo "（$rc = 1 表示有缺口，符合预期时会继续修复）"
+
+      - name: 自动修复
+        id: repair
+        if: steps.audit.outputs.audit_rc == '1'
+        run: |
+          set -uo pipefail
+          set +e
+          python3 scripts/repair_gaps.py --db hs300.db \
+            --report /tmp/audit.json --out /tmp/repair.json
+          rc=$?
+          set -e
+          echo "repair_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "（1 = 部分修复失败，仍需复检并报警）"
+
+      - name: 复检
+        id: recheck
+        if: steps.audit.outputs.audit_rc == '1'
+        run: |
+          set -uo pipefail
+          set +e
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit2.json
+          rc=$?
+          set -e
+          echo "recheck_rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: 导出修复后的数据（仅在复检干净时）
+        id: export
+        if: steps.recheck.outputs.recheck_rc == '0'
+        run: |
+          set -uo pipefail
+          python3 export_json.py --db hs300.db --out site
+          python3 scripts/verify_site_export.py --site site
+
+      - name: 部署 gh-pages（仅在导出校验通过时）
+        if: steps.export.outcome == 'success'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: true
+          commit_message: "audit: 补齐缺口并更新 ${{ steps.trade-day.outputs.today_bj }}"
+
+      - name: 保存修复后的 hs300.db 到缓存
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+
+      - name: 通知
+        if: always()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          set -uo pipefail
+          ARGS="--today ${{ steps.trade-day.outputs.today_bj }}"
+          # 有复检报告时：--audit 用复检（决定「剩余」），--audit-pre 用原报告（算「已修复」）
+          if [ -f /tmp/audit2.json ]; then
+            ARGS="$ARGS --audit /tmp/audit2.json --audit-pre /tmp/audit.json"
+          elif [ -f /tmp/audit.json ]; then
+            ARGS="$ARGS --audit /tmp/audit.json"
+          fi
+          [ -f /tmp/repair.json ] && ARGS="$ARGS --repair /tmp/repair.json"
+          if [ "${{ steps.audit.outputs.no_db }}" = "true" ]; then
+            ARGS="$ARGS --no-db"
+          fi
+          python3 scripts/notify_audit.py $ARGS
+
+      - name: 有未修复缺口则让 run 变红
+        # 通知本身总是 rc=0（告警渠道失败不该掩盖结论），这里把「需人工」显式暴露成红灯
+        if: always() && steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0'
+        run: |
+          echo "::error::巡检发现无法自动修复的缺口，详见 Step Summary 与通知"
+          exit 1
