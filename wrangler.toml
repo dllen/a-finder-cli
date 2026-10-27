@@ -14,9 +14,8 @@ database_name = "a-finder"
 database_id = "e9348772-e7ae-43aa-a119-19f707ab1821"
 
 [triggers]
-crons = ["35 7 * * *", "* * * * *"]
+crons = ["35 7 * * *"]
 # 07:35 UTC：兜底触发 GitHub Actions 来消费 D1
-# 每分钟：驱动行情抓取状态机（Worker 自己判时段，非交易时段秒退）
 
 # 观测性：持久化 Worker 日志（cron 抓取排查离不开它）
 # dashboard → Workers & Pages → a-finder-api → Logs 可查最近调用；
