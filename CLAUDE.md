@@ -89,8 +89,9 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   POST /api/decide/dispatch-test）、手动 workflow_dispatch。
 - **失败通知**：deploy-site 末尾有 `if: failure()` 步骤，配置仓库 secret `NTFY_TOPIC`
   （ntfy.sh 主题名，浏览器/App 订阅即可）后失败会推送；未配置时写 Step Summary 并保持
-  run 变红。也可用 GitHub 自带「Notifications → Actions → 仅失败时发邮件」。hs300.db 缓存 key 按 run_id 唯一（固定 key 会冻结缓存——
-  actions/cache 不允许覆盖已存在的 key）。
+  run 变红。也可用 GitHub 自带「Notifications → Actions → 仅失败时发邮件」。
+- `hs300.db` 缓存 key 按 `run_id` 唯一（固定 key 会冻结缓存 —— actions/cache 不允许
+  覆盖已存在的 key）。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
 - **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位
   （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。
@@ -101,7 +102,8 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。
   站点只发布它消费的 JSON（picks/plan/portfolio/decide），**原始行情不进 gh-pages**。
 - **Worker 只做两件事**：`/api/decide/*`（决策台持仓，D1 仅 `real_positions` /
-  `real_cb_positions` 两张表）与 07:35 UTC 兜底 dispatch cron。不要再加第三个职责。
+  `real_cb_positions` 两张表）与 07:35 / 08:35 UTC 兜底 dispatch cron。
+  不要再加第三个职责。
 - **不要再把行情写进 D1**：免费版行写入仅 10 万/天，一次 650 天回填 19.5 万行就打爆，
   打爆后的表现是「数据写进去了但游标不推进」，极难排查（2026-10-26 折腾数小时）。
 - **已废弃的两条路线**（设计文档留在 `docs/superpowers/specs/`，需要时再查）：
