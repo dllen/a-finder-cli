@@ -312,6 +312,8 @@ def build_parser() -> argparse.ArgumentParser:
     cbp.add_argument("--concurrency", type=int, default=4)
     cbp.add_argument("--rate", type=float, default=6.0)
     cbp.add_argument("--dry-run", action="store_true")
+    cbp.add_argument("--date", type=str, default=None,
+                     help="指定交易日（YYYY-MM-DD）；默认用库里最后一个交易日")
 
     cba = subparsers.add_parser("cb-alerts", help="可转债持仓退出预警（强赎/止损/回售/止盈）")
     cba.add_argument("--db", type=str, default="hs300.db")
@@ -706,6 +708,7 @@ def _run_cb_picks(args) -> None:
         )
     result = build_cb_picks(
         args.db,
+        trade_date=args.date,
         top_n=args.top,
         capital=args.capital,
         weights=weights,
@@ -722,7 +725,8 @@ def _run_cb_picks(args) -> None:
         return
 
     picks = result["picks"]
-    print(f"# 转债榜单 {dt.date.today().isoformat()}  "
+    picked_date = args.date or result.get("trade_date") or dt.date.today().isoformat()
+    print(f"# 转债榜单 {picked_date}  "
           f"(全市场 {result['universe']} 只, 硬剔除 {len(result['dropped'])} 只, "
           f"榜单 {len(picks)} 只)")
     headers = ["排名", "代码", "名称", "现价", "总分", "A", "B", "C", "建议"]

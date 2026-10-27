@@ -102,6 +102,21 @@ def enrich_details(
     return details
 
 
+def _latest_trade_date(db_path: str) -> Optional[str]:
+    """库里最后一个有行情的交易日（ISO）。取不到返回 None。"""
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute("SELECT MAX(trade_date) FROM daily_prices").fetchone()
+        finally:
+            conn.close()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
 def build_cb_picks(
     db_path: str,
     trade_date: Optional[str] = None,
@@ -118,7 +133,26 @@ def build_cb_picks(
 
     premium_range: 覆盖转股溢价率区间（如 (5, 30)），None 时用 config.CB_FILTERS 默认值。
     """
-    trade_date = trade_date or dt.date.today().isoformat()
+    today_str = dt.date.today().isoformat()
+    if trade_date and trade_date != today_str:
+        # 数据源只能拿到「当前实时快照」（ak.bond_zh_cov 没有历史日接口），
+        # 把今天的快照写到别的日期下就是**错标数据** —— 比没有更糟。
+        # 因此只允许跑「今天」，历史日期请用 --date 之前的历史榜单。
+        return {
+            "ok": False,
+            "trade_date": trade_date,
+            "source": "none",
+            "universe": 0,
+            "candidates": 0,
+            "picks": [],
+            "dropped": {},
+            "warning": f"转债数据源只有实时快照，无法生成 {trade_date} 的榜单（错标比缺失更糟）",
+        }
+    if not trade_date:
+        # 不能直接用「今天」：周末/节假日会写出一个不存在的交易日（例如 2026-10-25
+        # 是周日，榜单却挂在那一天，导致转债页永远对不上股票页的日期）。
+        # 以库里的最后一个交易日为准，库里没有才退回今天。
+        trade_date = _latest_trade_date(db_path) or today_str
 
     def _emit(pct: int, msg: str) -> None:
         if progress:
@@ -169,6 +203,7 @@ def build_cb_picks(
 
     return {
         "ok": True,
+        "trade_date": trade_date,
         "source": source,
         "universe": len(universe),
         "candidates": len(candidates),
