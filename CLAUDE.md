@@ -82,11 +82,14 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   部署/缓存/导出步骤带 `always()`，前面失败也照常发布。
 - **补救跑**：08:30 UTC（北京 16:30）第三个 cron，15:30 那班失败时再试一次；
   若线上 `dates.json` 已是当天则整轮跳过（freshness 步骤）。
-- GitHub schedule 高负载会延迟/丢弃，有三重保险：备用 cron 07:45 UTC、
-  Cloudflare Workers Cron 07:35 UTC 兜底发 workflow_dispatch（`worker/index.js` 的
-  `scheduled` handler，需 secret `GITHUB_DISPATCH_TOKEN`——fine-grained PAT 仅授本仓库
-  Actions: Read and write；手动验证：登录后 POST /api/decide/dispatch-test）、
-  手动 workflow_dispatch。hs300.db 缓存 key 按 run_id 唯一（固定 key 会冻结缓存——
+- GitHub schedule 高负载会延迟/丢弃，有四重保险：备用 cron 07:45 UTC、
+  Cloudflare Workers Cron **07:35 与 08:35 UTC 各一次**兜底发 workflow_dispatch
+  （`worker/index.js` 的 `scheduled` handler，需 secret `GITHUB_DISPATCH_TOKEN`
+  ——fine-grained PAT 仅授本仓库 Actions: Read and write；手动验证：
+  POST /api/decide/dispatch-test）、手动 workflow_dispatch。
+- **失败通知**：deploy-site 末尾有 `if: failure()` 步骤，配置仓库 secret `NTFY_TOPIC`
+  （ntfy.sh 主题名，浏览器/App 订阅即可）后失败会推送；未配置时写 Step Summary 并保持
+  run 变红。也可用 GitHub 自带「Notifications → Actions → 仅失败时发邮件」。hs300.db 缓存 key 按 run_id 唯一（固定 key 会冻结缓存——
   actions/cache 不允许覆盖已存在的 key）。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
 - **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位

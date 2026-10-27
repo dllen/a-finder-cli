@@ -14,8 +14,9 @@ database_name = "a-finder"
 database_id = "e9348772-e7ae-43aa-a119-19f707ab1821"
 
 [triggers]
-crons = ["35 7 * * *"]
-# 07:35 UTC：兜底触发 GitHub Actions 来消费 D1
+crons = ["35 7 * * *", "35 8 * * *"]
+# 07:35 / 08:35 UTC（北京 15:35 / 16:35）：兜底触发 GitHub Actions
+# 两次是为了覆盖「15:30 那班被丢、16:30 的 GH 补救 cron 也被丢」的情况
 
 # 观测性：持久化 Worker 日志（cron 抓取排查离不开它）
 # dashboard → Workers & Pages → a-finder-api → Logs 可查最近调用；

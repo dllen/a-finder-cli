@@ -173,6 +173,34 @@ jobs:
           force_orphan: true
           commit_message: "site: 自动更新 ${{ steps.trade-day.outputs.today_bj }}"
 
+      # 失败通知：门禁或任何前置步骤失败时推送。
+      # 只依赖一个可选的 NTFY_TOPIC secret（ntfy.sh 无需注册，浏览器/App 订阅同名字即可）。
+      # 没配也照样写 Step Summary + 让 run 变红，不会静默。
+      - name: 失败通知（可选：配置 NTFY_TOPIC 后生效）
+        if: failure()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          DATA_DATE=$(python3 -c "import sqlite3;r=sqlite3.connect('hs300.db').execute('SELECT MAX(trade_date) FROM daily_prices').fetchone();print(r[0] if r else '?')" 2>/dev/null || echo "?")
+          MSG="a-finder 数据流水线失败
+          期望交易日: ${EXPECT}
+          库里最新: ${DATA_DATE}
+          站点可能未更新到最新，点开查看：${RUN_URL}"
+          printf '%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "${NTFY_TOPIC}" ]; then
+            echo "::notice::未配置 NTFY_TOPIC，跳过推送（失败信息已写入 Step Summary）"
+            exit 0
+          fi
+          curl -sf --max-time 20 \
+            -H "Title: a-finder 数据流水线失败" \
+            -H "Priority: high" \
+            -H "Tags: rotating_light" \
+            --data-binary "$MSG" \
+            "https://ntfy.sh/${NTFY_TOPIC}" && echo "已推送通知" \
+            || echo "::warning::ntfy 推送失败（不影响 run 结论）"
+
       # 门禁：站点已经用「当前拿得到的最新数据」更新了（对用户始终可用），
       # 但数据不完整时让 workflow 变红，避免悄无声息地把旧数据当新数据发布。
       - name: 数据完整性门禁
