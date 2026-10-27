@@ -32,16 +32,31 @@ def no_external_network(monkeypatch):
     """本文件所有测试都不许连外网：只允许回环（emoji 头编码测试用）。
 
     即使将来有人删掉 mock，也只会失败而不是真的往 ntfy.sh 推消息。
+    DNS 也一并拦住：只拦 connect 的话漏 mock 时会先解析域名（算一次出网）。
     """
     real_connect = socket.socket.connect
+    real_getaddrinfo = socket.getaddrinfo
+    loopback = ("127.0.0.1", "::1", "localhost")
 
     def guarded_connect(self, address):
         host = address[0] if isinstance(address, tuple) else address
-        if host not in ("127.0.0.1", "::1", "localhost"):
+        if host not in loopback:
             raise AssertionError(f"测试试图连接外部网络: {address!r}")
         return real_connect(self, address)
 
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if host not in loopback and host is not None:
+            raise AssertionError(f"测试试图解析外部域名: {host!r}")
+        return real_getaddrinfo(host, *args, **kwargs)
+
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+
+
+def test_network_guard_blocks_external_connect():
+    """guard 自身的回归：漏 mock 时必须在这里失败，而不是真的发请求。"""
+    with pytest.raises(AssertionError):
+        socket.create_connection(("example.com", 80), timeout=1)
 
 
 # ---------------------------------------------------------------- 任务给的测试
@@ -366,10 +381,20 @@ def test_main_without_topic_skips_push(tmp_path, monkeypatch, capsys):
     assert "未配置 NTFY_TOPIC" in capsys.readouterr().out
 
 
-def test_main_without_inputs_is_not_a_false_pass(monkeypatch):
-    """没有体检输入 ≠ 体检通过。没有审计就不能发心跳。"""
-    _forbid_post(monkeypatch)
-    assert nf.main([]) == 2
+def test_main_without_inputs_alarms_instead_of_false_pass(tmp_path, monkeypatch):
+    """没有体检输入 ≠ 体检通过：不发心跳，但要发「巡检无法执行」的告警。
+
+    Task 6 在体检 rc=2（日历不可用/库读取失败）时不会传 --audit，
+    这条路径必须在通知层可见，不能只剩 Actions 变红。
+    """
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
+    assert "体检报告" in sent["body"]
+    assert "体检报告" in summary.read_text(encoding="utf-8")
 
 
 def test_main_missing_repair_file_still_alarms(tmp_path, monkeypatch):
@@ -412,13 +437,15 @@ def test_main_no_db_ignores_missing_audit_path(tmp_path, monkeypatch):
     assert "数据库" in sent["body"]
 
 
-def test_main_malformed_gaps_returns_2(tmp_path, monkeypatch):
+def test_main_malformed_gaps_alarms_and_returns_2(tmp_path, monkeypatch):
     audit = _write_json(tmp_path, "audit.json", {
         "today": "2026-10-27",
         "gaps": [{"date": "2026-10-26"}],          # 缺 layer
     })
-    _forbid_post(monkeypatch)
-    assert nf.main(["--audit", str(audit)]) == 2
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
+    assert "date/layer" in sent["body"]
 
 
 def test_main_malformed_skipped_makes_repair_info_untrusted(tmp_path, monkeypatch):
@@ -440,21 +467,166 @@ def test_main_malformed_skipped_makes_repair_info_untrusted(tmp_path, monkeypatc
     assert sent["title"].startswith("🚨")
 
 
-def test_main_missing_audit_file_returns_2(tmp_path, monkeypatch):
-    _forbid_post(monkeypatch)
-    assert nf.main(["--audit", str(tmp_path / "nope.json")]) == 2
+def test_main_missing_audit_file_alarms_and_returns_2(tmp_path, monkeypatch):
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(tmp_path / "nope.json"), "--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
+    assert "体检报告不可读" in sent["body"]
 
 
-def test_main_bad_json_returns_2(tmp_path, monkeypatch):
+def test_main_bad_json_alarms_and_returns_2(tmp_path, monkeypatch):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
-    _forbid_post(monkeypatch)
-    assert nf.main(["--audit", str(bad)]) == 2
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(bad), "--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
 
 
 def test_main_bad_today_returns_2(monkeypatch):
     _forbid_post(monkeypatch)
     assert nf.main(["--no-db", "--today", "10/27/2026"]) == 2
+
+
+# ---------------------------------------------------------------- 复检报告语义
+
+
+def test_main_recheck_gaps_do_not_resurrect_fixed_dates(tmp_path, monkeypatch):
+    """复检后只剩 10-27；失败 action 的 dates 含已修好的 10-26，不能报成剩余。"""
+    audit = _write_json(tmp_path, "audit2.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-27", "layer": "L2", "detail": "无选股"}],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27",
+        "skipped": [],
+        "outcomes": [{"layer": "L2", "dates": ["2026-10-26", "2026-10-27"],
+                      "ok": False, "reason": "补算选股失败"}],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--repair", str(repair),
+                    "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "2026-10-27" in sent["body"]
+    assert "2026-10-26" not in sent["body"]
+    assert "（2 天）" not in sent["body"]
+
+
+def test_main_clean_recheck_with_failed_outcome_is_pass(tmp_path, monkeypatch):
+    """复检无缺口 + 修复有条 failed outcome → 以复检为准报通过（不能自相矛盾）。"""
+    audit = _write_json(tmp_path, "audit2.json",
+                        {"today": "2026-10-27", "gaps": []})
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27",
+        "skipped": [],
+        "outcomes": [{"layer": "L2", "dates": ["2026-10-26"],
+                      "ok": False, "reason": "补算选股失败"}],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--repair", str(repair),
+                    "--topic", "t"]) == 0
+    assert sent["title"].startswith("✅")
+
+
+def test_remaining_gaps_only_uses_audit_gaps():
+    gaps = [{"date": "2026-10-27", "layer": "L2", "detail": "无选股"}]
+    outcomes = [{"layer": "L2", "dates": ["2026-10-26", "2026-10-27"],
+                 "ok": False, "reason": "失败"}]
+    skipped = [{"date": "2026-10-20", "layer": "L1", "reason": "超窗"}]
+    remaining = nf._remaining_gaps(gaps, outcomes, skipped)
+    assert [(g["layer"], g["date"]) for g in remaining] == [("L2", "2026-10-27")]
+    assert remaining[0]["reason"] == "失败"
+
+
+def test_remaining_gaps_skipped_never_counts_as_fixed():
+    """同 key 混进 ok outcome 也不能把 skipped 抹掉（宁可误报不可假通过）。"""
+    gaps = [{"date": "2026-10-01", "layer": "L1", "detail": "超窗"}]
+    skipped = [{"date": "2026-10-01", "layer": "L1", "reason": "超窗未修"}]
+    outcomes = [{"layer": "L1", "dates": ["2026-10-01"], "ok": True,
+                 "reason": "不可能"}]
+    remaining = nf._remaining_gaps(gaps, outcomes, skipped)
+    assert remaining and remaining[0]["reason"] == "超窗未修"
+
+
+# ---------------------------------------------------------------- 形状与文案细节
+
+
+def test_items_rejects_falsy_non_list():
+    """`""`/`0`/`false` 不能被塌成空数组绕过后面的形状校验。"""
+    for bad in ("", 0, False, {}):
+        assert nf._items({"gaps": bad}, "gaps", "audit.json") is None
+    assert nf._items({"gaps": None}, "gaps", "audit.json") == []
+    assert nf._items({}, "gaps", "audit.json") == []
+
+
+def test_main_falsy_gaps_is_not_a_silent_pass(tmp_path, monkeypatch):
+    audit = _write_json(tmp_path, "audit.json",
+                        {"today": "2026-10-27", "gaps": ""})
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
+
+
+def test_pass_heartbeat_does_not_claim_site_published():
+    """pass 路径不发布任何东西，心跳只能宣称体检真正覆盖到的内容。"""
+    title, body = nf.format_message(
+        status="pass", today="2026-10-27", gaps=[], repaired=[], remaining=[])
+    assert "三层无缺口" in body
+    assert "已发布" not in body
+
+
+def test_manual_message_falls_back_to_gap_detail():
+    gap = {"date": "2026-10-10", "layer": "L1", "detail": "行情只有 0 只（阈值 280）"}
+    title, body = nf.format_message(
+        status="manual", today="2026-10-27", gaps=[gap], repaired=[],
+        remaining=[dict(gap)])
+    assert "L1 2026-10-10：行情只有 0 只（阈值 280）" in body
+
+
+def test_empty_reasons_are_not_rendered_as_separator():
+    title, body = nf.format_message(
+        status="repaired", today="2026-10-27",
+        gaps=[{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+        repaired=[{"layer": "L2", "dates": ["2026-10-26"], "reason": ""}],
+        remaining=[])
+    assert "修复：已自动补齐" in body
+
+
+def test_window_days_comes_from_audit_report(tmp_path, monkeypatch):
+    audit = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27", "window_days": 60, "gaps": [],
+    })
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 0
+    assert "近 60 天" in sent["body"]
+
+
+def test_window_days_cli_overrides_report(tmp_path, monkeypatch):
+    audit = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27", "window_days": 60, "gaps": [],
+    })
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(audit), "--window-days", "7",
+                    "--topic", "t"]) == 0
+    assert "近 7 天" in sent["body"]
+
+
+def test_main_today_is_normalized(tmp_path, monkeypatch):
+    """fromisoformat 接受 20261027，但展示要回写成 YYYY-MM-DD。"""
+    sent = _capture_post(monkeypatch)
+    assert nf.main(["--no-db", "--today", "20261027", "--topic", "t"]) == 0
+    assert "2026-10-27" in sent["body"]
+    assert "20261027" not in sent["body"]
+
+
+def test_main_warns_when_today_disagrees_with_audit(tmp_path, monkeypatch, capsys):
+    audit = _write_json(tmp_path, "audit.json",
+                        {"today": "2026-10-26", "gaps": []})
+    _capture_post(monkeypatch)
+    assert nf.main(["--audit", str(audit), "--today", "2026-10-27",
+                    "--topic", "t"]) == 0
+    assert "不一致" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("status", ["pass", "repaired", "manual"])

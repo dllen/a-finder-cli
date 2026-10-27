@@ -8,13 +8,17 @@
 都是靠人发现的。有了心跳，「今天没收到消息」本身就是信号。
 
 输入契约（与 audit_coverage / repair_gaps 的 --out 对齐）：
-  --audit  : {"today": "YYYY-MM-DD", "gaps": [{"date","layer","detail"}], ...}
+  --audit  : {"today": "YYYY-MM-DD", "window_days": 30,
+              "gaps": [{"date","layer","detail"}], ...}
   --repair : {"skipped": [...], "outcomes": [{"layer","dates","ok","reason"}], ...}
 `outcomes[].ok` 为真才算已修复；`skipped`（超窗未修）永远算未修。
+「剩余缺口」只认体检报告的 gaps：修复结果只用来给已存在的缺口补原因，
+不凭 outcome 里的 dates 造新条目（Task 6 传的是复检后的报告，见 _remaining_gaps）。
 
 退出码：0 = 通知已产出（含「需人工」，那靠 🚨 措辞 + ::error:: 注释暴露，
         是否让 CI 变红由体检/修复步骤的退出码决定）；
         2 = 没有体检输入、体检报告不可用、--today 不合法。
+        前两种「体检自己坏了」的场景仍然会写 Summary + 推一条 🚨，只是退出码非 0。
         `--repair` 缺失/损坏只降级为 ::warning:: —— 修复信息是补充，不能因此不发告警。
 
 注意：本模块的推送**绝不能被单测真发出去**。测试要么不配 topic，要么
@@ -101,6 +105,11 @@ def _summarize(items: Sequence[Dict], key: str = "layer") -> str:
     )
 
 
+def _reasons_text(items: Sequence[Dict], fallback: str) -> str:
+    """把若干 reason 拼成一句；全为空时用 fallback，别渲染出「修复：；」。"""
+    return "；".join(filter(None, (it.get("reason") for it in items))) or fallback
+
+
 def format_message(
     *,
     status: str,
@@ -122,16 +131,17 @@ def format_message(
 
     if status == "pass":
         title = "✅ 数据巡检通过"
-        body = (f"✅ {today} 巡检通过｜当天数据已发布｜近 {window_days} 天三层无缺口\n"
+        # 只宣称体检真正覆盖到的内容：pass 路径不做导出/部署，
+        # “当天数据已发布”无法在这里核实。
+        body = (f"✅ {today} 巡检通过｜近 {window_days} 天三层无缺口\n"
                 f"（心跳：收到这条说明巡检链路活着）")
         return title, body
 
     if status == "repaired":
         title = "🛠 数据缺口已自动修复"
-        reasons = "；".join(a.get("reason") or "" for a in repaired) or "已自动补齐"
         body = (f"🛠 {today} 巡检发现缺口并已修复\n"
                 f"发现：{_summarize(gaps) or '—'}\n"
-                f"修复：{reasons}\n"
+                f"修复：{_reasons_text(repaired, '已自动补齐')}\n"
                 # outcomes 只能证明修复命令退出码为 0，不等于「复检通过」，
                 # 别把命令成功写成数据已验证
                 f"结果：修复动作全部成功")
@@ -141,14 +151,19 @@ def format_message(
     lines = [f"🚨 {today} 巡检发现无法自动修复的缺口",
              f"剩余：{_summarize(remaining) or '—'}"]
     if repaired:
-        fixed = "；".join(a.get("reason") or "" for a in repaired)
-        lines.append(f"已修复：{fixed}")
-    # skipped 项自带明确原因（例如行情超窗不自动修），直接透出比泛泛而谈有用
+        lines.append(f"已修复：{_reasons_text(repaired, '修复动作成功')}")
+    # skipped 项自带明确原因（例如行情超窗不自动修），直接透出比泛泛而谈有用；
+    # 没有修复信息时回退 gap 的 detail，别让正文只剩「L1 2026-10-10」这种内部代码。
     notes: List[str] = []
     for item in remaining:
-        reason = item.get("reason")
-        if reason and reason not in notes:
-            notes.append(reason)
+        if item.get("reason"):
+            text = item["reason"]
+        elif item.get("detail"):
+            text = f"{item.get('layer')} {item.get('date')}：{item['detail']}"
+        else:
+            continue
+        if text not in notes:
+            notes.append(text)
     if notes:
         lines.append(f"原因：{'；'.join(notes)}")
     lines.append("建议：手动跑 bash a-finder.sh fallback 或检查数据源")
@@ -207,9 +222,14 @@ def _read_json(path: str, *, fatal: bool = True) -> Optional[Dict]:
 
 def _items(payload: Dict, key: str, path: str, *,
            fatal: bool = True) -> Optional[List[Dict]]:
-    """取对象数组；形状不对返回 None（交给调用方决定报错还是降级）。"""
+    """取对象数组；形状不对返回 None（交给调用方决定报错还是降级）。
+
+    注意不能用 `payload.get(key) or []`：`""` / `0` / `false` 会被悄悄塌成空数组，
+    绕过形状校验 —— 那正是「假心跳」的方向。
+    """
     level = "error" if fatal else "warning"
-    items = payload.get(key) or []
+    raw = payload.get(key)
+    items = [] if raw is None else raw
     if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
         print(f"::{level}::{path} 的 {key} 不是对象数组", file=sys.stderr)
         return None
@@ -237,10 +257,10 @@ def _load_repair(path: str) -> tuple[List[Dict], List[Dict]]:
 
 
 def _outcome_dates(outcome: Dict) -> List[str]:
-    dates = outcome.get("dates") or []
-    if not isinstance(dates, list):
+    raw = outcome.get("dates")
+    if not isinstance(raw, list):
         return []
-    return [d for d in dates if isinstance(d, str)]
+    return [d for d in raw if isinstance(d, str)]
 
 
 def _remaining_gaps(
@@ -248,54 +268,106 @@ def _remaining_gaps(
     outcomes: Sequence[Dict],
     skipped: Sequence[Dict],
 ) -> List[Dict]:
-    """没被成功修复的缺口 + 修复脚本明确跳过的缺口（skipped 永远算未修）。
+    """仍未修好的缺口。
 
-    同一 (layer, date) 的缺口、失败结果、跳过结果合并成一条，优先保留
-    修复脚本给出的具体原因 —— 否则告警只会说「有缺口」，说不出为什么没修。
+    以体检报告的 gaps 为**唯一事实来源**：修复失败/跳过的项只用来给已存在的
+    缺口补 reason，绝不凭 outcome 的 dates 造出新缺口。
+
+    为什么要这样：Task 6 优先传复检后的报告，gaps 里只剩真正还缺的日期。
+    修复动作是「一个 action 覆盖多天」，第一条命令失败就 break，于是 failed
+    outcome 的 dates 里可能包含前半段**已经修好**的日期；按 dates 铺开就会
+    把已修好的报成「剩余」，与复检结论直接矛盾（audit 干净 + failed outcome
+    甚至会假报 🚨）。
     """
+    skipped_keys = {(s.get("layer"), s.get("date")) for s in skipped}
     fixed = {
         (o.get("layer"), d)
         for o in outcomes if o.get("ok")
         for d in _outcome_dates(o)
-    }
-    remaining: Dict[tuple, Dict] = {}
-    for g in gaps:
-        key = (g.get("layer"), g.get("date"))
-        if key not in fixed:
-            remaining[key] = dict(g)
+    } - skipped_keys
+    # skipped（超窗未修）永远算未修，哪怕同 key 混进了一个 ok outcome
 
+    reasons: Dict[tuple, str] = {}
     for o in outcomes:
         if o.get("ok"):
             continue
         reason = o.get("reason") or "修复命令失败"
         for d in _outcome_dates(o):
-            key = (o.get("layer"), d)
-            item = dict(remaining.get(key) or {"layer": key[0], "date": d,
-                                               "detail": ""})
-            item["reason"] = reason
-            remaining[key] = item
-
+            reasons[(o.get("layer"), d)] = reason
+    # skipped 项自带明确原因（例如行情超窗不自动修），优先于泛泛的失败原因
     for s in skipped:
-        key = (s.get("layer"), s.get("date"))
-        item = dict(remaining.get(key) or s)
         if s.get("reason"):
-            item["reason"] = s["reason"]
-        remaining[key] = item
+            reasons[(s.get("layer"), s.get("date"))] = s["reason"]
 
-    return list(remaining.values())
+    remaining: List[Dict] = []
+    seen = set()
+    for g in gaps:
+        key = (g.get("layer"), g.get("date"))
+        if key in fixed or key in seen:
+            continue
+        seen.add(key)
+        item = dict(g)
+        if key in reasons:
+            item["reason"] = reasons[key]
+        remaining.append(item)
+    return remaining
 
 
-def _pick_today(args_today: Optional[str], *payloads: Dict) -> Optional[str]:
+def _pick_today(args_today: Optional[str], payload: Optional[Dict] = None) -> Optional[str]:
+    """规范化 --today；未给则取报告里的 today，再退回今天。
+
+    `fromisoformat` 会接受 `20261027` / `2026-W43-2` 这类非规范写法，
+    原样展示会和报告里的 YYYY-MM-DD 对不上，所以统一回写成 isoformat。
+    """
     if args_today is not None:
-        if _as_date(args_today) is None:
+        value = _as_date(args_today)
+        if value is None:
             print(f"::error::--today 不是合法日期: {args_today}", file=sys.stderr)
             return None
-        return args_today
-    for payload in payloads:
-        value = payload.get("today")
-        if isinstance(value, str) and _as_date(value):
-            return value
+        if payload:
+            report_today = payload.get("today")
+            if (isinstance(report_today, str) and _as_date(report_today)
+                    and _as_date(report_today) != value):
+                print(f"::warning::--today {value.isoformat()} 与体检报告的 today "
+                      f"{report_today} 不一致", file=sys.stderr)
+        return value.isoformat()
+    value = (payload or {}).get("today")
+    if isinstance(value, str) and _as_date(value):
+        return _as_date(value).isoformat()
     return dt.date.today().isoformat()
+
+
+def _pick_window_days(args_window: Optional[int], payload: Dict) -> int:
+    """心跳文案里的窗口天数：显式参数 > 报告自带 > 30。"""
+    if args_window is not None and args_window > 0:
+        return args_window
+    value = payload.get("window_days")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 30
+
+
+def _alarm_no_report(*, reason: str, today: str, topic: str) -> int:
+    """体检自己坏了（没报告/报告读不了）：仍然要告警，不能只剩 Actions 变红。
+
+    「没有体检输入」和「缓存里没有数据库」同待遇：都写 Summary + 推送，
+    否则最需要告警的场景（体检 rc=2 没写出 --out）在通知层完全静默。
+    退出码保持 2，让 CI 也能体现「无法判定」。
+    """
+    title = "🚨 巡检无法执行：没有体检报告"
+    body = (f"🚨 {today} 巡检无法执行：{reason}\n"
+            f"没有体检结果就无法判断数据完整性，按「需人工」处理\n"
+            f"建议：查看 daily-audit workflow 里体检步骤的日志与退出码，"
+            f"必要时手动跑 bash a-finder.sh fallback")
+    print(body)
+    write_step_summary(title, body)
+    # 原因已经在正文/日志里，这里只留一条红色注释，别把标题与原因重复堆在一起
+    print(f"::error::{title}", file=sys.stderr)
+    if topic:
+        post_ntfy(topic, title, body, priority="high")
+    else:
+        print("::notice::未配置 NTFY_TOPIC，仅写入 Step Summary")
+    return 2
 
 
 def main(argv=None) -> int:
@@ -304,15 +376,16 @@ def main(argv=None) -> int:
     ap.add_argument("--repair", default=None, help="修复结果 JSON（含 outcomes）")
     ap.add_argument("--today", default=None)
     ap.add_argument("--topic", default=os.environ.get("NTFY_TOPIC", ""))
-    ap.add_argument("--window-days", type=int, default=30,
-                    help="体检窗口天数（仅用于心跳文案）")
+    ap.add_argument("--window-days", type=int, default=None,
+                    help="体检窗口天数（仅用于心跳文案；默认取报告里的 window_days，"
+                         "缺失用 30）")
     ap.add_argument("--no-db", action="store_true",
                     help="缓存里没有数据库（此时不能报通过）")
     args = ap.parse_args(argv)
 
-    # 没有任何体检输入却报「通过」= 假心跳，与 no_db 同类：宁可不发
-    if not args.audit and not args.no_db:
-        print("::error::缺少体检输入：请给 --audit（或 --no-db）", file=sys.stderr)
+    # --today 非法时不发任何消息（连告警里的日期都不可信），直接失败
+    if args.today is not None and _as_date(args.today) is None:
+        print(f"::error::--today 不是合法日期: {args.today}", file=sys.stderr)
         return 2
 
     gaps: List[Dict] = []
@@ -323,21 +396,35 @@ def main(argv=None) -> int:
     # no_db 时体检根本没跑：旧报告/修复结果都不可信，也不读
     # （缓存丢失场景下这些文件可能压根不存在，不能因此漏掉告警）
     if not args.no_db:
+        today_hint = _pick_today(args.today) or dt.date.today().isoformat()
+        # 没有任何体检输入却报「通过」= 假心跳；但也不能静默退出：
+        # Task 6 在 audit_rc=2（日历不可用/库读取失败）时正是这条路径。
+        if not args.audit:
+            return _alarm_no_report(
+                reason="没有体检报告（未传 --audit，体检步骤大概率 rc≠0）",
+                today=today_hint, topic=args.topic)
         audit_payload = _read_json(args.audit)
         if audit_payload is None:
-            return 2
+            return _alarm_no_report(
+                reason=f"体检报告不可读：{args.audit}（体检步骤可能 rc≠0，没写出报告）",
+                today=today_hint, topic=args.topic)
         gaps = _items(audit_payload, "gaps", args.audit)
         if gaps is None:
-            return 2
+            return _alarm_no_report(
+                reason=f"体检报告的 gaps 不是对象数组：{args.audit}",
+                today=today_hint, topic=args.topic)
         if not all(_has_date_layer(g) for g in gaps):
             print(f"::error::{args.audit} 的 gaps 项缺少 date/layer", file=sys.stderr)
-            return 2
+            return _alarm_no_report(
+                reason=f"体检报告的 gaps 项缺少 date/layer：{args.audit}",
+                today=today_hint, topic=args.topic)
         if args.repair:
             outcomes, skipped = _load_repair(args.repair)
 
     today = _pick_today(args.today, audit_payload)
     if today is None:
         return 2
+    window_days = _pick_window_days(args.window_days, audit_payload)
 
     repaired = [o for o in outcomes if o.get("ok")]
     remaining = _remaining_gaps(gaps, outcomes, skipped)
@@ -346,7 +433,7 @@ def main(argv=None) -> int:
                            no_db=args.no_db)
     title, body = format_message(
         status=status, today=today, gaps=gaps, repaired=repaired,
-        remaining=remaining, no_db=args.no_db, window_days=args.window_days,
+        remaining=remaining, no_db=args.no_db, window_days=window_days,
     )
 
     print(body)
