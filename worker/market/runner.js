@@ -16,34 +16,45 @@ function dayOffsetStr(dateStr, days) {
 }
 
 /**
- * 跑一轮抓取。返回诊断信息，便于 /api/market/tick 与 cron 共用。
- * 非交易时段、无活跃任务、开关关闭都直接返回 reason。
+ * 跑一轮抓取。cron 与 /api/market/tick 共用，返回值是诊断信息。
+ *
+ * 关于 CPU 预算（Free 计划 cron 只有 10ms）：这个函数里每一次 await 都在花钱。
+ * 心跳这类"排查用"的写入必须靠 SYNC_DEBUG 开关，默认不写 —— 曾经因为每轮写心跳
+ * 导致预算耗尽、抓取执行不到 updateJob（表现：游标永不推进）。
  */
 export async function runMarketSync(env, opts = {}) {
-  // 开关：显式设为 'false' 才关闭（默认开启）。想暂停抓取只需
-  // `wrangler secret put SYNC_ENABLED` 写入 false，无需改代码。
-  if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
   const bj = beijingNow();
-  // 心跳：仅 SYNC_DEBUG=true 时写。
-  // 教训：Free 计划 cron 的 CPU 预算只有 10ms，每次 tick 多一次 D1 写入就会把预算吃光，
-  // 表现为「心跳写了、后面全部执行不到」（抓取游标永不推进）。
-  const beat = env.SYNC_DEBUG === 'true'
-    ? async (stage) => {
-        try {
-          await env.DB.prepare(
-            "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
-          ).bind(stage).run();
-        } catch { /* 心跳失败不影响抓取 */ }
-      }
-    : async () => {};
-  await beat('enter');
+  const debug = env.SYNC_DEBUG === 'true';
+  const beat = async (stage) => {
+    if (!debug) return;
+    try {
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO worker_heartbeat (name, at, note) VALUES ('cron', datetime('now'), ?)",
+      ).bind(stage).run();
+    } catch { /* 心跳失败不影响抓取 */ }
+  };
 
-  // 优先级：当天的日报 > 回填。回填可能跨天（301 只 / 5 只每轮 ≈ 2 小时），
+  try {
+    return await runOnce(env, bj, opts, beat);
+  } catch (err) {
+    const msg = String(err && err.stack ? err.stack : err);
+    await beat(`error:${msg.slice(0, 160)}`);
+    console.error('runMarketSync 未捕获异常:', msg.slice(0, 400));
+    return { error: msg.slice(0, 400) };
+  }
+}
+
+async function runOnce(env, bj, opts, beat) {
+  // 开关：显式设为 'false' 才关闭（默认开启）
+  if (env.SYNC_ENABLED === 'false') return { skipped: 'disabled' };
+
+  // 优先级：当天日报 > 回填。回填可能跨夜（301 只 / 2 只每轮），
   // 若不优先日报，当天行情会被回填拖住不抓。
   let active = null;
   const todayJob = await getJob(env.DB, bj.date);
-  const todayRunning = todayJob && (todayJob.status === 'pending' || todayJob.status === 'running');
-  if (todayRunning) {
+  await beat(`today:${todayJob ? todayJob.status : 'none'}`);
+
+  if (todayJob && (todayJob.status === 'pending' || todayJob.status === 'running')) {
     active = todayJob;
   } else if (!todayJob && isTradingWindow(bj)) {
     const codes = await listSymbols(env.DB);
@@ -53,54 +64,55 @@ export async function runMarketSync(env, opts = {}) {
     }
   }
   if (!active) active = await activeJob(env.DB);
+  await beat(`active:${active ? active.id + '/' + active.status : 'none'}`);
+
   if (!shouldRun(active, bj)) {
-    await beat(`skip:${active ? active.id + '/' + active.status : 'no-active-job'}`);
+    // 每分钟一条轻量日志，配合 observability 可确认 cron 活着
+    console.log('tick: no runnable job', active ? `${active.id}/${active.status}` : 'none');
     return {
-      skipped: 'no-active-job-in-window',
+      skipped: 'no-runnable-job',
       beijing: bj,
       job: active ? { id: active.id, status: active.status, cursor: active.cursor } : null,
     };
   }
 
-  await beat(`job:${active.id}:${active.cursor}`);
   const codes = await listSymbols(env.DB);
+  const meta = parseJobId(active.id);
+  const size = chunkSizeFor(meta.kind);
+
   if (opts.dry) {
-    // 只报告门禁判断结果，不抓取（HTTP 有 10ms CPU 限额，重活只能靠 cron）
     return {
-      dry: true, beijing: bj, job: active.id, kind: parseJobId(active.id).kind,
-      cursor: active.cursor, total: active.total, codes: codes.length,
-      chunkSize: chunkSizeFor(parseJobId(active.id).kind),
+      dry: true, beijing: bj, job: active.id, kind: meta.kind,
+      cursor: active.cursor, total: active.total, codes: codes.length, chunkSize: size,
     };
   }
-  // 目标日期以「任务 id」为准，不用 bj.date：隔夜未完成的 job 的 id 是更早的日期，
-  // 用今天去抓却推进昨天的游标会写错数据。
-  const meta = parseJobId(active.id);
+
+  // 目标日期以「任务 id」为准：隔夜未完成的任务 id 是更早的日期，
+  // 用今天去抓却推进旧任务的游标会写错数据。
   const targetDate = meta.date;
-  const size = chunkSizeFor(meta.kind);
   const { slice } = planChunk(codes, active.cursor, size);
   if (!slice.length) {
     await updateJob(env.DB, { ...active, status: 'done', cursor: active.total });
+    console.log(`sync ${active.id}: 已完成（无剩余代码）`);
     return { finished: true, job: active.id };
   }
 
-  await beat(`plan:${meta.kind}:${slice.length}`);
   const rows = [];
   const failed = [];
-  try {
   // 并发池 6（Free 计划同时连接上限）
   for (let i = 0; i < slice.length; i += 6) {
     const batch = slice.slice(i, i + 6);
     const results = await Promise.all(batch.map(async (code) => {
       try {
         if (meta.kind === 'backfill') {
-          // 回填：抓最近 meta.days 天的全部行（每轮只 6 只，避免 CPU 超限）
           const beg = dayOffsetStr(targetDate, -meta.days);
           const { rows: bars } = await fetchRange(code, beg, targetDate);
           return { code, rows: bars };
         }
         const { rows: bars } = await fetchBars(code, targetDate);
         return { code, rows: pickBars(bars, targetDate) };
-      } catch {
+      } catch (e) {
+        console.error(`fetch ${code} 失败:`, String(e).slice(0, 160));
         return { code, rows: [] };
       }
     }));
@@ -112,26 +124,15 @@ export async function runMarketSync(env, opts = {}) {
 
   await beat(`fetched:${rows.length}:failed:${failed.length}`);
   await upsertPrices(env.DB, rows);
-  await beat(`written:${rows.length}`);
   const next = advanceJob(active, {
     advance: slice.length,
     failedCodes: failed,
     hardFailure: rows.length === 0 ? 'no rows from any source' : null,
   });
   await updateJob(env.DB, next);
-  await beat(`advanced:${next.cursor}/${active.total}`);
-  console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length}`);
+  console.log(`sync ${active.id}: cursor=${next.cursor}/${active.total} rows=${rows.length} failed=${failed.length} status=${next.status}`);
   return {
     job: active.id, kind: meta.kind, cursor: next.cursor, total: active.total,
     rows: rows.length, failed: failed.length, status: next.status,
   };
-  } catch (err) {
-    // 任何未捕获错误都写回任务，否则任务会静默卡在 running（本次回填就是这样卡的）
-    const failedState = advanceJob(active, {
-      advance: 0, failedCodes: [], hardFailure: String(err).slice(0, 200),
-    });
-    await updateJob(env.DB, { ...failedState, status: failedState.status === 'done' ? 'running' : failedState.status });
-    console.error(`sync ${active.id} 异常:`, String(err).slice(0, 300));
-    return { job: active.id, error: String(err).slice(0, 300), attempts: failedState.attempts };
-  }
 }
