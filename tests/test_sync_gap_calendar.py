@@ -5,11 +5,12 @@
 新实现只对「全市场真有行情的日期」判缺口。
 """
 
-import sqlite3
+import datetime as dt
 
 import pytest
 
 import market_calendar as mc
+import sync_service
 from db_repository import get_market_trade_dates, open_db
 from sync_service import _build_gap_segments, _build_missing_segments
 
@@ -71,8 +72,6 @@ def test_cold_start_all_expected_missing():
 
 def test_old_calendar_gap_logic_still_refetches_holidays():
     """对照：旧实现会把长假区间当缺口（这就是要替换掉的行为）。"""
-    import datetime as dt
-
     existing = ["2026-09-30", "2026-10-08"]
     segs = _build_gap_segments(existing, dt.date(2026, 9, 30), dt.date(2026, 10, 8))
     assert segs and segs[0][0] == "20261001", segs
@@ -114,36 +113,76 @@ def test_market_calendar_empty_on_cold_start(db):
 
 
 # ---------------------------------------------------------------------------
-# 交易日历（chinese_calendar）：修复「库里没有的日子永远补不上」
+# sync_hs300_range(gap_fill=True)：缺口必须走共享日历，且用同步侧语义
 # ---------------------------------------------------------------------------
 
-import datetime as dt
-
-from market_calendar import trading_days
-
-
-def _trading_days_from_calendar(start, end, known):
-    """兼容包装：同步侧语义（库里有调休日就认）。"""
-    return trading_days(start, end, include_known_weekend=True, known=known) or None
+# 库里已有的最后一天；尾部缺口应为 10-24~10-27（日历只认 10-26/27 两个交易日）
+_SEED_DAY = "2026-10-23"
 
 
-def test_calendar_marks_missing_trading_day():
-    """10-26（周一）在库里缺失，但真实交易日历必须包含它，否则永远补不上。"""
-    days = _trading_days_from_calendar(dt.date(2026, 10, 19), dt.date(2026, 10, 27), set())
-    if days is None:
-        pytest.skip("未安装 chinese_calendar")
-    assert "2026-10-26" in days
-    assert "2026-10-24" not in days      # 周六
-    assert "2026-10-25" not in days      # 周日
+def _run_gap_fill(db_path, monkeypatch, calendar_days):
+    """跑一次 gap_fill 同步，返回日历调用与 _build_missing_segments 入参记录。"""
+    calendar_calls = []
+    segment_calls = []
+
+    def recording_trading_days(start, end, *, include_known_weekend=False, known=None):
+        calendar_calls.append(
+            {
+                "start": start,
+                "end": end,
+                "include_known_weekend": include_known_weekend,
+                "known": set(known or ()),
+            }
+        )
+        return calendar_days(start, end)
+
+    def record_segments(existing, expected):
+        segment_calls.append((existing, expected))
+        return []          # 无缺口 → 不进入网络抓取
+
+    monkeypatch.setattr(mc, "trading_days", recording_trading_days)
+    monkeypatch.setattr(sync_service, "_build_missing_segments", record_segments)
+    monkeypatch.setattr(
+        sync_service, "fetch_hs300_constituents", lambda: {"600519": "贵州茅台"}
+    )
+    sync_service.sync_hs300_range(
+        db_path, "2026-10-19", "2026-10-27",
+        None, 1, 1000.0, 0, 0.1, False, False, True,
+    )
+    return calendar_calls, segment_calls
 
 
-def test_calendar_excludes_makeup_weekend_unless_known():
-    """调休补班的周末在 chinese_calendar 里是工作日，但股市不开市 ——
-    除非库里已有该日数据，否则不应计入应有交易日。"""
-    days = _trading_days_from_calendar(dt.date(2026, 10, 1), dt.date(2026, 10, 12), set())
-    if days is None:
-        pytest.skip("未安装 chinese_calendar")
-    assert all(dt.date.fromisoformat(d).weekday() < 5 for d in days)
+def test_gap_fill_uses_calendar_with_sync_semantics(db, monkeypatch):
+    """gap_fill 必须传 include_known_weekend=True，并拿库里已有日期作 known。
+
+    同步侧「库里有就认」：把生产代码改成 False（或漏传 known）时这里会红。
+    """
+    path, conn = db
+    _seed_price(conn, "600519", _SEED_DAY)
+
+    calls, segments = _run_gap_fill(
+        path, monkeypatch, lambda s, e: ["2026-10-26", "2026-10-27"]
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["include_known_weekend"] is True
+    assert calls[0]["known"] == {_SEED_DAY}
+    assert segments == [([_SEED_DAY], ["2026-10-26", "2026-10-27"])]
+
+
+def test_gap_fill_falls_back_when_calendar_unavailable(db, monkeypatch):
+    """日历不可用（返回 []）→ `or None` 后走回退分支：市场日历 + 尾部窗口。"""
+    path, conn = db
+    _seed_price(conn, "600519", _SEED_DAY)
+
+    _, segments = _run_gap_fill(path, monkeypatch, lambda s, e: [])
+
+    assert segments == [
+        (
+            [_SEED_DAY],
+            ["2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27"],
+        )
+    ]
 
 
 def test_weekend_only_segment_is_dropped():

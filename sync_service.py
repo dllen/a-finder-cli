@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+import market_calendar
 from config import SyncConfig
 from db_repository import (
     FundamentalsHistoryRow,
@@ -13,6 +14,7 @@ from db_repository import (
     get_fetch_offsets,
     get_failed_codes,
     get_last_trade_date,
+    get_market_trade_dates,
     get_trade_dates,
     get_trade_date_range,
     get_all_codes,
@@ -319,15 +321,17 @@ def sync_hs300_range(
         # 仍要尝试拉一次）。冷启动（库里无数据）时为空 → 回退到旧的日历日缺口判定。
         expected_dates: Optional[List[str]] = None
         if gap_fill:
-            from db_repository import get_market_trade_dates
-
             market_dates = get_market_trade_dates(conn, start_date, end_date)
             # 优先用真实交易日历：市场日历来自「库里已有日期」，看不到从未抓到过的
             # 那一天（例如 10-26 整天漏抓、而 10-27 已入库时，10-26 永远补不上）。
-            from market_calendar import trading_days
-
+            # include_known_weekend=True 是同步侧语义：库里有调休补班日的数据，说明那天
+            # 市场确实开过市、已经抓过，应当认；巡检要客观基准才传 False。
+            # 末尾的 `or None` 是契约而非控制流必需：日历不可用 → None，与旧实现同义；
+            # 下面两个分支只判真值，[] 与 None 效果相同。
             expected_from_calendar = (
-                trading_days(start, end, include_known_weekend=True, known=set(market_dates))
+                market_calendar.trading_days(
+                    start, end, include_known_weekend=True, known=set(market_dates)
+                )
                 or None
             )
             if expected_from_calendar:

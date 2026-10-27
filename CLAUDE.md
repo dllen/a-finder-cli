@@ -68,9 +68,10 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
 - **增量同步做了三件事保证「准 + 快」**：
-  1. 缺口按**真实交易日历**判定（`chinese_calendar` → `_trading_days_from_calendar` →
+  1. 缺口按**真实交易日历**判定（`chinese_calendar` → `market_calendar.trading_days` →
      `sync_service._build_missing_segments`）：只有 A 股真正开市的日期才算应有数据，
-     长假不再反复回补；调休补班的周末不算（除非库里已有数据）；相邻缺失点合并成一段。
+     长假不再反复回补；调休补班的周末不算（同步侧传 `include_known_weekend=True`，
+     库里已有该日数据时才认）；相邻缺失点合并成一段。
      日历不可用时回退到「市场日历（库里已有日期）+ 尾部窗口」。
   2. 日常窗口只补最近 60 天（冷启动 400 天），并发/限流下调到 6/6、重试 2 次；
      同步后跑 `scripts/ci_check_data.py --prices-only` 校验，未落地就隔 120s 重试，
