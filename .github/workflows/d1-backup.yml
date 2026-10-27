@@ -1,0 +1,46 @@
+name: d1-backup
+
+# 一次性：导出 D1 全量 SQL 作为 artifact。**DROP TABLE 之前必须跑过并确认 artifact 存在。**
+# 触发：改动本文件即跑，也可在 Actions 页手动 Run。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/d1-backup.yml"
+      - "worker/schema.sql"
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 导出 D1
+        run: |
+          STAMP="$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
+          npx --yes wrangler@latest d1 export a-finder --remote --output "/tmp/d1-${STAMP}.sql"
+          ls -lh /tmp/d1-*.sql
+          echo "STAMP=${STAMP}" >> "$GITHUB_ENV"
+
+      - name: 上传 artifact（保留 90 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ env.STAMP }}
+          path: /tmp/d1-*.sql
+          retention-days: 90
+
+      - name: 记录表清单与行数（事后核对用）
+        run: |
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS market_prices_rows FROM market_prices"
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS real_positions_rows FROM real_positions"
