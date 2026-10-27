@@ -6,13 +6,22 @@ name: deploy-site
 on:
   schedule:
     # A股收盘 15:00 北京，数据落地约 15:30 → 07:30 UTC
-    # GitHub schedule 高负载时会延迟/丢弃，加 07:45 作为备用触发点。
-    # 若 07:30 的 run 还在跑，07:45 的 run 会在 concurrency 组里排队等它结束；
-    # 同步是增量的、部署是幂等的，双跑无副作用。另有 Cloudflare Workers Cron
-    # 在 07:35 UTC 兜底发 workflow_dispatch（见 worker/index.js scheduled）。
+    #
+    # 为什么这么密：GitHub 的 schedule 队列对这个仓库不可靠 —— 实测 10-26 的 07:30
+    # 那一班直到 14:27 UTC 才跑（延迟 7 小时），10-27 的三班干脆一次都没触发。
+    # 密集排班是为了让「队列延迟」只需要影响其中一班；已发布当天的班会被下面的
+    # freshness 步骤短路（秒退），不会浪费 CI 分钟。
+    #
+    # 另有两条独立于 GitHub 调度的腿：Cloudflare Workers Cron（07:35 / 08:35 UTC）
+    # 发 workflow_dispatch，以及本机 launchd 兜底（a-finder.sh fallback）。
     - cron: "30 7 * * *"
     - cron: "45 7 * * *"
+    - cron: "0 8 * * *"
+    - cron: "15 8 * * *"
     - cron: "30 8 * * *"
+    - cron: "45 8 * * *"
+    - cron: "0 9 * * *"
+    - cron: "30 9 * * *"
     # 补救跑：北京 16:30（08:30 UTC）。15:30 那班若因数据源延迟/限流没拿到当天行情，
     # 一小时后再试一次；若线上已发布当天数据则整轮跳过（见 freshness 步骤）。
   workflow_dispatch:
@@ -67,19 +76,16 @@ jobs:
         env:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}
         run: |
-          # 主 cron（07:30/07:45）永远跑：即使线上已有当天 picks，计划/组合/转债也要更新。
-          # 只有补救 cron（08:30 UTC）才做「已发布就跳过」的短路。
-          if [ "${{ github.event.schedule }}" != "30 8 * * *" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # 密集排班下每一班都先看线上是否已发布当天：
+          # 已发布 → 秒退（避免重复消耗 CI 分钟与数据源配额）
+          # 未发布 → 继续跑（这正是我们想要的补救）
           published=$(curl -sf --max-time 20 https://ycu.space/data/dates.json \
             | python3 -c "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")
           if [ "$published" = "$EXPECT" ]; then
-            echo "::notice::线上已发布 $EXPECT，补救跑跳过"
+            echo "::notice::线上已发布 $EXPECT，本班跳过"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "线上最新 $published ≠ 期望 $EXPECT，继续补救"
+            echo "线上最新 ${published:-无} ≠ 期望 $EXPECT，继续"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 

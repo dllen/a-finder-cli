@@ -14,7 +14,12 @@ TIERS="50000,100000,150000,200000,250000,300000,350000,400000,450000,500000"
 
 # 优先 uv run a-finder，否则退回 python3 stock_cli.py
 run_cmd() {
-  if command -v uv >/dev/null 2>&1; then
+  # 优先用项目 venv 的解释器直接跑 stock_cli.py：
+  # `uv run` 需要写 ~/.cache/uv，在受限环境（CI 沙箱/只读 HOME）会直接失败，
+  # 曾导致整条 site 流水线在第 2 步就中断（2026-10-27 本地兜底因此没能推送）。
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/stock_cli.py" "$@"
+  elif command -v uv >/dev/null 2>&1; then
     uv run a-finder "$@"
   else
     python3 "$ROOT_DIR/stock_cli.py" "$@"

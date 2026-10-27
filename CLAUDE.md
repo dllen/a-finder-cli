@@ -80,8 +80,19 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **数据门禁**：部署结束后再跑一次 `scripts/ci_check_data.py`（行情最新日/覆盖股票数/
   选股日期/计划日期），不达标则 workflow 变红（站点仍按最新可得数据发布，对用户可用）。
   部署/缓存/导出步骤带 `always()`，前面失败也照常发布。
-- **补救跑**：08:30 UTC（北京 16:30）第三个 cron，15:30 那班失败时再试一次；
-  若线上 `dates.json` 已是当天则整轮跳过（freshness 步骤）。
+- **补救跑 / 密集排班**：07:30–09:00 UTC 每 15 分钟一班（共 8 个 cron）。
+  起因是实测 GitHub schedule 对本仓库不可靠：10-26 的 07:30 那班延迟到 14:27 UTC
+  才跑，10-27 的三班**一次都没触发**。密集排班后，队列延迟只要影响其中一班即可；
+  已发布当天的班由 freshness 步骤秒退（不浪费 CI 分钟与数据源配额）。
+- **触发链的三个独立腿**（都不可靠时要互相兜底）：
+  1. GitHub schedule（上面那 8 个 cron）
+  2. Cloudflare Workers Cron 07:35 / 08:35 UTC 发 workflow_dispatch
+     —— **需要仓库 secret `GITHUB_DISPATCH_TOKEN`**（fine-grained PAT，权限
+     Actions: Read and write）；没配之前这条腿是空的
+  3. 本机 launchd：`bash a-finder.sh fallback`（只有线上落后才本地跑并 push）
+- **排查「页面数据没更新」的顺序**：① 查 Actions 里 deploy-site 有没有 run
+  （没有 = schedule 没触发，GitHub 队列问题）→ ② 查 run 日志里 `数据来源` 与门禁结果
+  → ③ 查线上 `data/dates.json` 的最新日期 → ④ 手动 `bash a-finder.sh fallback` 兜底。
 - GitHub schedule 高负载会延迟/丢弃，有四重保险：备用 cron 07:45 UTC、
   Cloudflare Workers Cron **07:35 与 08:35 UTC 各一次**兜底发 workflow_dispatch
   （`worker/index.js` 的 `scheduled` handler，需 secret `GITHUB_DISPATCH_TOKEN`
