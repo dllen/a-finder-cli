@@ -27,7 +27,13 @@
     <div id="decide-comparison"></div>
   </div>
 
-  <h5 class="mt-4">我的实际持仓</h5>
+  <div class="d-flex align-items-center mt-4">
+    <h5 class="mb-0">我的实际持仓</h5>
+    <button type="button" id="decide-export-csv"
+            class="btn btn-sm btn-outline-secondary ms-2"
+            title="把股票与转债持仓导出为 CSV（可用 Excel 打开）">导出 CSV</button>
+    <span id="decide-export-hint" class="text-muted small ms-2"></span>
+  </div>
   <div id="decide-positions"></div>
   <h6 class="mt-3">我的转债持仓</h6>
   <div id="decide-cb-positions"></div>

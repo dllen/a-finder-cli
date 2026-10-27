@@ -371,6 +371,86 @@ cmd_backtest() {
 
 # ============================ cron (launchd 入口) ============================
 
+cmd_fallback() {
+  # 用法: a-finder.sh fallback [--force] [--dry-run]
+  # 只在「线上还没有当天数据」时才本地跑并推送，避免与 CI 双跑、双推。
+  local force=0 dry=0
+  for a in "$@"; do
+    case "$a" in
+      --force) force=1 ;;
+      --dry-run) dry=1 ;;
+    esac
+  done
+
+  local need=0 tmp
+  tmp="$(mktemp)"
+  # 用 curl 取（python urllib 会被 Cloudflare 拦成 403/404；curl 正常）
+  if curl -sf --max-time 20 "https://ycu.space/data/dates.json" -o "$tmp"; then
+    python3 "$ROOT_DIR/scripts/needs_fallback.py" --dates-json "$tmp" || need=$?
+  else
+    echo "⚠ 无法读取线上日期，按需要兜底处理"
+    need=1
+  fi
+  rm -f "$tmp"
+
+  if [[ "$need" -eq 0 && "$force" -eq 0 ]]; then
+    echo "✅ 线上已是最新，本地不动作（避免与 CI 双跑）"
+    return 0
+  fi
+  if [[ "$dry" -eq 1 ]]; then
+    echo "[dry-run] 需要兜底：将执行 site --push"
+    return 0
+  fi
+  echo "▶ 线上落后，本地兜底：site --push"
+  cmd_site "$DEFAULT_DB" 20 site --push
+}
+
+cmd_fallback_install() {
+  # 生成 launchd plist 并打印安装命令（本脚本不直接写 ~/Library，避免权限问题）
+  local agent_dir="$ROOT_DIR/deploy"
+  local plist="$agent_dir/com.afinder.fallback.plist"
+  mkdir -p "$agent_dir"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.afinder.fallback</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$ROOT_DIR/a-finder.sh</string>
+    <string>fallback</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>$ROOT_DIR/logs/fallback.log</string>
+  <key>StandardErrorPath</key><string>$ROOT_DIR/logs/fallback.err.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
+PLIST
+  chmod 644 "$plist"
+  echo "已生成: $plist"
+  echo
+  echo "安装（一次性）："
+  echo "  cp \"$plist\" ~/Library/LaunchAgents/"
+  echo "  launchctl load ~/Library/LaunchAgents/com.afinder.fallback.plist"
+  echo
+  echo "检查 / 卸载："
+  echo "  launchctl list | grep afinder"
+  echo "  launchctl unload ~/Library/LaunchAgents/com.afinder.fallback.plist"
+  echo
+  echo "注意：launchd 只在机器开机时触发（睡眠会延后到唤醒）；"
+  echo "      若 CI 已更新（线上日期已是最新），本任务什么都不做。"
+}
+
 cmd_cron() {
   # launchd 调用：工作日 15:30 触发；周末（date +%u >= 6）跳过。
   if [[ "$(date +%u)" -ge 6 ]]; then
@@ -462,6 +542,13 @@ case "${1:-help}" in
   web)             shift; cmd_web "$@" ;;
   daemon)          shift; cmd_daemon "$@" ;;
   backtest)        shift; cmd_backtest "$@" ;;
+  fallback)
+    shift || true
+    cmd_fallback "$@"
+    ;;
+  fallback-install)
+    cmd_fallback_install
+    ;;
   cron)            shift; cmd_cron "$@" ;;
   help|--help|-h)  print_help ;;
   *) echo "unknown command: ${1:-}" >&2; echo "run 'bash a-finder.sh help' for usage" >&2; exit 1 ;;

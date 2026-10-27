@@ -26,3 +26,5 @@ site/
 .dev.vars
 .wrangler/
 .wrangler-home/
+# 本地兜底 launchd plist（fallback-install 生成，含绝对路径）
+deploy/com.afinder.fallback.plist

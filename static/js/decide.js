@@ -7,6 +7,7 @@ import {
 } from './api.js';
 import { $, fmt, esc, setStatus } from './dom.js';
 import { computeComparison } from './decide_compare.js';
+import { exportPositionsCsv } from './decide_export.js';
 
 const SEV_CLS = { danger: 'bg-danger', warn: 'bg-warning text-dark', info: 'bg-info text-dark' };
 const SEV_LABEL = { danger: '危险', warn: '警告', info: '提示' };
@@ -29,6 +30,7 @@ let AUTHED = false;
 let CURRENT_USER = '';
 let CFG = null;
 let POSITIONS = [];              // 实际持仓（供「已持有」判定）
+let CB_POSITIONS = [];           // 转债持仓（导出 CSV 用）
 let WORKER_OK = true;            // Worker 可用性（决定建仓按钮是否可点）
 let PENDING_PLAN_ROW = null;     // 未登录时记住待建仓的 plan 行
 let LAST_PLAN_ROWS = [];         // 最近一次渲染的 plan 行（供行内建仓取数）
@@ -623,6 +625,7 @@ function renderAll(cmp, planRes, posRes, date) {
   if (wrap) wrap.style.display = empty ? 'none' : '';
   if (!empty) renderComparison(cmp);
 
+  CB_POSITIONS = posRes.cb_rows || [];
   renderPositions(posRes.rows || [], posRes.cb_rows || []);
 }
 
@@ -672,7 +675,28 @@ async function loadAll() {
   }
 }
 
+// 导出持仓 CSV（纯前端，数据来自当前已加载的 D1 持仓）
+function bindExportCsv() {
+  const btn = $('decide-export-csv');
+  if (!btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', () => {
+    const hint = $('decide-export-hint');
+    const total = POSITIONS.length + CB_POSITIONS.length;
+    if (!total) {
+      if (hint) hint.textContent = '暂无持仓可导出';
+      return;
+    }
+    exportPositionsCsv(POSITIONS, CB_POSITIONS, (typeof STATE_DATE === 'string' && STATE_DATE) || undefined);
+    if (hint) {
+      hint.textContent = `已导出 ${POSITIONS.length} 只股票 + ${CB_POSITIONS.length} 只转债`;
+      setTimeout(() => { if (hint) hint.textContent = ''; }, 4000);
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  bindExportCsv();
   const sel = $('decide-date');
   if (sel) sel.addEventListener('change', loadAll);
   const btn = $('decide-refresh');

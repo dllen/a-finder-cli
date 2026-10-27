@@ -95,7 +95,12 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **每周体检 + 自愈 + 备份**（`gap-heal.yml`，周日 10:00 北京）：`scripts/check_gaps.py`
   扫最近 30 个交易日覆盖度 → `sync-hs300-range --gap-fill` 补抓 → 再扫一次（仍有缺口则红）
   → 顺手把 `hs300.db` 压成 artifact（90 天），缓存丢失时可秒恢复不必重抓 400 天。
-- 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
+- **本地兜底（可选，第三条腿）**：`bash a-finder.sh fallback` 先查线上 `dates.json`，
+  只有线上落后才本地跑 `site --push`（`scripts/needs_fallback.py` 判定，避免与 CI 双跑）；
+  `bash a-finder.sh fallback-install` 生成 launchd plist（工作日 17:10），按打印的命令
+  装到 `~/Library/LaunchAgents`。站点域名是 **ycu.space**（github.io 路径已 404）。
+- 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron（无条件跑）应停用，
+  用上面的 `fallback`（有条件）替代，避免与 CI 双跑。
 - **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位
   （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
