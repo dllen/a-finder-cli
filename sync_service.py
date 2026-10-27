@@ -165,35 +165,6 @@ def _compact(date_str: str) -> str:
         return date_str
 
 
-def _trading_days_from_calendar(
-    start: dt.date, end: dt.date, known: set
-) -> Optional[List[str]]:
-    """用 chinese_calendar 算出 [start, end] 内真正的 A 股交易日（ISO 字符串）。
-
-    返回 None 表示日历不可用（未安装/该年份无数据），调用方回退到「市场日历 + 尾部窗口」。
-
-    注意：调休补班的周末在 chinese_calendar 里是「工作日」，但股市不开市 ——
-    除非该日已经在库里（known），否则不算交易日，避免永远重复抓空。
-    """
-    try:
-        from chinese_calendar import is_workday
-    except Exception:
-        return None
-
-    days: List[str] = []
-    cur = start
-    while cur <= end:
-        iso = cur.isoformat()
-        try:
-            workday = is_workday(cur)
-        except Exception:
-            return None
-        if workday and (cur.weekday() < 5 or iso in known):
-            days.append(iso)
-        cur += dt.timedelta(days=1)
-    return days or None
-
-
 def _build_missing_segments(
     existing_dates: List[str], expected_dates: List[str]
 ) -> List[Tuple[str, str]]:
@@ -353,7 +324,12 @@ def sync_hs300_range(
             market_dates = get_market_trade_dates(conn, start_date, end_date)
             # 优先用真实交易日历：市场日历来自「库里已有日期」，看不到从未抓到过的
             # 那一天（例如 10-26 整天漏抓、而 10-27 已入库时，10-26 永远补不上）。
-            expected_from_calendar = _trading_days_from_calendar(start, end, set(market_dates))
+            from market_calendar import trading_days
+
+            expected_from_calendar = (
+                trading_days(start, end, include_known_weekend=True, known=set(market_dates))
+                or None
+            )
             if expected_from_calendar:
                 expected_dates = expected_from_calendar
             elif market_dates:

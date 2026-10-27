@@ -9,8 +9,16 @@ import sqlite3
 
 import pytest
 
+import market_calendar as mc
 from db_repository import get_market_trade_dates, open_db
 from sync_service import _build_gap_segments, _build_missing_segments
+
+
+@pytest.fixture(autouse=True)
+def _reset_calendar_cache():
+    mc._reset_workday_cache()
+    yield
+    mc._reset_workday_cache()
 
 
 def _seed_price(conn, code, trade_date, close=10.0):
@@ -111,7 +119,12 @@ def test_market_calendar_empty_on_cold_start(db):
 
 import datetime as dt
 
-from sync_service import _trading_days_from_calendar
+from market_calendar import trading_days
+
+
+def _trading_days_from_calendar(start, end, known):
+    """兼容包装：同步侧语义（库里有调休日就认）。"""
+    return trading_days(start, end, include_known_weekend=True, known=known) or None
 
 
 def test_calendar_marks_missing_trading_day():
