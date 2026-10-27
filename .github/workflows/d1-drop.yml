@@ -1,0 +1,38 @@
+name: d1-drop
+
+# 一次性：删除已退役的行情/任务表（market_prices / market_symbols / sync_jobs / worker_heartbeat）。
+# 执行前请确认 d1-backup 的 artifact 存在（2026-10-27 已备份）。
+# 跑完本文件即可删除。
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/d1-drop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drop:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 删除表
+        run: |
+          for t in market_prices market_symbols sync_jobs worker_heartbeat; do
+            echo "DROP TABLE IF EXISTS $t;"
+          done > /tmp/drop.sql
+          cat /tmp/drop.sql
+          npx --yes wrangler@latest d1 execute a-finder --file=/tmp/drop.sql --remote --yes
+
+      - name: 核对（应只剩 real_* 两张表）
+        run: |
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+          npx --yes wrangler@latest d1 execute a-finder --remote --yes \
+            --command "SELECT COUNT(*) AS real_positions_rows FROM real_positions"
