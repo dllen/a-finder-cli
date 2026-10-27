@@ -92,6 +92,9 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   run 变红。也可用 GitHub 自带「Notifications → Actions → 仅失败时发邮件」。
 - `hs300.db` 缓存 key 按 `run_id` 唯一（固定 key 会冻结缓存 —— actions/cache 不允许
   覆盖已存在的 key）。
+- **每周体检 + 自愈 + 备份**（`gap-heal.yml`，周日 10:00 北京）：`scripts/check_gaps.py`
+  扫最近 30 个交易日覆盖度 → `sync-hs300-range --gap-fill` 补抓 → 再扫一次（仍有缺口则红）
+  → 顺手把 `hs300.db` 压成 artifact（90 天），缓存丢失时可秒恢复不必重抓 400 天。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron 应停用，避免与 CI 双跑。
 - **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位
   （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。

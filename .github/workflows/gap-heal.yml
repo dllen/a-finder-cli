@@ -1,0 +1,115 @@
+name: gap-heal
+
+# 每周体检 + 自愈 + 数据库备份。
+#
+# 1) 扫描最近 30 个交易日的行情覆盖，报告缺哪几天
+# 2) 用 gap-fill 补抓（真实交易日历判定缺口，见 sync_service）
+# 3) 再扫一次，仍有缺口则 workflow 变红（并把明细写进 summary）
+# 4) 顺手把 hs300.db 压成 artifact（90 天保留）—— 缓存丢失时可快速恢复，不必重抓 400 天
+#
+# 触发：每周日 02:00 UTC（北京 10:00）、改动本文件/脚本、或手动 Run。
+on:
+  schedule:
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gap-heal.yml"
+      - "scripts/check_gaps.py"
+
+concurrency:
+  group: gap-heal
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      - name: 体检（补抓前）
+        run: |
+          if [ ! -f hs300.db ]; then
+            echo "::warning::无缓存 DB，将走冷启动补抓"
+            echo "## 体检：无本地库（冷启动）" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          set +e
+          python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 | tee /tmp/gaps_before.txt
+          rc=$?
+          set -e
+          { echo "## 体检（补抓前）"; echo '```'; cat /tmp/gaps_before.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "补抓前缺口退出码: $rc（1 = 有缺口，符合预期时会继续补抓）"
+
+      - name: 补抓缺口（真实交易日历 + gap-fill）
+        run: |
+          set -uo pipefail
+          END="$(TZ=Asia/Shanghai date +%F)"
+          START="$(TZ=Asia/Shanghai date -d "${END} -90 days" +%F)"
+          echo "补抓区间: ${START} ~ ${END}"
+          python3 stock_cli.py sync-hs300-range \
+            --start "$START" --end "$END" --db hs300.db \
+            --gap-fill --concurrency 6 --rate 6 --retries 3 --backoff 0.8 2>&1 | tail -20 || true
+
+      - name: 体检（补抓后，仍有缺口则失败）
+        run: |
+          set +e
+          python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 | tee /tmp/gaps_after.txt
+          rc=$?
+          set -e
+          { echo "## 体检（补抓后）"; echo '```'; cat /tmp/gaps_after.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::补抓后仍有缺口（详见上文明细）；可能是数据源当日无数据或停牌集中"
+            exit 1
+          fi
+
+      - name: 备份 hs300.db（artifact，90 天）
+        if: always()
+        run: |
+          if [ ! -f hs300.db ]; then
+            echo "::warning::没有 hs300.db 可备份"
+            exit 0
+          fi
+          STAMP="$(TZ=Asia/Shanghai date +%Y%m%d)"
+          gzip -c hs300.db > "/tmp/hs300-${STAMP}.db.gz"
+          ls -lh "/tmp/hs300-${STAMP}.db.gz"
+          echo "STAMP=${STAMP}" >> "$GITHUB_ENV"
+
+      - name: 上传备份
+        if: always() && env.STAMP != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: hs300-db-${{ env.STAMP }}
+          path: /tmp/hs300-*.db.gz
+          retention-days: 90
+
+      - name: Save hs300.db to cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
