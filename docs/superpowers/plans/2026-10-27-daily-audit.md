@@ -1711,6 +1711,20 @@ git commit -m "feat(audit): 巡检报告格式化与通知推送
 **Files:**
 - Create: `.github/workflows/daily-audit.yml`
 
+**前置事实（来自 Task 5 的最终实现，务必按此接线）：**
+
+`scripts/notify_audit.py` 的参数语义：
+- `--audit <path>`：本次判定「剩余缺口」用的报告（有复检时传复检报告）
+- `--audit-pre <path>`：**修复前**的原报告；传了它才会用「原/复检差集」算「已修复」
+- `--repair <path>`：`repair_gaps.py --out` 的产物（含 outcomes/skipped）
+- `--no-db`：缓存里没有数据库 → 报 🚨 而不是 ✅
+- 退出码：0 正常（含 🚨 的情况）/ 2 输入不可用
+
+**关键接线规则**：三份报告要这样传，三种结局才都正确 ——
+- 没有走修复（体检就干净）：只传 `--audit audit.json`
+- 走了修复且复检有结果：`--audit audit2.json --audit-pre audit.json --repair repair.json`
+- 只有原报告（复检没跑成）：`--audit audit.json --repair repair.json`（差集为空 → 不会假报已修复）
+
 - [ ] **Step 1: 写 workflow**
 
 创建 `.github/workflows/daily-audit.yml`：
@@ -1763,7 +1777,7 @@ jobs:
           restore-keys: |
             hs300-db-
 
-      - name: 判定今天是否 A 股交易日
+      - name: 判定今天日期与是否交易日
         id: trade-day
         run: |
           set -uo pipefail
@@ -1786,12 +1800,12 @@ jobs:
             exit 1
           fi
           set +e
-          python3 scripts/audit_coverage.py --db hs300.db --json --out /tmp/audit.json
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit.json
           rc=$?
           set -e
           echo "audit_rc=$rc" >> "$GITHUB_OUTPUT"
           if [ "$rc" -eq 2 ]; then
-            echo "::error::体检无法判定（日历不可用或库读取失败）"
+            echo "::error::体检无法判定（日历不可用或库读取失败）—— 绝不当作无缺口"
             exit 1
           fi
           echo "（$rc = 1 表示有缺口，符合预期时会继续修复）"
@@ -1802,11 +1816,12 @@ jobs:
         run: |
           set -uo pipefail
           set +e
-          python3 scripts/repair_gaps.py --db hs300.db --report /tmp/audit.json --out /tmp/repair.json
+          python3 scripts/repair_gaps.py --db hs300.db \
+            --report /tmp/audit.json --out /tmp/repair.json
           rc=$?
           set -e
           echo "repair_rc=$rc" >> "$GITHUB_OUTPUT"
-          echo "（1 = 部分修复失败，继续复检并报警；2 = 输入不可用/无法判定）"
+          echo "（1 = 部分修复失败，仍需复检并报警）"
 
       - name: 复检
         id: recheck
@@ -1814,12 +1829,12 @@ jobs:
         run: |
           set -uo pipefail
           set +e
-          python3 scripts/audit_coverage.py --db hs300.db --json --out /tmp/audit2.json
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit2.json
           rc=$?
           set -e
           echo "recheck_rc=$rc" >> "$GITHUB_OUTPUT"
 
-      - name: 导出修复后的数据（仅在确实修好时）
+      - name: 导出修复后的数据（仅在复检干净时）
         id: export
         if: steps.recheck.outputs.recheck_rc == '0'
         run: |
@@ -1849,19 +1864,32 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: |
           set -uo pipefail
-          AUDIT=/tmp/audit.json
-          [ -f /tmp/audit2.json ] && AUDIT=/tmp/audit2.json
-          REPAIR=/tmp/repair.json
-          ARGS="--today ${{ steps.trade-day.outputs.today_bj }}"
-          [ -f "$AUDIT" ] && ARGS="$ARGS --audit $AUDIT"
-          [ -f "$REPAIR" ] && ARGS="$ARGS --repair $REPAIR"
+          # 日历步失败时 today_bj 为空：裸 --today 会让 argparse 先死，告警渠道整个失效。
+          # 空则让脚本回退报告里的 today（--no-db 时回退系统日期）。
+          TODAY="${{ steps.trade-day.outputs.today_bj }}"
+          ARGS=""
+          [ -n "$TODAY" ] && ARGS="--today $TODAY"
+          # 有复检报告时：--audit 用复检（决定「剩余」），--audit-pre 用原报告（算「已修复」）
+          if [ -f /tmp/audit2.json ]; then
+            ARGS="$ARGS --audit /tmp/audit2.json --audit-pre /tmp/audit.json"
+          elif [ -f /tmp/audit.json ]; then
+            ARGS="$ARGS --audit /tmp/audit.json"
+          fi
+          [ -f /tmp/repair.json ] && ARGS="$ARGS --repair /tmp/repair.json"
           if [ "${{ steps.audit.outputs.no_db }}" = "true" ]; then
             ARGS="$ARGS --no-db"
           fi
           python3 scripts/notify_audit.py $ARGS
+
+      - name: 有未修复缺口则让 run 变红
+        # 通知本身总是 rc=0（告警渠道失败不该掩盖结论），这里把「需人工」显式暴露成红灯
+        if: always() && steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0'
+        run: |
+          echo "::error::巡检发现无法自动修复的缺口，详见 Step Summary 与通知"
+          exit 1
 ```
 
-- [ ] **Step 2: 校验 YAML 与 run 块语法**
+- [ ] **Step 2: 校验 YAML 与所有 run 块语法**
 
 Run:
 ```bash
@@ -1874,36 +1902,61 @@ Run:
 python3 - <<'EOF'
 import yaml, subprocess, tempfile, os
 wf = yaml.safe_load(open('.github/workflows/daily-audit.yml'))
+steps = wf['jobs']['audit']['steps']
 bad = 0
-for s in wf['jobs']['audit']['steps']:
-    if not s.get('run'): continue
+for s in steps:
+    if not s.get('run'):
+        continue
     with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as f:
-        f.write(s['run']); p = f.name
-    r = subprocess.run(['bash','-n',p], capture_output=True, text=True)
-    print(('OK  ' if r.returncode==0 else 'FAIL'), s.get('name'))
-    if r.returncode: print(r.stderr[:300]); bad += 1
+        f.write(s['run'])
+        p = f.name
+    r = subprocess.run(['bash', '-n', p], capture_output=True, text=True)
+    print(('OK  ' if r.returncode == 0 else 'FAIL'), s.get('name'))
+    if r.returncode:
+        print(r.stderr[:300])
+        bad += 1
     os.unlink(p)
 print('失败数:', bad)
+assert bad == 0
 EOF
 ```
-Expected: 每步 `OK`，`失败数: 0`
+Expected: 每个 step 都 `OK`，`失败数: 0`
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 3: 校验 notify 接线与环境变量名一致**
+
+Run:
+```bash
+grep -n "NTFY_TOPIC\|--audit-pre\|--no-db\|audit2.json" .github/workflows/daily-audit.yml
+```
+Expected: 能看到 `NTFY_TOPIC` 来自 `secrets.NTFY_TOPIC`；`--audit-pre /tmp/audit.json` 与
+`--audit /tmp/audit2.json` 成对出现；`--no-db` 由 `steps.audit.outputs.no_db` 控制。
+
+再确认脚本真的接受这些参数：
+
+Run: `python3 scripts/notify_audit.py --help | head -20`
+Expected: 输出里有 `--audit`、`--audit-pre`、`--repair`、`--no-db`
+
+- [ ] **Step 4: 提交**
 
 ```bash
 git add .github/workflows/daily-audit.yml
 git commit -m "feat(ci): 每日巡检 workflow（21:00 北京）
 
-体检 → 自动修复 → 复检 → 导出校验 → 部署 → 通知。
-与 deploy-site.yml 完全解耦：巡检失败不影响早班发布。
+体检 → 自动修复 → 复检 → 导出校验 → 部署 → 通知，与 deploy-site 完全解耦。
 
-- 体检无法判定（rc=2）直接失败并告警，不静默跳过
-- 仅在复检通过时才导出/部署（避免用半修好的数据覆盖线上）
+关键接线：通知要传三份报告才能让三种结局都正确 ——
+- 复检存在时 --audit 用复检报告（决定剩余缺口）、--audit-pre 用原报告（算已修复差集）
+- 只传原报告时差集为空，不会假报「已修复」
+- 无 DB 时 --no-db 报需人工，绝不报通过
+
+另：
+- 体检 rc=2（无法判定）直接失败，不当作无缺口
+- 仅在复检干净时才导出/部署（避免用半修好的数据覆盖线上）
 - 复用 verify_site_export.py 守卫（10-26 站点被清空的教训）
-- 通知 always() 执行，未配 NTFY_TOPIC 时写 Step Summary"
+- 通知步的 --today 仅在非空时传（日历步失败时脚本回退报告/系统日期），
+  避免裸 --today 让 argparse 先死、告警渠道整个失效
+- 通知总是执行；有未修复缺口额外让 run 变红"
 ```
-
----
 
 ## Task 7: 文档与端到端验证
 

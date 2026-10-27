@@ -132,7 +132,11 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: |
           set -uo pipefail
-          ARGS="--today ${{ steps.trade-day.outputs.today_bj }}"
+          # 日历步失败时 today_bj 为空：裸 --today 会让 argparse 先死，告警渠道整个失效。
+          # 空则让脚本回退报告里的 today（--no-db 时回退系统日期）。
+          TODAY="${{ steps.trade-day.outputs.today_bj }}"
+          ARGS=""
+          [ -n "$TODAY" ] && ARGS="--today $TODAY"
           # 有复检报告时：--audit 用复检（决定「剩余」），--audit-pre 用原报告（算「已修复」）
           if [ -f /tmp/audit2.json ]; then
             ARGS="$ARGS --audit /tmp/audit2.json --audit-pre /tmp/audit.json"
