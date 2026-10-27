@@ -135,7 +135,55 @@ def test_multiple_l2_dates_merge_into_one_action():
     )
     assert len(actions) == 1
     assert actions[0].dates == ("2026-10-26", "2026-10-27")
-    assert len(actions[0].commands) == 2      # 每个日期一条 pick_history
+    cmds = actions[0].commands
+    # 每个日期一条 pick_history + 一条 plan build（default 档），全档位重放只一条
+    assert sum(1 for c in cmds if _has(c, "pick_history.py")) == 2
+    assert sum(1 for c in cmds if "build" in c and "--date" in c) == 2
+    assert sum(1 for c in cmds if _has(c, "build-all")) == 1
+    last = cmds[-1]
+    assert _has(last, "build-all") and "2026-10-26" in last
+
+
+def test_l2_gap_also_plans_followup_l3_commands():
+    """F1 回归：选股缺失必然意味着计划缺失，L2 动作必须自带 L3 命令。
+
+    否则 audit → repair → 复检 会停在 L3 缺口上，要跑第二轮才收敛
+    （Task 7 e2e：10-26 删 daily_picks + trade_plan，修复后复检报
+    「缺档位 5W..default」）。
+    """
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股数据")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert [a.layer for a in actions] == ["L2"]     # 不需要单独的 L3 动作
+    cmds = actions[0].commands
+    assert len(cmds) == 3
+    assert _has(cmds[0], "pick_history.py")         # 1) 先补选股
+    assert "build" in cmds[1] and "--date" in cmds[1]   # 2) 补 default 档
+    assert _has(cmds[2], "build-all") and "--backfill" in cmds[2]
+
+
+def test_l2_and_l3_gaps_share_one_plan_replay():
+    """L2 与 L3 缺口同时存在：一个 action 内含三类命令，且命令不重复。"""
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L2", "无选股数据"),
+                 ("2026-10-23", "L3", "缺档位 5W")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert [a.layer for a in actions] == ["L2", "L3"]
+    l2, l3 = actions
+
+    # 三类命令都在 L2 动作里：补选股 → 补 default 档 → 全档位重放
+    assert _has(l2.commands[0], "pick_history.py")
+    assert "build" in l2.commands[1] and "--date" in l2.commands[1]
+    last = l2.commands[-1]
+    assert _has(last, "build-all") and "--backfill" in last
+    # since 取并集最早日：只按 L2 的 10-26 重放会漏掉更早的 L3 缺口
+    assert "--since" in last and "2026-10-23" in last
+
+    # 不重复生成：build-all 全局只一条，L3 动作只补 default 档
+    assert sum(1 for a in actions for c in a.commands if _has(c, "build-all")) == 1
+    assert l3.commands and all("build" in c and "--date" in c for c in l3.commands)
 
 
 def test_run_repairs_reports_failure_and_keeps_going():
@@ -153,9 +201,10 @@ def test_run_repairs_reports_failure_and_keeps_going():
 
     outcomes = repair_mod.run_repairs(actions, runner=fake_runner)
     assert len(outcomes) == 2
-    assert outcomes[0].ok is False          # L2 失败
+    assert outcomes[0].ok is False          # L2 失败（第一条 pick_history 就挂）
     assert outcomes[1].ok is True           # L3 仍执行（不中断整体）
-    assert len(calls) == 3                  # 1 条 pick_history + 2 条 plan
+    # L2 动作首条命令失败即中断（1 条），L3 动作只有 default 档（1 条）
+    assert len(calls) == 2
 
 
 def test_runner_exception_marks_action_failed_and_keeps_going():
@@ -177,7 +226,7 @@ def test_runner_exception_marks_action_failed_and_keeps_going():
     assert outcomes[0].ok is False
     assert "python 不见了" in outcomes[0].output
     assert outcomes[1].ok is True           # L3 照跑
-    assert len(calls) == 3                  # 1 条 pick_history + 2 条 plan
+    assert len(calls) == 2                  # L2 首条即抛；L3 只有 default 档
 
 
 def test_dry_run_does_not_execute():
