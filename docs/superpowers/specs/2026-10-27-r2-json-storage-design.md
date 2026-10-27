@@ -1,7 +1,8 @@
 # 行情存储改造：R2 + JSON，D1 只存元数据 — 设计文档
 
 日期：2026-10-27
-状态：待评审
+状态：**已作废**（R2 未开通，用户只用免费额度）
+取代者：[`2026-10-27-retire-worker-market-design.md`](2026-10-27-retire-worker-market-design.md)
 相关：[wrangler.toml](../../../wrangler.toml) · [worker/schema.sql](../../../worker/schema.sql) · [worker/market/](../../../worker/market/) · [scripts/pull_from_d1.py](../../../scripts/pull_from_d1.py) · [deploy-site.yml](../../../.github/workflows/deploy-site.yml)
 
 ## 目标
