@@ -50,6 +50,12 @@ class Gap:
     def to_dict(self) -> Dict[str, str]:
         return {"date": self.date, "layer": self.layer, "detail": self.detail}
 
+    @classmethod
+    def from_dict(cls, payload: Dict) -> "Gap":
+        """只取认识的键：报告里多出字段不算坏，少了必需字段才 KeyError。"""
+        return cls(date=payload["date"], layer=payload["layer"],
+                   detail=payload["detail"])
+
 
 @dataclass
 class Report:
@@ -78,6 +84,20 @@ class Report:
             "gaps": [g.to_dict() for g in self.gaps],
             "suppressed": [g.to_dict() for g in self.suppressed],
         }
+
+    @classmethod
+    def from_dict(cls, payload: Dict) -> "Report":
+        """`to_dict()` 的逆操作，供修复脚本消费 `--out` 报告。
+
+        不要手搓 `Gap(**g)`：那样 Gap 一加字段就是 TypeError（读侧契约只做一半）。
+        """
+        return cls(
+            today=payload["today"],
+            window_days=payload["window_days"],
+            expected_dates=list(payload.get("expected_dates") or []),
+            gaps=[Gap.from_dict(g) for g in payload.get("gaps") or []],
+            suppressed=[Gap.from_dict(g) for g in payload.get("suppressed") or []],
+        )
 
 
 def _read_layer_counts(db_path: str, since: str):
