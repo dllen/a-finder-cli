@@ -46,6 +46,20 @@ def test_makeup_weekend_kept_when_known_and_enabled():
     assert "2026-09-20" in days
 
 
+def test_makeup_weekend_excluded_when_enabled_but_not_known():
+    """开启 include_known_weekend 但调休周末不在 known 里 → 仍然排除。
+
+    同步语义的负向分支：必须「库里真有这一天」才认，不能退化成
+    「开关一开就收下所有调休日」。
+    """
+    days = mc.trading_days(
+        dt.date(2026, 9, 1), dt.date(2026, 9, 30),
+        include_known_weekend=True, known=set(),
+    )
+    assert "2026-09-20" not in days
+    assert all(dt.date.fromisoformat(d).weekday() < 5 for d in days)
+
+
 def test_calendar_unavailable_returns_empty(monkeypatch):
     """chinese_calendar 不可用 → 返回 []，绝不猜。"""
     monkeypatch.setattr(mc, "_WORKDAY_FN", None)

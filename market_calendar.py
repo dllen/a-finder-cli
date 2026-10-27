@@ -25,7 +25,11 @@ def _reset_workday_cache() -> None:
 
 
 def _workday_fn():
-    """懒加载 chinese_calendar.is_workday；不可用时返回 None。"""
+    """懒加载 chinese_calendar.is_workday；不可用时返回 None。
+
+    可用性判定是**进程级**的：首次导入失败后会缓存 None，本进程不再重试
+    （旧实现每次调用都重试 import）。排障时别误以为它会自动恢复。
+    """
     global _WORKDAY_FN, _WORKDAY_LOADED
     if not _WORKDAY_LOADED:
         _WORKDAY_LOADED = True

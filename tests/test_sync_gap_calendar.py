@@ -1,8 +1,10 @@
-"""增量同步的缺口判定（市场日历）测试。
+"""增量同步的缺口判定与日历语义测试。
 
 旧实现按日历日比缺口：长假期间（如国庆 10-01~10-07 休市）每个交易日都会
 对全部 300 只股票重新回补一遍空区间——请求白花、限流风险上升，还不产生数据。
-新实现只对「全市场真有行情的日期」判缺口。
+新实现里 `_build_missing_segments` 只对「全市场真有行情的日期」判缺口；
+`sync_hs300_range(gap_fill=True)` 的应有交易日改由共享的 `market_calendar`
+提供，并使用同步侧语义（include_known_weekend=True + 库里已有日期作 known）。
 """
 
 import datetime as dt
@@ -13,13 +15,6 @@ import market_calendar as mc
 import sync_service
 from db_repository import get_market_trade_dates, open_db
 from sync_service import _build_gap_segments, _build_missing_segments
-
-
-@pytest.fixture(autouse=True)
-def _reset_calendar_cache():
-    mc._reset_workday_cache()
-    yield
-    mc._reset_workday_cache()
 
 
 def _seed_price(conn, code, trade_date, close=10.0):
@@ -146,8 +141,17 @@ def _run_gap_fill(db_path, monkeypatch, calendar_days):
         sync_service, "fetch_hs300_constituents", lambda: {"600519": "贵州茅台"}
     )
     sync_service.sync_hs300_range(
-        db_path, "2026-10-19", "2026-10-27",
-        None, 1, 1000.0, 0, 0.1, False, False, True,
+        db_path=db_path,
+        start_date="2026-10-19",
+        end_date="2026-10-27",
+        limit=None,
+        concurrency=1,
+        rate_limit=1000.0,
+        retries=0,
+        backoff=0.1,
+        resume=False,
+        only_failed=False,
+        gap_fill=True,
     )
     return calendar_calls, segment_calls
 
@@ -165,6 +169,9 @@ def test_gap_fill_uses_calendar_with_sync_semantics(db, monkeypatch):
     )
 
     assert len(calls) == 1
+    # 日历拿到的是已解析的 date（顺带验证 sync 侧 parse_date 的入参转换）
+    assert calls[0]["start"] == dt.date(2026, 10, 19)
+    assert calls[0]["end"] == dt.date(2026, 10, 27)
     assert calls[0]["include_known_weekend"] is True
     assert calls[0]["known"] == {_SEED_DAY}
     assert segments == [([_SEED_DAY], ["2026-10-26", "2026-10-27"])]

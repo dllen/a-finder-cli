@@ -322,12 +322,9 @@ def sync_hs300_range(
         expected_dates: Optional[List[str]] = None
         if gap_fill:
             market_dates = get_market_trade_dates(conn, start_date, end_date)
-            # 优先用真实交易日历：市场日历来自「库里已有日期」，看不到从未抓到过的
-            # 那一天（例如 10-26 整天漏抓、而 10-27 已入库时，10-26 永远补不上）。
-            # include_known_weekend=True 是同步侧语义：库里有调休补班日的数据，说明那天
-            # 市场确实开过市、已经抓过，应当认；巡检要客观基准才传 False。
-            # 末尾的 `or None` 是契约而非控制流必需：日历不可用 → None，与旧实现同义；
-            # 下面两个分支只判真值，[] 与 None 效果相同。
+            # 优先用真实交易日历：市场日历看不到从未抓到过的那一天（例：10-26 整天
+            # 漏抓、10-27 已入库 → 10-26 永远补不上）。include_known_weekend=True 是
+            # 同步侧语义（库里有就认）；`or None` 保留旧契约：日历不可用 → None。
             expected_from_calendar = (
                 market_calendar.trading_days(
                     start, end, include_known_weekend=True, known=set(market_dates)
