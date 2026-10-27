@@ -10,12 +10,13 @@
 输入契约（与 audit_coverage / repair_gaps 的 --out 对齐）：
   --audit      : {"today": "YYYY-MM-DD", "window_days": 30,
                   "gaps": [{"date","layer","detail"}], ...}
-                 Task 6 有复检报告（audit2.json）时必须传复检报告：
-                 gaps 为空 + 有成功 outcome 也能判 🛠，不必非得给 --audit-pre。
-                 只传这一份而 gaps 仍非空时一律按「剩余」处理（保守，不凭退出码断言修好）。
+                 Task 6 有复检报告（audit2.json）时传复检报告。
+                 只传这一份而 gaps 仍非空时一律按「剩余」处理；gaps 为空只说明
+                 「这次复检没看到缺口」，没有原报告对照就没有「已修复」的证据 → ✅。
   --audit-pre  : 可选，修复前的原报告（同为 gaps 形状）。两者都给时，
                  用「原 gaps - 复检 gaps」判「已修复」，剩余仍以 --audit 为准；
-                 复检 expected_dates 没覆盖到的原缺口不会被断言已修复。
+                 复检 expected_dates 没覆盖到的原缺口并入「剩余」（🚨），
+                 既不断言已修复，也不让它在通知里消失。
   --repair     : {"skipped": [...], "outcomes": [{"layer","dates","ok","reason"}], ...}
 `outcomes[].ok is True` 才算修复成功（`"false"` 这类真值字符串不算）；
 `reason` 非字符串先 str() 归一化 —— 坏类型只降级，不能炸掉整条通知。
@@ -54,24 +55,18 @@ NTFY_BASE = "https://ntfy.sh"      # 测试里 monkeypatch 成回环地址
 MAX_BODY = 300                      # 心跳消息的软上限（长了就没人看）
 
 
-def decide_status(*, gaps, repaired, remaining, no_db: bool = False) -> str:
-    """从「发现/已修/剩余」推出三种结局。
+def decide_status(*, remaining, fixed, no_db: bool = False) -> str:
+    """从证据推出三种结局。
 
     no_db 优先：没有数据库 = 什么都没体检，绝不能报「通过」。
-    remaining 次之：只要还有未修缺口就不能说通过或已修复。
-    没有剩余时，只要「发现过缺口」（gaps 非空，有 --audit-pre 时来自原报告）
-    或「修复动作确实成功过」（repaired 非空，即 ok is True 的 outcome），
-    就是 repaired；两者都没有才是 pass。
-    这样 Task 6 只传复检报告（gaps=[]）+ 修复成功时 🛠 仍可达，
-    而 failed outcome 的「干净复检」不会被误判成 🛠。
+    remaining 次之：只要还有未修/未覆盖缺口就不能说通过或已修复。
+    没有剩余时，唯一能证明「修好过」的证据是原/复检两份 gaps 的差集（fixed）：
+    差集非空 = repaired；否则 = pass。
+    ok outcome 只代表修复命令退出码为 0，**不算**修复证据（sync 写 0 行同样 rc=0）。
     """
-    if no_db:
+    if no_db or remaining:
         return "manual"
-    if remaining:
-        return "manual"
-    if not gaps and not repaired:
-        return "pass"
-    return "repaired"
+    return "repaired" if fixed else "pass"
 
 
 def _as_date(value: str) -> Optional[dt.date]:
@@ -136,6 +131,27 @@ def _reasons_text(items: Sequence[Dict], fallback: str) -> str:
     return "；".join(filter(None, (_reason(it) for it in items))) or fallback
 
 
+def _fixed_keys(fixed: Sequence[Dict]) -> set:
+    return {(g.get("layer"), g.get("date")) for g in fixed}
+
+
+def _relevant_repairs(fixed: Sequence[Dict], repaired: Sequence[Dict]) -> List[Dict]:
+    """只保留「成功 outcome 的 dates 命中差集」的修复记录。
+
+    差集之外的 ok outcome 不能拿来充当「发现/已修复」的证据：那是另一天的命令
+    成功了，和这些缺口无关。宁可不写动作，也不能把无关的记录贴过来。
+    """
+    keys = _fixed_keys(fixed)
+    if not keys:
+        return []
+    relevant: List[Dict] = []
+    for o in repaired:
+        layer = o.get("layer")
+        if any((layer, d) in keys for d in _outcome_dates(o)):
+            relevant.append(o)
+    return relevant
+
+
 def format_message(
     *,
     status: str,
@@ -146,12 +162,11 @@ def format_message(
     no_db: bool = False,
     window_days: int = 30,
     fixed: Sequence[Dict] = (),
-    verified: bool = False,
 ) -> tuple[str, str]:
     """返回 (标题, 正文)。
 
-    gaps 是「发现」的缺口；有原/复检两份报告时，fixed 是两份 gaps 的差集，
-    verified=True 表示「剩余」来自复检报告（而不是只凭修复命令退出码）。
+    gaps 是「发现」的缺口；fixed 是原/复检两份 gaps 的差集，
+    也是「已修复」的唯一证据。repaired 只用来补「修复动作」的文案。
     """
     if no_db:
         return (
@@ -170,15 +185,22 @@ def format_message(
         return title, body
 
     if status == "repaired":
-        title = "🛠 数据缺口已自动修复"
-        # 有原报告时「发现」来自原报告；只传复检报告时退回复检里修好的日期，
-        # 不能因为复检 gaps 为空就把「发现」渲染成「—」。
-        found = _summarize(gaps) or _summarize(_outcome_gap_items(repaired)) or "—"
-        result = ("复检确认这些缺口已消失" if verified
-                  else "修复动作全部成功")
+        # 「发现」优先用差集：它才是复检确认消失的那批缺口。
+        # 没有成功 outcome 时绝不编「已自动补齐」这种动作。
+        found = _summarize(fixed) or _summarize(gaps) or "—"
+        relevant = _relevant_repairs(fixed, repaired)
+        if relevant:
+            title = "🛠 数据缺口已自动修复"
+            repair_text = _reasons_text(
+                relevant, "修复动作成功（修复记录未说明具体动作）")
+        else:
+            title = "🛠 数据缺口已恢复（复检确认）"
+            repair_text = "修复记录缺失，复检确认缺口已消失"
+        result = ("复检确认这些缺口已消失" if fixed
+                  else "未取得原/复检差集，无法确认已修复")
         body = (f"🛠 {today} 巡检发现缺口并已修复\n"
                 f"发现：{found}\n"
-                f"修复：{_reasons_text(repaired, '已自动补齐')}\n"
+                f"修复：{repair_text}\n"
                 f"结果：{result}")
         return title, body
 
@@ -320,18 +342,6 @@ def _outcome_dates(outcome: Dict) -> List[str]:
     return [d for d in raw if isinstance(d, str)]
 
 
-def _outcome_gap_items(outcomes: Sequence[Dict]) -> List[Dict]:
-    """把 ok outcome 的 dates 摊成 gap 形状，仅用于「发现」文案的回退。"""
-    items: List[Dict] = []
-    for o in outcomes:
-        layer = o.get("layer")
-        if not isinstance(layer, str):
-            continue
-        for d in _outcome_dates(o):
-            items.append({"date": d, "layer": layer})
-    return items
-
-
 def _remaining_gaps(
     gaps: Sequence[Dict],
     outcomes: Sequence[Dict],
@@ -377,12 +387,15 @@ def _remaining_gaps(
 
 
 def _covered_dates(payload: Dict) -> Optional[set]:
-    """复检报告覆盖的日期（expected_dates）；没这个字段就不设限。"""
+    """复检报告覆盖的日期（expected_dates）；没这个字段才不设限。
+
+    `expected_dates: []` 表示「这次复检什么都没覆盖」，不能像缺字段那样
+    当成不设限 —— 否则原缺口会被当成「复检确认消失」。
+    """
     raw = payload.get("expected_dates")
     if not isinstance(raw, list):
         return None
-    dates = {d for d in raw if isinstance(d, str)}
-    return dates or None
+    return {d for d in raw if isinstance(d, str)}
 
 
 def _diff_gaps(discovered: Sequence[Dict], remaining: Sequence[Dict]) -> List[Dict]:
@@ -397,6 +410,29 @@ def _diff_gaps(discovered: Sequence[Dict], remaining: Sequence[Dict]) -> List[Di
         seen.add(key)
         fixed.append(dict(g))
     return fixed
+
+
+UNCOVERED_REASON = "复检未覆盖该日期，无法确认是否已修复"
+
+
+def _append_uncovered(remaining: Sequence[Dict],
+                      outside: Sequence[Dict]) -> List[Dict]:
+    """把复检窗口外的原缺口并入「剩余」。
+
+    复检报告没检查这一天不等于修好了；丢掉它会让已知缺口从通知里彻底消失，
+    而超窗（>7 天）缺口恰恰是 repair_gaps 永远不修、最需要人看的一类。
+    """
+    merged = [dict(g) for g in remaining]
+    seen = {(g.get("layer"), g.get("date")) for g in merged}
+    for g in outside:
+        key = (g.get("layer"), g.get("date"))
+        if key in seen:
+            continue
+        seen.add(key)
+        item = dict(g)
+        item["reason"] = UNCOVERED_REASON
+        merged.append(item)
+    return merged
 
 
 def _pick_today(args_today: Optional[str], payload: Optional[Dict] = None) -> Optional[str]:
@@ -492,12 +528,18 @@ def main(argv=None) -> int:
     outcomes: List[Dict] = []
     skipped: List[Dict] = []
 
-    # 只传了原报告时它同时也是「本次报告」：没有复检就按原报告判剩余（会更保守）
+    # 只传了原报告时它同时也是「本次报告」：没有复检就按原报告判剩余。
+    # 但两者语义不同（原报告 vs 本次报告），写串参数时至少留一条 warning，
+    # 别让人以为「原报告」参与了差集判定。
     audit_path = args.audit or args.audit_pre
 
     # no_db 时体检根本没跑：旧报告/修复结果都不可信，也不读
     # （缓存丢失场景下这些文件可能压根不存在，不能因此漏掉告警）
     if not args.no_db:
+        if args.audit_pre and not args.audit:
+            print("::warning::只传了 --audit-pre（原报告）而没传 --audit（本次报告）："
+                  "将按单份报告判定，没有复检差集就无法断言「已修复」",
+                  file=sys.stderr)
         # 非法 --today 连告警里的日期都不可信：不发任何消息，直接失败
         today_hint = _pick_today(args.today)
         if today_hint is None:
@@ -538,26 +580,25 @@ def main(argv=None) -> int:
     discovered = pre_gaps if pre_gaps is not None else gaps
     if pre_gaps is not None:
         # 复检窗口可能和原报告不同：只有复检真正覆盖到的日期才能说「已修复」，
-        # 否则「复检里没有」只是没检查，不是修好了。
+        # 否则「复检里没有」只是没检查，不是修好了 —— 这类缺口并入剩余报警。
         covered = _covered_dates(audit_payload)
         if covered is not None:
             outside = [g for g in discovered if g.get("date") not in covered]
             if outside:
                 print(f"::warning::复检报告未覆盖 {len(outside)} 个原缺口"
-                      f"（{_summarize(outside)}），不对其断言「已修复」",
+                      f"（{_summarize(outside)}），并入「剩余」且不对其断言「已修复」",
                       file=sys.stderr)
                 outside_keys = {(g.get("layer"), g.get("date")) for g in outside}
                 discovered = [g for g in discovered
                               if (g.get("layer"), g.get("date")) not in outside_keys]
+                remaining = _append_uncovered(remaining, outside)
     fixed = _diff_gaps(discovered, remaining)
-    verified = pre_gaps is not None
 
-    status = decide_status(gaps=discovered, repaired=repaired,
-                           remaining=remaining, no_db=args.no_db)
+    status = decide_status(remaining=remaining, fixed=fixed, no_db=args.no_db)
     title, body = format_message(
         status=status, today=today, gaps=discovered, repaired=repaired,
         remaining=remaining, no_db=args.no_db, window_days=window_days,
-        fixed=fixed, verified=verified,
+        fixed=fixed,
     )
 
     print(body)

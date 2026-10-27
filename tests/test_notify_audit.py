@@ -74,11 +74,11 @@ def test_pass_message_is_heartbeat():
 
 
 def test_repaired_message_lists_what_was_fixed():
+    gap = {"date": "2026-10-26", "layer": "L2", "detail": "无选股数据"}
     title, body = nf.format_message(
-        status="repaired", today="2026-10-27",
-        gaps=[{"date": "2026-10-26", "layer": "L2", "detail": "无选股数据"}],
+        status="repaired", today="2026-10-27", gaps=[gap],
         repaired=[{"layer": "L2", "dates": ["2026-10-26"], "reason": "补算 1 天的选股"}],
-        remaining=[])
+        remaining=[], fixed=[gap])
     assert "🛠" in title
     assert "2026-10-26" in body
     assert "L2" in body
@@ -115,7 +115,7 @@ def test_body_lists_layers_not_flat_noise():
 
 def test_no_db_is_manual_not_pass():
     """缓存里没有 hs300.db 时不能报「通过」——那等于宣称体检过但实际没体检。"""
-    assert nf.decide_status(gaps=[], repaired=[], remaining=[], no_db=True) == "manual"
+    assert nf.decide_status(remaining=[], fixed=[], no_db=True) == "manual"
     title, body = nf.format_message(
         status="manual", today="2026-10-27", gaps=[], repaired=[],
         remaining=[], no_db=True)
@@ -123,16 +123,14 @@ def test_no_db_is_manual_not_pass():
     assert "数据库" in body
 
 
-def test_status_from_outcomes():
-    """全部修复成功 → repaired；有失败 → manual。"""
-    assert nf.decide_status(gaps=[], repaired=[], remaining=[]) == "pass"
-    assert nf.decide_status(
-        gaps=[{"date": "d", "layer": "L2", "detail": ""}],
-        repaired=[{"layer": "L2", "dates": ["d"], "reason": ""}],
-        remaining=[]) == "repaired"
-    assert nf.decide_status(
-        gaps=[{"date": "d", "layer": "L1", "detail": ""}],
-        repaired=[], remaining=[{"date": "d", "layer": "L1", "detail": ""}]) == "manual"
+def test_status_is_decided_by_evidence_only():
+    """状态只由证据决定：差集非空才叫已修复，有剩余缺口一律需人工。"""
+    gap = {"date": "d", "layer": "L2", "detail": ""}
+    assert nf.decide_status(remaining=[], fixed=[]) == "pass"
+    assert nf.decide_status(remaining=[], fixed=[gap]) == "repaired"
+    assert nf.decide_status(remaining=[gap], fixed=[]) == "manual"
+    # 有剩余时就算差集非空（部分修好）也只能报需人工
+    assert nf.decide_status(remaining=[gap], fixed=[gap]) == "manual"
 
 
 # ---------------------------------------------------------------- 连续日期收敛
@@ -305,9 +303,13 @@ def test_main_recheck_clean_with_successful_repair_is_repaired(tmp_path, monkeyp
     assert "复检确认" in sent["body"]
 
 
-def test_main_pre_gaps_outside_recheck_window_are_not_claimed_fixed(
+def test_main_pre_gaps_outside_recheck_window_stay_in_remaining(
         tmp_path, monkeypatch, capsys):
-    """复检窗口没覆盖原缺口时，「复检里没有」只代表没检查，不能断言已修复。"""
+    """复检窗口没覆盖原缺口：「没检查」不能算修好，更不能让缺口从通知消失。
+
+    超窗（>7 天）缺口正是 repair_gaps 永远不修、最需要人看的一类，
+    必须并入「剩余」报警（🚨），而不是被一句 ✅ 掩盖。
+    """
     pre = _write_json(tmp_path, "audit.json", {
         "today": "2026-10-27",
         "gaps": [{"date": "2026-10-01", "layer": "L1", "detail": "无行情"}],
@@ -321,12 +323,15 @@ def test_main_pre_gaps_outside_recheck_window_are_not_claimed_fixed(
 
     assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
                     "--topic", "t"]) == 0
-    assert sent["title"].startswith("✅")       # 复检覆盖范围内确实没缺口
-    assert "未覆盖" in capsys.readouterr().err  # 但没断言旧缺口已修复
+    assert sent["title"].startswith("🚨")
+    assert "剩余：L1 2026-10-01" in sent["body"]
+    assert "复检未覆盖该日期" in sent["body"]
+    assert "已修复：L1" not in sent["body"]     # 没检查过就不能叫已修复
+    assert "未覆盖" in capsys.readouterr().err
 
 
-def test_main_recheck_distinguishes_repaired_from_pass(tmp_path, monkeypatch):
-    """复检干净 + 修复动作成功 = 🛠；复检干净 + 没修复过 = ✅。"""
+def test_main_clean_recheck_with_ok_outcome_alone_is_pass(tmp_path, monkeypatch):
+    """只有复检报告 + ok outcome 没有「已修复」的证据：ok 只等于退出码 0 → ✅。"""
     post = _write_json(tmp_path, "audit2.json",
                        {"today": "2026-10-27", "gaps": []})
     repair = _write_json(tmp_path, "repair.json", {
@@ -339,10 +344,190 @@ def test_main_recheck_distinguishes_repaired_from_pass(tmp_path, monkeypatch):
 
     assert nf.main(["--audit", str(post), "--repair", str(repair),
                     "--topic", "t"]) == 0
-    assert sent["title"].startswith("🛠")
+    assert sent["title"].startswith("✅")
+    # 不能拿 ok outcome 的 dates 凭空造出「发现」
+    assert "发现：" not in sent["body"]
+    assert "L2 2026-10-26" not in sent["body"]
 
+
+def test_main_recheck_diff_distinguishes_repaired_from_pass(tmp_path, monkeypatch):
+    """原报告有缺口 + 复检干净 = 差集证明已修复 → 🛠；单份干净 = ✅。"""
+    pre = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+    })
+    post = _write_json(tmp_path, "audit2.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-26"],
+        "gaps": [],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--topic", "t"]) == 0
+    assert sent["title"].startswith("🛠")
+    assert "发现：L2 2026-10-26" in sent["body"]
+
+    # 同一份洁净复检不带原报告时没有差集，只能报通过
     assert nf.main(["--audit", str(post), "--topic", "t"]) == 0
     assert sent["title"].startswith("✅")
+
+
+# ---------------------------------------------------------------- 六场景回归
+
+_X = {"date": "2026-10-26", "layer": "L2", "detail": "无选股"}
+_OK_REPAIR = {"layer": "L2", "dates": ["2026-10-26"], "ok": True,
+              "reason": "补算 1 天的选股"}
+
+
+def _scenario_args(tmp_path, case):
+    """按评审给出的 a/b/c/d/e/i 造输入，返回 (argv, 期望标题, 必含, 必不含)。"""
+    pre = post = repair = None
+    if case in ("a", "b", "d", "e"):
+        pre = {"today": "2026-10-27", "gaps": [dict(_X)]}
+    elif case == "i":
+        pre = {"today": "2026-10-27", "gaps": []}
+
+    if case == "b":
+        post = {"today": "2026-10-27", "expected_dates": ["2026-10-26"],
+                "gaps": [dict(_X)]}
+    else:
+        post = {"today": "2026-10-27", "expected_dates": ["2026-10-26"],
+                "gaps": []}
+
+    if case in ("a", "b", "c"):
+        repair = {"today": "2026-10-27", "skipped": [],
+                  "outcomes": [dict(_OK_REPAIR)]}
+    elif case == "e":
+        # 该缺口被 repair skipped：没有成功 outcome，但复检确认它已消失
+        repair = {"today": "2026-10-27",
+                  "skipped": [dict(_X, reason="超窗未自动修")],
+                  "outcomes": []}
+
+    argv: list[str] = []
+    if pre is not None:
+        argv += ["--audit-pre", str(_write_json(tmp_path, "pre.json", pre))]
+    if post is not None:
+        argv += ["--audit", str(_write_json(tmp_path, "post.json", post))]
+    if repair is not None:
+        argv += ["--repair", str(_write_json(tmp_path, "repair.json", repair))]
+
+    expectations = {
+        # a: 原缺口 X + 复检干净 + ok → 🛠（差集是修复证据）
+        "a": ("🛠", ["发现：L2 2026-10-26", "复检确认这些缺口已消失"], []),
+        # b: 复检仍有 X + ok → 🚨 且剩余含 X
+        "b": ("🚨", ["剩余：L2 2026-10-26"], ["已修复：L2"]),
+        # c: 只有一份干净复检 + ok → ✅，不能拿 ok 的 dates 造「发现」
+        "c": ("✅", ["巡检通过"], ["发现：", "L2 2026-10-26"]),
+        # d: 原缺口 + 复检确认消失（无修复信息）→ 🛠，不编「已自动补齐」
+        "d": ("🛠", ["发现：L2 2026-10-26", "修复记录缺失，复检确认缺口已消失"],
+              ["已自动补齐"]),
+        # e: 原缺口被 repair skipped + 复检确认消失 → 🛠，同样不编动作
+        "e": ("🛠", ["发现：L2 2026-10-26", "修复记录缺失，复检确认缺口已消失"],
+              ["已自动补齐"]),
+        # i: 原/复检全干净、没有修复 → ✅
+        "i": ("✅", ["巡检通过"], ["发现：", "修复："]),
+    }
+    expected, must, must_not = expectations[case]
+    return argv, expected, must, must_not
+
+
+@pytest.mark.parametrize("case", ["a", "b", "c", "d", "e", "i"])
+def test_review_scenarios_a_b_c_d_e_i(case, tmp_path, monkeypatch):
+    argv, expected, must, must_not = _scenario_args(tmp_path, case)
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(argv + ["--topic", "t"]) == 0
+    assert sent["title"].startswith(expected), (case, sent["title"])
+    for needle in must:
+        assert needle in sent["body"], (case, sent["body"])
+    for needle in must_not:
+        assert needle not in sent["body"], (case, sent["body"])
+
+
+def test_main_unrelated_ok_outcome_is_not_repair_evidence(
+        tmp_path, monkeypatch):
+    """ok outcome 的日期不在差集里 → 不能把它的 reason 贴成这次修复的动作。"""
+    pre = _write_json(tmp_path, "pre.json", {
+        "today": "2026-10-27",
+        "gaps": [dict(_X)],
+    })
+    post = _write_json(tmp_path, "post.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-26"],
+        "gaps": [],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [{"layer": "L3", "dates": ["2026-10-25"], "ok": True,
+                      "reason": "补算 L3 计划"}],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--repair", str(repair), "--topic", "t"]) == 0
+    assert sent["title"].startswith("🛠")
+    assert "修复记录缺失，复检确认缺口已消失" in sent["body"]
+    assert "补算 L3 计划" not in sent["body"]
+
+
+def test_main_outside_gap_survives_ok_outcome(tmp_path, monkeypatch):
+    """复检没覆盖的缺口，即使修复命令 ok 也不能从「剩余」里消失。"""
+    pre = _write_json(tmp_path, "pre.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-01", "layer": "L1", "detail": "无行情"}],
+    })
+    post = _write_json(tmp_path, "post.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-27"],
+        "gaps": [],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [{"layer": "L1", "dates": ["2026-10-01"], "ok": True,
+                      "reason": "补抓行情退出码 0"}],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--repair", str(repair), "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "剩余：L1 2026-10-01" in sent["body"]
+
+
+def test_main_empty_expected_dates_covers_nothing(tmp_path, monkeypatch):
+    """`expected_dates: []` 是「没检查任何日期」，不能当成「不设限」。"""
+    pre = _write_json(tmp_path, "pre.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-01", "layer": "L1", "detail": "无行情"}],
+    })
+    post = _write_json(tmp_path, "post.json", {
+        "today": "2026-10-27", "expected_dates": [], "gaps": [],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "剩余：L1 2026-10-01" in sent["body"]
+
+
+def test_main_audit_pre_alone_warns_and_is_single_report(
+        tmp_path, monkeypatch, capsys):
+    """只写 --audit-pre 是参数写串：按单份报告判定，并明确 warning。"""
+    report = _write_json(tmp_path, "pre.json", {
+        "today": "2026-10-27", "gaps": [],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [dict(_OK_REPAIR)],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit-pre", str(report), "--repair", str(repair),
+                    "--topic", "t"]) == 0
+    assert sent["title"].startswith("✅")
+    assert "只传了 --audit-pre" in capsys.readouterr().err
 
 
 def test_main_ok_outcome_with_recheck_residual_gap_is_manual(tmp_path, monkeypatch):
@@ -683,12 +868,15 @@ def test_manual_message_falls_back_to_gap_detail():
 
 
 def test_empty_reasons_are_not_rendered_as_separator():
+    """reason 为空时不能渲染出「修复：；」，也不能编一个「已自动补齐」。"""
+    gap = {"date": "2026-10-26", "layer": "L2", "detail": "无选股"}
     title, body = nf.format_message(
-        status="repaired", today="2026-10-27",
-        gaps=[{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+        status="repaired", today="2026-10-27", gaps=[gap],
         repaired=[{"layer": "L2", "dates": ["2026-10-26"], "reason": ""}],
-        remaining=[])
-    assert "修复：已自动补齐" in body
+        remaining=[], fixed=[gap])
+    assert "修复：；" not in body
+    assert "修复：修复动作成功（修复记录未说明具体动作）" in body
+    assert "已自动补齐" not in body
 
 
 def test_window_days_comes_from_audit_report(tmp_path, monkeypatch):
