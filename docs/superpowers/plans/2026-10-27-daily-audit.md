@@ -2000,28 +2000,28 @@ Expected: 全部 passed
 Run: `.venv/bin/python scripts/audit_coverage.py --db hs300.db`
 Expected: 输出体检区间与缺口列表（当前库 10-26/10-27 已补齐，应基本无缺口；若有则记录）
 
-- [ ] **Step 4: 端到端验证 —— 幂等性（关键）**
+- [ ] **Step 4: 端到端验证 —— 幂等性（关键，在副本上做）**
 
-对同一日期连续跑两次 `build-all`，确认行数不变：
+对同一日期连续跑两次 `build-all`，确认 `trade_plan` 行数不变。
+**必须在副本上做**，不要动工作区的 hs300.db。
 
 ```bash
+cp hs300.db /tmp/idem.db
 .venv/bin/python -c "
 import sqlite3
-c = sqlite3.connect('hs300.db')
+c = sqlite3.connect('/tmp/idem.db')
 print('before:', c.execute(\"SELECT COUNT(*) FROM trade_plan WHERE plan_date='2026-10-26'\").fetchone()[0])
 "
-.venv/bin/python stock_cli.py plan build-all --date 2026-10-26 --db hs300.db
+.venv/bin/python stock_cli.py plan build-all --date 2026-10-26 --db /tmp/idem.db
 .venv/bin/python -c "
 import sqlite3
-c = sqlite3.connect('hs300.db')
+c = sqlite3.connect('/tmp/idem.db')
 print('after :', c.execute(\"SELECT COUNT(*) FROM trade_plan WHERE plan_date='2026-10-26'\").fetchone()[0])
 "
 ```
 Expected: `before` 与 `after` 相同（params_hash 相同 → ON CONFLICT 更新而非追加）
 
-- [ ] **Step 5: 端到端验证 —— 模拟缺口后能检出并修复**
-
-在临时库上验证（不动真实库）：
+- [ ] **Step 5: 端到端验证 —— 模拟缺口后能检出并修复（在副本上做）**
 
 ```bash
 cp hs300.db /tmp/e2e.db
@@ -2034,14 +2034,31 @@ c.commit()
 print('已人为删除 10-26 的选股与计划')
 "
 .venv/bin/python scripts/audit_coverage.py --db /tmp/e2e.db
-# 期望：报告 [L2] 2026-10-26 无选股数据
+# 期望：报 [L2] 2026-10-26 无选股数据，退出码 1
 .venv/bin/python scripts/repair_gaps.py --db /tmp/e2e.db --out /tmp/e2e-repair.json
-# 期望：执行 pick_history + plan build/build-all，最终退出码 0
+# 期望：执行 pick_history + plan build/build-all，退出码 0
 .venv/bin/python scripts/audit_coverage.py --db /tmp/e2e.db
-# 期望：✅ 三层无缺口
+# 期望：✅ 三层无缺口，退出码 0
+cat /tmp/e2e-repair.json
 ```
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: 端到端验证 —— 通知的三种结局各跑一次**
+
+```bash
+# a) 干净报告 → ✅ 心跳
+.venv/bin/python scripts/audit_coverage.py --db hs300.db --out /tmp/ok.json
+.venv/bin/python scripts/notify_audit.py --audit /tmp/ok.json --today 2026-10-27
+
+# b) 有缺口且未修复 → 🚨
+.venv/bin/python scripts/audit_coverage.py --db /tmp/e2e.db --out /tmp/gap.json
+.venv/bin/python scripts/notify_audit.py --audit /tmp/gap.json --today 2026-10-27
+
+# c) 无 DB → 🚨（绝不能是 ✅）
+.venv/bin/python scripts/notify_audit.py --no-db --today 2026-10-27
+```
+Expected: 三者分别打印 ✅ / 🚨 / 🚨，且都不发网络请求（未配 NTFY_TOPIC 时只写 Step Summary）
+
+- [ ] **Step 7: 提交**
 
 ```bash
 git add CLAUDE.md
