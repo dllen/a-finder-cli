@@ -111,3 +111,49 @@ def test_notify_step_passes_audit_pre_so_missing_report_is_fatal():
     block = _step_block(_workflow_text(), "通知")
     assert "--audit-pre" in block
     assert "/tmp/audit.json" in block
+
+
+# ---------------------------------------------------------------- M-1 ~ M-4
+
+
+def test_audit_repair_recheck_steps_pass_today_explicitly():
+    """M-1：体检/修复/复检三步都要显式传 --today。
+
+    CLAUDE.md 写着「workflow 里已显式传 --today，不受影响」，实际只有 notify
+    收到了 —— 手工 workflow_dispatch 跨零点时，体检会把「今天」也算进应有
+    交易日，报出 `[L1] 今天 行情只有 0 只` 这种假缺口。
+    """
+    text = _workflow_text()
+    for name in ("三层体检", "自动修复", "复检"):
+        block = _step_block(text, name)
+        assert "--today" in block, f"{name} 步必须显式传 --today"
+        assert "steps.trade-day.outputs.today_bj" in block, name
+
+
+def test_repair_rc_is_actually_used():
+    """M-2：repair_rc 采集了就得用起来 —— 修复失败也要让 run 变红，别留死输出。"""
+    text = _workflow_text()
+    if_lines = [line for line in text.splitlines() if line.strip().startswith("if:")]
+    assert any("repair_rc" in line for line in if_lines), \
+        "红灯条件里必须用上 repair_rc（否则它只是个没人看的输出）"
+
+
+def test_trade_day_step_uses_shared_calendar():
+    """M-3：交易日判定必须走 market_calendar.trading_days。
+
+    手写一份 `is_workday(d) and d.weekday() < 5` 就是又一份日历口径 ——
+    设计文档里「口径漂移的代价已经付过一次」说的就是这种事。
+    """
+    block = _step_block(_workflow_text(), "判定今天日期与是否交易日")
+    assert "market_calendar" in block
+    assert "trading_days" in block
+    # 直接 import chinese_calendar 的 is_workday = 又一份手写口径（注释里提一句不算）
+    assert "import is_workday" not in block
+    assert "from chinese_calendar import" not in block
+
+
+def test_notify_step_marks_non_trading_day():
+    """M-4：非交易日标注要进通知正文（ntfy 推送），不能只写 Step Summary。"""
+    block = _step_block(_workflow_text(), "通知")
+    assert "--non-trading-day" in block
+    assert "is_trade_day" in block
