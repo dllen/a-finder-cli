@@ -68,9 +68,10 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   数据源多源降级（SourceHealthTracker），同步/转债失败容忍（缓存兜底）。
   手动兜底：GitHub Actions 页面的 workflow_dispatch。
 - **增量同步做了三件事保证「准 + 快」**：
-  1. 缺口按**真实交易日历**判定（`chinese_calendar` → `_trading_days_from_calendar` →
+  1. 缺口按**真实交易日历**判定（`chinese_calendar` → `market_calendar.trading_days` →
      `sync_service._build_missing_segments`）：只有 A 股真正开市的日期才算应有数据，
-     长假不再反复回补；调休补班的周末不算（除非库里已有数据）；相邻缺失点合并成一段。
+     长假不再反复回补；调休补班的周末不算（同步侧传 `include_known_weekend=True`，
+     库里已有该日数据时才认）；相邻缺失点合并成一段。
      日历不可用时回退到「市场日历（库里已有日期）+ 尾部窗口」。
   2. 日常窗口只补最近 60 天（冷启动 400 天），并发/限流下调到 6/6、重试 2 次；
      同步后跑 `scripts/ci_check_data.py --prices-only` 校验，未落地就隔 120s 重试，
@@ -116,6 +117,43 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
   不要当成 bug。线上数据以 CI 为准，本地只用于调试。
+
+# 每日巡检与自动补齐（daily-audit.yml）
+- 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检。与 deploy-site 是各自独立的
+  workflow，**失败互不影响**（一边红了不拖累另一边），但**共用 hs300.db 缓存**
+  （`hs300-db-*` 前缀，restore-keys 互相兜底）——「解耦」指失败隔离，不是数据隔离。
+- **体检基准**：`market_calendar.trading_days` 算出的真实交易日（近 30 天），
+  **完全独立于库内数据**。这是关键 —— 缺口判定若以「库的最后一天」为基准，
+  整天漏抓的那天在基准里不可见，永远查不出来（2026-10-26 实际踩过）。
+- **三层判定**：L1 行情（该日 < 280 只）、L2 选股（该日无行）、L3 计划（任一应有档位无行）。
+  L1 缺时只报 L1，派生的 L2/L3 记入 suppressed，避免噪声。
+  L2/L3 不设行数阈值 —— 选股数量天然波动（55~77 条），设阈值会大量误报。
+- **修复边界**：L2/L3 自动补，L1 只补近 7 天（更早的复权口径可能已变，填历史会污染序列，
+  宁可报警）；转债永不自动补（数据源只有实时快照）。
+  L2/L3 的「纯计算」只表示**不需要外部数据源**，不是**无副作用**：L3 以
+  `paper_trade=True` 执行，会写 `open_positions` / `trade_events`（实测补 10-26 时
+  open_positions 该日建仓 1→8、trade_events +7）。
+- **补计划的真实语义**：不是「只补缺失日期、绝不重算」。`plan build-all --backfill
+  --since <最早缺口日>` 会按缺口日**往后重放**所有日期：完整日期命中已有
+  `params_hash` 走 `build_plan` 的缓存短路，结果不变；但**部分缺失**的日期会用当前
+  `open_positions` 重建，补出的历史计划反映的是重建时的持仓状态，不是当时的快照
+  （实测 10-26 重建后 trade_plan 行数与原始不相等）。要原样快照只能靠备份，不能靠重放。
+- **L2 缺口必然连带 L3**：选股没有 → 当天计划也无从生成。`repair_gaps.py` 的 L2 动作
+  因此同时带 `pick_history` + `plan build` + 一次 `plan build-all --backfill`（日期取
+  L2∪L3 并集，命令不重复），否则「补完选股、计划立刻成为缺口」，复检仍 rc=1，要跑
+  第二轮才收敛（Task 7 端到端实测）。
+- **修完必须复检**：否则会重演「补了行情但选股没补上却以为修好了」。
+- **通知**：三种结局三种措辞 —— ✅ 通过（每日心跳）/ 🛠 已自动修复 / 🚨 需人工。
+  心跳是刻意设计的：静默失败最难排查，「今天没收到消息」本身就是信号。
+- **手工使用**：
+  ```bash
+  python3 scripts/audit_coverage.py --db hs300.db            # 体检
+  python3 scripts/repair_gaps.py --db hs300.db --dry-run     # 看会修什么
+  python3 scripts/repair_gaps.py --db hs300.db               # 真修
+  ```
+  **非 21:00 时段手工跑，建议显式传 `--today <上一个交易日>`**：体检默认把「今天」
+  也算进应有交易日，跨零点后（如 00:06）当天还没开盘，会报
+  `[L1] 今天 行情只有 0 只` 这种假缺口。workflow 里已显式传 `--today`，不受影响。
 
 # 行情数据路径（GH 直连，Cloudflare 不存行情）
 - **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。

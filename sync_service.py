@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+import market_calendar
 from config import SyncConfig
 from db_repository import (
     FundamentalsHistoryRow,
@@ -13,6 +14,7 @@ from db_repository import (
     get_fetch_offsets,
     get_failed_codes,
     get_last_trade_date,
+    get_market_trade_dates,
     get_trade_dates,
     get_trade_date_range,
     get_all_codes,
@@ -163,35 +165,6 @@ def _compact(date_str: str) -> str:
         return date_to_str(parse_date(date_str))
     except Exception:
         return date_str
-
-
-def _trading_days_from_calendar(
-    start: dt.date, end: dt.date, known: set
-) -> Optional[List[str]]:
-    """用 chinese_calendar 算出 [start, end] 内真正的 A 股交易日（ISO 字符串）。
-
-    返回 None 表示日历不可用（未安装/该年份无数据），调用方回退到「市场日历 + 尾部窗口」。
-
-    注意：调休补班的周末在 chinese_calendar 里是「工作日」，但股市不开市 ——
-    除非该日已经在库里（known），否则不算交易日，避免永远重复抓空。
-    """
-    try:
-        from chinese_calendar import is_workday
-    except Exception:
-        return None
-
-    days: List[str] = []
-    cur = start
-    while cur <= end:
-        iso = cur.isoformat()
-        try:
-            workday = is_workday(cur)
-        except Exception:
-            return None
-        if workday and (cur.weekday() < 5 or iso in known):
-            days.append(iso)
-        cur += dt.timedelta(days=1)
-    return days or None
 
 
 def _build_missing_segments(
@@ -348,12 +321,16 @@ def sync_hs300_range(
         # 仍要尝试拉一次）。冷启动（库里无数据）时为空 → 回退到旧的日历日缺口判定。
         expected_dates: Optional[List[str]] = None
         if gap_fill:
-            from db_repository import get_market_trade_dates
-
             market_dates = get_market_trade_dates(conn, start_date, end_date)
-            # 优先用真实交易日历：市场日历来自「库里已有日期」，看不到从未抓到过的
-            # 那一天（例如 10-26 整天漏抓、而 10-27 已入库时，10-26 永远补不上）。
-            expected_from_calendar = _trading_days_from_calendar(start, end, set(market_dates))
+            # 优先用真实交易日历：市场日历看不到从未抓到过的那一天（例：10-26 整天
+            # 漏抓、10-27 已入库 → 10-26 永远补不上）。include_known_weekend=True 是
+            # 同步侧语义（库里有就认）；`or None` 保留旧契约：日历不可用 → None。
+            expected_from_calendar = (
+                market_calendar.trading_days(
+                    start, end, include_known_weekend=True, known=set(market_dates)
+                )
+                or None
+            )
             if expected_from_calendar:
                 expected_dates = expected_from_calendar
             elif market_dates:
