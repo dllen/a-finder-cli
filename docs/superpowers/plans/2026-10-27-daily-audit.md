@@ -1533,11 +1533,12 @@ Expected: 打印「计划修复 N 组」或「无需修复」，不执行任何�
 git add scripts/repair_gaps.py tests/test_repair_gaps.py
 git commit -m "feat(audit): 缺口修复脚本（注入式执行器，可单测）
 
-- L1 行情：仅修近 7 天（更早复权口径可能已变，填历史会污染序列）
-- L2 选股：pick_history --date D --no-sync（纯计算）
-- L3 计划：plan build --date D + plan build-all --backfill --since D
+- L1 行情：仅修近 7 天（更早复权口径可能已变，填历史会污染序列），并连带补
+  这些日期的选股与计划（没行情算不出选股，只补行情则单轮不收敛）
+- L2 选股：pick_history --date D --no-sync
+- L3 计划：plan build --date D + plan build-all --backfill --since <最早缺口日>
   （与 a-finder.sh site 第 3/4 步同源，params_hash 形状与 CI 一致）
-- 只补缺失日期，绝不重算已有日期
+- 按缺口日往后**重放**（完整日期走缓存短路；部分缺失日期用当前持仓重建）
 - 单项失败不中断后续项"
 ```
 
@@ -2170,9 +2171,10 @@ git commit -m "feat(ci): 每日巡检 workflow（21:00 北京）
 - **三层判定**：L1 行情（该日 < 280 只）、L2 选股（该日无行）、L3 计划（任一应有档位无行）。
   L1 缺时只报 L1，派生的 L2/L3 记入 suppressed，避免噪声。
   L2/L3 不设行数阈值 —— 选股数量天然波动（55~77 条），设阈值会大量误报。
-- **修复边界**：L2/L3 自动补（纯计算）；L1 只补近 7 天（更早的复权口径可能已变，
+- **修复边界**：L2/L3 自动补；L1 只补近 7 天（更早的复权口径可能已变，
   填历史会污染序列，宁可报警）；转债永不自动补（数据源只有实时快照）。
-  只补缺失日期，**绝不重算已有日期**，产出幂等。
+  L2 缺口连带 L3、L1 缺口连带 L2/L3，保证单轮收敛。
+  补计划是**按缺口日往后重放**（完整日期走缓存短路；部分缺失日期用当前持仓重建）。
 - **修完必须复检**：否则会重演「补了行情但选股没补上却以为修好了」。
 - **通知**：三种结局三种措辞 —— ✅ 通过（每日心跳）/ 🛠 已自动修复 / 🚨 需人工。
   心跳是刻意设计的：静默失败最难排查，「今天没收到消息」本身就是信号。
@@ -2267,15 +2269,17 @@ git commit -m "docs: 记录每日巡检链路与排查顺序
 
 ## 验收标准
 
-完成全部 7 个 Task 后，以下全部成立：
+全部 7 个 Task 完成后的实际状态（2026-10-28 已合并到 main）：
 
-- [ ] `.venv/bin/python -m pytest tests/ -q` 全绿（含新增 4 个测试文件）
-- [ ] `python3 scripts/audit_coverage.py --db hs300.db` 能对当前库给出正确结论
-- [ ] `python3 scripts/repair_gaps.py --db hs300.db --dry-run` 正确列出待修项
-- [ ] `.github/workflows/daily-audit.yml` YAML 与所有 run 块语法通过
-- [ ] 幂等性验证：同一日期跑两次 `build-all`，行数不变
-- [ ] 模拟缺口验证：删掉某天选股/计划 → 体检检出 → 修复 → 复检通过
-- [ ] CLAUDE.md 记录了巡检链路
+- [x] `.venv/bin/python -m pytest tests/ -q` 全绿（668 passed，新增 5 个测试文件）
+- [x] `python3 scripts/audit_coverage.py --db hs300.db` 对当前库给出正确结论
+- [x] `python3 scripts/repair_gaps.py --db hs300.db --dry-run` 正确列出待修项
+- [x] `.github/workflows/daily-audit.yml` YAML 解析通过、13 个 step 中 8 个 run 块 bash -n 通过
+- [x] 幂等性验证：同一日期跑两次 `build-all`，行数不变（但会改写组合状态，见设计文档「已知副作用」）
+- [x] 模拟缺口验证：删掉某天的选股/计划 → 体检检出 → 一轮修复 → 复检通过
+- [x] 模拟整天缺失：删掉行情+选股+计划 → 体检报 L1 → 修复连带补三层 → 单轮收敛
+- [x] CLAUDE.md 记录了巡检链路与排查顺序
+- [x] 设计文档已校准到最终实现（状态、重放语义、L2/L3 连带、已知副作用）
 
 ## 已知限制（不在本计划范围）
 
