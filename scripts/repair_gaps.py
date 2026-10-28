@@ -16,6 +16,12 @@
         2 = 输入不可用（报告缺失/坏 JSON/缺字段、库不存在、日历不可用）。
 与 audit_coverage 的 0/1/2 对齐，CI 才能区分「坏输入」与「修复失败」。
 
+--out 产物里除了 actions/outcomes/skipped，还带 side_effects：修复前后
+open_positions / trade_events 的行数变化。L3 的重放会改写组合状态，而巡检
+随后会把库 export+deploy 到 gh-pages —— 用户在组合页看到的数字会在夜里
+自己变（实测 2026-10-28：open_positions 535→542、trade_events 1048→1055）。
+不记录就等于没人知道，所以这一项必须落盘并出现在通知正文里。
+
 命令执行器通过参数注入，测试不真正跑 CLI。
 
 用法：
@@ -47,6 +53,12 @@ from audit_coverage import CalendarUnavailable, Report, audit  # noqa: E402
 MAX_PRICE_DAYS = 7      # 行情缺口自动修复的时间窗（天）
 TOP_PICKS = 20
 COMMAND_TIMEOUT_S = 1800    # 单条 CLI 命令上限；卡死按失败处理，别吃满 CI 预算
+
+# 修复会改写的「组合状态」表：L3 的 `plan build`（paper_trade=True）会写这两张表。
+# 巡检修完会把库里的变化 export+deploy 到 gh-pages，用户在组合页看到的数字
+# 会在夜里自己变 —— 所以修复前后必须把行数变化记进 --out 的 side_effects，
+# 由通知脚本在正文里说清楚（2026-10-28 最终评审 I-2）。
+SIDE_EFFECT_TABLES = ("open_positions", "trade_events")
 
 Runner = Callable[[Sequence[str]], Tuple[int, str]]
 
@@ -237,6 +249,50 @@ def _default_runner(cmd: Sequence[str]) -> Tuple[int, str]:
     return proc.returncode, tail
 
 
+def _side_effect_counts(db_path: str) -> Dict[str, Optional[int]]:
+    """数组合状态相关表的行数（修复前/后各一次）。
+
+    只读打开（`mode=ro`）：库不存在时**不能**顺手建一个空库出来。
+    表不存在或读不到 → None（不猜，不报 0）。
+    """
+    counts: Dict[str, Optional[int]] = {t: None for t in SIDE_EFFECT_TABLES}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return counts
+    try:
+        for table in SIDE_EFFECT_TABLES:
+            try:
+                counts[table] = int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except sqlite3.Error:
+                counts[table] = None
+    finally:
+        conn.close()
+    return counts
+
+
+def _side_effect_diff(
+    before: Dict[str, Optional[int]],
+    after: Dict[str, Optional[int]],
+) -> Dict[str, Dict[str, int]]:
+    """前后行数差；读不到的那张表直接不报（不猜）。"""
+    diff: Dict[str, Dict[str, int]] = {}
+    for table in SIDE_EFFECT_TABLES:
+        b, a = before.get(table), after.get(table)
+        if b is None or a is None:
+            continue
+        diff[table] = {"before": b, "after": a, "delta": a - b}
+    return diff
+
+
+def _changed_side_effects(
+    side_effects: Dict[str, Dict[str, int]],
+) -> Dict[str, int]:
+    """只留真的变了的那几张表（delta != 0）。"""
+    return {t: v["delta"] for t, v in side_effects.items() if v.get("delta")}
+
+
 def run_repairs(
     actions: Sequence[RepairAction],
     *,
@@ -351,11 +407,20 @@ def main(argv=None, *, runner: Runner = _default_runner) -> int:
     else:
         print("无需修复")
 
+    # 副作用记账：L3 的重放会改写组合状态（open_positions / trade_events），
+    # 这些变化会被巡检自己的 export+deploy 推到线上，必须留痕。
+    before_counts = _side_effect_counts(args.db)
     outcomes = run_repairs(actions, runner=runner, dry_run=args.dry_run)
+    side_effects = _side_effect_diff(before_counts, _side_effect_counts(args.db))
+    changed = _changed_side_effects(side_effects)
+    if changed:
+        detail = "、".join(f"{t} {v:+d}" for t, v in sorted(changed.items()))
+        print(f"::notice::修复改写了组合状态（{detail}）—— 组合页数字可能与修复前不同")
 
     payload = {
         "today": today.isoformat(),
         "skipped": skipped,
+        "side_effects": side_effects,
         "actions": [
             {"layer": a.layer, "dates": list(a.dates), "reason": a.reason}
             for a in actions

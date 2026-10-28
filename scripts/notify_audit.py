@@ -25,6 +25,13 @@
 `outcomes[].ok is True` 才算修复成功（`"false"` 这类真值字符串不算）；
 `reason` 非字符串先 str() 归一化 —— 坏类型只降级，不能炸掉整条通知。
 `skipped`（超窗未修）与 failed outcome 只给缺口补原因。
+  `side_effects`（修复改写组合状态的前后行数，如
+  `{"open_positions": {"before": 535, "after": 542, "delta": 7}}`）
+  只用于在正文里加一行说明：修复重放改了组合状态，组合页数字会在夜里自己变。
+
+另外两个开关：
+  --non-trading-day : 今天不是 A 股交易日 → 正文首行标注「非交易日，仅巡检历史」
+  --no-db           : 缓存里没有数据库 → 按「需人工」处理，绝不报通过
 
 「剩余缺口」只认报告的 gaps：**绝不用 ok outcome 的 dates 去减 gap**。
 ok 只等于修复命令退出码为 0，不等于数据真的补齐（sync 写 0 行同样 rc=0）；
@@ -57,6 +64,17 @@ from typing import Dict, List, Optional, Sequence
 
 NTFY_BASE = "https://ntfy.sh"      # 测试里 monkeypatch 成回环地址
 MAX_BODY = 300                      # 心跳消息的软上限（长了就没人看）
+NON_TRADING_SUFFIX = "（非交易日，仅巡检历史）"
+
+
+def _non_trading_suffix(non_trading_day: bool) -> str:
+    """非交易日的标注后缀。
+
+    为什么要进通知正文（而不只是 Step Summary）：手机上收到的推送才是用户真会
+    读的那一条，只写 Step Summary 的话，「✅ 巡检通过」仍会被读成「今天的数据
+    已更新」—— 而非交易日根本没有当日产出（设计文档的成功标准 #5）。
+    """
+    return NON_TRADING_SUFFIX if non_trading_day else ""
 
 
 def decide_status(*, remaining, fixed, no_db: bool = False) -> str:
@@ -166,11 +184,15 @@ def format_message(
     no_db: bool = False,
     window_days: int = 30,
     fixed: Sequence[Dict] = (),
+    side_effects: Optional[Dict[str, Dict[str, int]]] = None,
+    non_trading_day: bool = False,
 ) -> tuple[str, str]:
     """返回 (标题, 正文)。
 
     gaps 是「发现」的缺口；fixed 是原/复检两份 gaps 的差集，
     也是「已修复」的唯一证据。repaired 只用来补「修复动作」的文案。
+    side_effects 是修复改写组合状态的前后行数（有变化时正文加一行说明）。
+    non_trading_day 只影响正文首行的标注（no_db 的告警路径不涉及）。
     """
     if no_db:
         return (
@@ -180,13 +202,18 @@ def format_message(
             f"建议：手动跑 bash a-finder.sh fallback，或触发一次 deploy-site",
         )
 
+    side_line = _side_effect_line(side_effects or {})
+    suffix = _non_trading_suffix(non_trading_day)
+
     if status == "pass":
         title = "✅ 数据巡检通过"
         # 只宣称体检真正覆盖到的内容：pass 路径不做导出/部署，
         # “当天数据已发布”无法在这里核实。
-        body = (f"✅ {today} 巡检通过｜近 {window_days} 天三层无缺口\n"
-                f"（心跳：收到这条说明巡检链路活着）")
-        return title, body
+        lines = [f"✅ {today} 巡检通过｜近 {window_days} 天三层无缺口{suffix}",
+                 "（心跳：收到这条说明巡检链路活着）"]
+        if side_line:
+            lines.append(side_line)
+        return title, "\n".join(lines)
 
     if status == "repaired":
         # 「发现」优先用差集：它才是复检确认消失的那批缺口。
@@ -202,14 +229,16 @@ def format_message(
             repair_text = "修复记录缺失，复检确认缺口已消失"
         result = ("复检确认这些缺口已消失" if fixed
                   else "未取得原/复检差集，无法确认已修复")
-        body = (f"🛠 {today} 巡检发现缺口并已修复\n"
-                f"发现：{found}\n"
-                f"修复：{repair_text}\n"
-                f"结果：{result}")
-        return title, body
+        lines = [f"🛠 {today} 巡检发现缺口并已修复{suffix}",
+                 f"发现：{found}",
+                 f"修复：{repair_text}",
+                 f"结果：{result}"]
+        if side_line:
+            lines.append(side_line)
+        return title, "\n".join(lines)
 
     title = "🚨 数据缺口需人工处理"
-    lines = [f"🚨 {today} 巡检发现无法自动修复的缺口",
+    lines = [f"🚨 {today} 巡检发现无法自动修复的缺口{suffix}",
              f"剩余：{_summarize(remaining) or '—'}"]
     if fixed:
         # 只有原/复检两份 gaps 的差集能证明「已修复」；ok outcome 只代表命令
@@ -230,6 +259,8 @@ def format_message(
             notes.append(text)
     if notes:
         lines.append(f"原因：{'；'.join(notes)}")
+    if side_line:
+        lines.append(side_line)
     lines.append("建议：手动跑 bash a-finder.sh fallback 或检查数据源")
     return title, "\n".join(lines)
 
@@ -304,20 +335,64 @@ def _has_date_layer(item: Dict) -> bool:
     return all(isinstance(item.get(k), str) and item[k] for k in ("date", "layer"))
 
 
-def _load_repair(path: str) -> tuple[List[Dict], List[Dict]]:
+def _load_repair(path: str) -> tuple[List[Dict], List[Dict], Dict[str, Dict[str, int]]]:
     """读修复结果；读不到/形状不对就当「没有修复信息」（全部按未修报警）。"""
     payload = _read_json(path, fatal=False)
     if payload is None:
-        return [], []
+        return [], [], {}
     outcomes = _items(payload, "outcomes", path, fatal=False)
     skipped = _items(payload, "skipped", path, fatal=False)
+    side_effects = _load_side_effects(payload)
     if outcomes is None or skipped is None:
-        return [], []
+        return [], [], side_effects
     if not all(_has_date_layer(s) for s in skipped):
         print(f"::warning::{path} 的 skipped 项缺少 date/layer，整份修复信息不采信",
               file=sys.stderr)
-        return [], []
-    return outcomes, skipped
+        return [], [], side_effects
+    return outcomes, skipped, side_effects
+
+
+def _load_side_effects(payload: Dict) -> Dict[str, Dict[str, int]]:
+    """读修复记录的副作用（组合状态漂移）；形状不对就当没有。
+
+    只认 `{"before": int, "after": int}`：行数变化由 repair_gaps 实测得出，
+    这里不猜、不补默认值 —— 猜出来的数字会变成通知里的假事实。
+    """
+    raw = payload.get("side_effects")
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, int]] = {}
+    for table, info in raw.items():
+        if not isinstance(table, str) or not isinstance(info, dict):
+            continue
+        before = info.get("before")
+        after = info.get("after")
+        if (not isinstance(before, int) or isinstance(before, bool)
+                or not isinstance(after, int) or isinstance(after, bool)):
+            continue
+        out[table] = {"before": before, "after": after, "delta": after - before}
+    return out
+
+
+def _side_effect_line(side_effects: Dict[str, Dict[str, int]]) -> str:
+    """组合状态被改写时的一行说明；没变化返回空串。
+
+    为什么必须有这行：L3 的重放会改写 open_positions / trade_events，
+    巡检随后把库 export+deploy 到 gh-pages —— 用户在组合页看到的数字会在
+    夜里自己变（2026-10-28 实测：10W holdings.count 7→8、size_total
+    0.8313→0.95、cash_remaining −2285→−12315）。不说清楚就像数据自己变了。
+    """
+    parts = []
+    for table in sorted(side_effects):
+        info = side_effects[table]
+        delta = info.get("delta")
+        if not isinstance(delta, int) or delta == 0:
+            continue
+        parts.append(f"{table} {delta:+d}")
+    if not parts:
+        return ""
+    return ("副作用：修复重放改写了组合状态（" + "、".join(parts) +
+            "）—— 组合页数字可能与修复前不同")
 
 
 def _load_pre_gaps(path: str, *, fatal: bool = False) -> Optional[List[Dict]]:
@@ -527,6 +602,8 @@ def main(argv=None) -> int:
                          "缺失用 30）")
     ap.add_argument("--no-db", action="store_true",
                     help="缓存里没有数据库（此时不能报通过）")
+    ap.add_argument("--non-trading-day", action="store_true",
+                    help="今天不是 A 股交易日（正文标注「非交易日，仅巡检历史」）")
     args = ap.parse_args(argv)
 
     gaps: List[Dict] = []
@@ -534,6 +611,7 @@ def main(argv=None) -> int:
     pre_gaps: Optional[List[Dict]] = None
     outcomes: List[Dict] = []
     skipped: List[Dict] = []
+    side_effects: Dict[str, Dict[str, int]] = {}
 
     # 只传了原报告时它同时也是「本次报告」：没有复检就按原报告判剩余。
     # 但两者语义不同（原报告 vs 本次报告），写串参数时至少留一条 warning，
@@ -573,7 +651,7 @@ def main(argv=None) -> int:
                 reason=f"体检报告的 gaps 项缺少 date/layer：{audit_path}",
                 today=today_hint, topic=args.topic, annotate=False)
         if args.repair:
-            outcomes, skipped = _load_repair(args.repair)
+            outcomes, skipped, side_effects = _load_repair(args.repair)
         if args.audit and args.audit_pre:
             # 显式传了原报告却读不到 = 体检那一步没落盘（I-1）：
             # 这时「没有对照」不是降级，是把「体检没跑成」说成「巡检通过」。
@@ -613,7 +691,8 @@ def main(argv=None) -> int:
     title, body = format_message(
         status=status, today=today, gaps=discovered, repaired=repaired,
         remaining=remaining, no_db=args.no_db, window_days=window_days,
-        fixed=fixed,
+        fixed=fixed, side_effects=side_effects,
+        non_trading_day=args.non_trading_day,
     )
 
     print(body)

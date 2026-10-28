@@ -349,3 +349,87 @@ def test_cli_bad_inputs_exit_two(capsys, tmp_path):
         captured = capsys.readouterr()
         assert "::error::" in captured.err, argv
         assert "Traceback" not in captured.err + captured.out, argv
+
+
+# ---------------------------------------------------------------- I-2 副作用
+
+
+def _open_position(db, code="600519", date="2026-10-26"):
+    """模拟 `plan build`（paper_trade=True）写组合状态的两张表。"""
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO open_positions (code, entry_date, entry_price, size_pct,"
+        " stop_price, tp_price, status) VALUES (?,?,?,?,?,?,?)",
+        (code, date, 10.0, 0.1, 9.0, 12.0, "open"))
+    conn.execute(
+        "INSERT INTO trade_events (plan_date, code, event_type, price,"
+        " size_pct, pnl_pct, note, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (date, code, "open", 10.0, 0.1, 0.0, "", "2026-10-26T15:00:00"))
+    conn.commit()
+    conn.close()
+
+
+def test_cli_records_side_effects_of_plan_replay(capsys, tmp_path):
+    """L3 重放会改写组合状态 → 必须把行数变化写进 --out 的 side_effects。
+
+    实测（2026-10-28 评审）：补 10-26 后 open_positions 535→542、
+    trade_events 1048→1055；export 后 10W 的 holdings.count 7→8、
+    size_total 0.8313→0.95、cash_remaining −2285→−12315。
+    这些变化会被巡检自己的 export+deploy 推到 gh-pages —— 用户在组合页看到的
+    数字会在夜里自己变。不记录就等于没人知道。
+    """
+    db = _make_db(tmp_path)
+    rep = _write_report(tmp_path, "2026-10-27", [
+        {"date": "2026-10-26", "layer": "L3", "detail": "缺档位 5W"}])
+    out = tmp_path / "repair.json"
+    calls = {"n": 0}
+
+    def fake_runner(cmd):
+        calls["n"] += 1
+        if calls["n"] == 1:              # 第一条 `plan build` 建了一仓
+            _open_position(db)
+        return (0, "ok")
+
+    rc = repair_mod.main(["--db", db, "--report", rep, "--out", str(out)],
+                         runner=fake_runner)
+    assert rc == 0
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    se = payload["side_effects"]
+    assert se["open_positions"] == {"before": 0, "after": 1, "delta": 1}
+    assert se["trade_events"] == {"before": 0, "after": 1, "delta": 1}
+    # 副作用不能只躺在 JSON 里：日志也要露出来
+    assert "open_positions" in capsys.readouterr().out
+
+
+def test_cli_side_effects_are_zero_when_nothing_changed(capsys, tmp_path):
+    """没改写组合状态时 delta=0（不是缺字段），通知才知道要不要提醒。"""
+    db = _make_db(tmp_path)
+    rep = _write_report(tmp_path, "2026-10-27", [
+        {"date": "2026-10-26", "layer": "L3", "detail": "缺档位 5W"}])
+    out = tmp_path / "repair.json"
+
+    rc = repair_mod.main(["--db", db, "--report", rep, "--out", str(out),
+                          "--dry-run"])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["side_effects"]["open_positions"]["delta"] == 0
+    assert payload["side_effects"]["trade_events"]["delta"] == 0
+
+
+def test_side_effect_counts_do_not_create_missing_db(tmp_path):
+    """库不存在时不能顺手建一个空库出来（只读打开）。"""
+    missing = tmp_path / "nope.db"
+    counts = repair_mod._side_effect_counts(str(missing))
+    assert counts == {"open_positions": None, "trade_events": None}
+    assert not missing.exists()
+
+
+def test_side_effect_diff_skips_unreadable_tables():
+    """读不到的行数不猜：直接不报这张表。"""
+    diff = repair_mod._side_effect_diff(
+        {"open_positions": 3, "trade_events": None},
+        {"open_positions": 5, "trade_events": None},
+    )
+    assert diff == {"open_positions": {"before": 3, "after": 5, "delta": 2}}

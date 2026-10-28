@@ -1065,3 +1065,119 @@ def test_main_malformed_audit_pre_is_fatal(tmp_path, monkeypatch, capsys):
     assert sent["title"].startswith("🚨")
     assert "✅" not in sent["body"]
     assert capsys.readouterr().err.count("::error::") == 1
+
+
+# ---------------------------------------------------------------- I-2 副作用
+
+
+def test_main_mentions_side_effects_when_repair_changed_portfolio(tmp_path, monkeypatch):
+    """修复改写了组合状态 → 通知正文必须说清楚（组合页数字会在夜里自己变）。"""
+    pre = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+    })
+    post = _write_json(tmp_path, "audit2.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-26"],
+        "gaps": [],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [dict(_OK_REPAIR)],
+        "side_effects": {
+            "open_positions": {"before": 535, "after": 542, "delta": 7},
+            "trade_events": {"before": 1048, "after": 1055, "delta": 7},
+        },
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--repair", str(repair), "--topic", "t"]) == 0
+    assert "副作用" in sent["body"]
+    assert "open_positions" in sent["body"]
+    assert "trade_events" in sent["body"]
+    assert "+7" in sent["body"]
+    assert "组合页" in sent["body"]
+
+
+def test_main_no_side_effect_line_when_nothing_changed(tmp_path, monkeypatch):
+    """没改写组合状态时不加副作用行（否则每条通知都多一句噪音）。"""
+    pre = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+    })
+    post = _write_json(tmp_path, "audit2.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-26"],
+        "gaps": [],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [dict(_OK_REPAIR)],
+        "side_effects": {
+            "open_positions": {"before": 535, "after": 535, "delta": 0},
+            "trade_events": {"before": 1048, "after": 1048, "delta": 0},
+        },
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(post), "--audit-pre", str(pre),
+                    "--repair", str(repair), "--topic", "t"]) == 0
+    assert "副作用" not in sent["body"]
+
+
+def test_main_bad_side_effects_shape_is_ignored_not_fatal(tmp_path, monkeypatch):
+    """side_effects 形状坏了只降级（修复信息是补充），不能因此不发通知。"""
+    audit = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-27",
+        "gaps": [{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}],
+    })
+    repair = _write_json(tmp_path, "repair.json", {
+        "today": "2026-10-27", "skipped": [],
+        "outcomes": [dict(_OK_REPAIR)],
+        "side_effects": {"open_positions": "很多"},      # 形状坏
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--repair", str(repair),
+                     "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "副作用" not in sent["body"]
+
+
+# ---------------------------------------------------------------- M-4 非交易日
+
+
+def test_non_trading_day_is_annotated_in_notification_body(tmp_path, monkeypatch):
+    """M-4：非交易日标注必须进通知正文（ntfy 推送），不能只写 Step Summary。
+
+    只写 Step Summary 的话，手机上收到的推送仍会被读成「今天的数据已更新」。
+    """
+    audit = _write_json(tmp_path, "audit.json",
+                        {"today": "2026-10-27", "gaps": []})
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--non-trading-day",
+                    "--topic", "t"]) == 0
+    assert "非交易日" in sent["body"]
+    assert "仅巡检历史" in sent["body"]
+
+
+def test_trading_day_has_no_non_trading_annotation(tmp_path, monkeypatch):
+    """交易日不标「非交易日」（否则每个心跳都挂一句假注解）。"""
+    audit = _write_json(tmp_path, "audit.json",
+                        {"today": "2026-10-27", "gaps": []})
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 0
+    assert "非交易日" not in sent["body"]
+
+
+@pytest.mark.parametrize("status", ["pass", "repaired", "manual"])
+def test_non_trading_day_annotation_covers_all_statuses(status):
+    """三种结局都要带上非交易日标注（否则 🚨/🛠 时又看不出来了）。"""
+    gap = {"date": "2026-10-26", "layer": "L2", "detail": "无选股"}
+    title, body = nf.format_message(
+        status=status, today="2026-10-27", gaps=[gap],
+        repaired=[], remaining=[gap], non_trading_day=True)
+    assert "非交易日，仅巡检历史" in body
