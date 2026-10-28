@@ -92,18 +92,40 @@ def _base_date(report: Report, today: Optional[dt.date]) -> dt.date:
 
 
 def _plan_l1(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+    """L1 缺口：先补行情，**再连带补这些日期的选股与计划**。
+
+    行情缺失 ⇒ 该日选股必然缺失 ⇒ 计划也必然缺失，但体检因「L1 缺时只报 L1」
+    把它们记进 suppressed 不报。所以只补行情的话，复检会立刻报 L2/L3 缺、
+    单轮不收敛 —— 这正是「整天缺失」（2026-10-26 那种）的主场景。
+
+    命令顺序即依赖顺序：行情 → 选股 → 计划。任一步失败则整个 action 中断
+    （`run_repairs` 的行为），不会在没有行情的日期上硬算选股。
+    """
     if not dates:
         return None
     lo, hi = min(dates), max(dates)
+    cmds: List[Tuple[str, ...]] = [
+        _py(str(ROOT / "stock_cli.py"), "sync-hs300-range",
+            "--start", lo, "--end", hi, "--db", db_path,
+            "--gap-fill", "--concurrency", "6", "--rate", "6", "--retries", "2"),
+    ]
+    # 连带 L2：这些日期的选股同样缺
+    cmds.extend(
+        _py(str(ROOT / "pick_history.py"), "--db", db_path,
+            "--top", str(TOP_PICKS), "--date", d, "--no-sync")
+        for d in dates
+    )
+    # 连带 L3：default 档 + 全档位重放
+    cmds.extend(
+        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        for d in dates
+    )
+    cmds.append(_backfill_cmd(dates, db_path))
     return RepairAction(
         layer="L1",
         dates=tuple(dates),
-        commands=(
-            _py(str(ROOT / "stock_cli.py"), "sync-hs300-range",
-                "--start", lo, "--end", hi, "--db", db_path,
-                "--gap-fill", "--concurrency", "6", "--rate", "6", "--retries", "2"),
-        ),
-        reason=f"补抓 {lo}~{hi} 的行情缺口",
+        commands=tuple(cmds),
+        reason=f"补抓 {lo}~{hi} 的行情缺口，并连带补 {len(dates)} 天的选股与计划",
     )
 
 

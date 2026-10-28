@@ -1045,7 +1045,10 @@ Expected: FAIL — `No module named 'repair_gaps'`
 """按体检结果补齐缺口：L1 行情（仅近 7 天）/ L2 选股 / L3 计划。
 
 原则：
-  - 只补「缺失的日期」，绝不重算已有日期（当天产物不动）
+  - 只为「缺失的日期」生成动作，但 L3 的 `build-all --backfill --since` 会按缺口日
+    往后重放：完整日期命中原 params_hash 走缓存短路、结果不变；部分缺失的日期会用
+    当前持仓重建，内容可能不同于当时快照 —— 不是「绝不重算已有日期」
+  - 选股缺失必然意味着计划缺失：L2 动作里同时带 L3 命令，否则一轮修不收敛
   - L1 超过 MAX_PRICE_DAYS 天只报警不自动修（复权口径可能已变，填历史会污染序列）；
     跳过的缺口打 ::warning:: 并写进 --out 的 skipped，绝不静默成功
   - 某项失败不影响其它项（继续修下一项）；执行器抛异常也只算该项失败
@@ -1055,6 +1058,12 @@ Expected: FAIL — `No module named 'repair_gaps'`
 退出码：0 = 无需修复或全部成功；1 = 有修复动作失败；
         2 = 输入不可用（报告缺失/坏 JSON/缺字段、库不存在、日历不可用）。
 与 audit_coverage 的 0/1/2 对齐，CI 才能区分「坏输入」与「修复失败」。
+
+--out 产物里除了 actions/outcomes/skipped，还带 side_effects：修复前后
+open_positions / trade_events 的行数变化。L3 的重放会改写组合状态，而巡检
+随后会把库 export+deploy 到 gh-pages —— 用户在组合页看到的数字会在夜里
+自己变（实测 2026-10-28：open_positions 535→542、trade_events 1048→1055）。
+不记录就等于没人知道，所以这一项必须落盘并出现在通知正文里。
 
 命令执行器通过参数注入，测试不真正跑 CLI。
 
@@ -1088,6 +1097,12 @@ MAX_PRICE_DAYS = 7      # 行情缺口自动修复的时间窗（天）
 TOP_PICKS = 20
 COMMAND_TIMEOUT_S = 1800    # 单条 CLI 命令上限；卡死按失败处理，别吃满 CI 预算
 
+# 修复会改写的「组合状态」表：L3 的 `plan build`（paper_trade=True）会写这两张表。
+# 巡检修完会把库里的变化 export+deploy 到 gh-pages，用户在组合页看到的数字
+# 会在夜里自己变 —— 所以修复前后必须把行数变化记进 --out 的 side_effects，
+# 由通知脚本在正文里说清楚（2026-10-28 最终评审 I-2）。
+SIDE_EFFECT_TABLES = ("open_positions", "trade_events")
+
 Runner = Callable[[Sequence[str]], Tuple[int, str]]
 
 
@@ -1120,50 +1135,111 @@ def _base_date(report: Report, today: Optional[dt.date]) -> dt.date:
 
 
 def _plan_l1(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+    """L1 缺口：先补行情，**再连带补这些日期的选股与计划**。
+
+    行情缺失 ⇒ 该日选股必然缺失 ⇒ 计划也必然缺失，但体检因「L1 缺时只报 L1」
+    把它们记进 suppressed 不报。所以只补行情的话，复检会立刻报 L2/L3 缺、
+    单轮不收敛 —— 这正是「整天缺失」（2026-10-26 那种）的主场景。
+
+    命令顺序即依赖顺序：行情 → 选股 → 计划。任一步失败则整个 action 中断
+    （`run_repairs` 的行为），不会在没有行情的日期上硬算选股。
+    """
     if not dates:
         return None
     lo, hi = min(dates), max(dates)
-    return RepairAction(
-        layer="L1",
-        dates=tuple(dates),
-        commands=(
-            _py(str(ROOT / "stock_cli.py"), "sync-hs300-range",
-                "--start", lo, "--end", hi, "--db", db_path,
-                "--gap-fill", "--concurrency", "6", "--rate", "6", "--retries", "2"),
-        ),
-        reason=f"补抓 {lo}~{hi} 的行情缺口",
-    )
-
-
-def _plan_l2(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
-    if not dates:
-        return None
-    cmds = tuple(
+    cmds: List[Tuple[str, ...]] = [
+        _py(str(ROOT / "stock_cli.py"), "sync-hs300-range",
+            "--start", lo, "--end", hi, "--db", db_path,
+            "--gap-fill", "--concurrency", "6", "--rate", "6", "--retries", "2"),
+    ]
+    # 连带 L2：这些日期的选股同样缺
+    cmds.extend(
         _py(str(ROOT / "pick_history.py"), "--db", db_path,
             "--top", str(TOP_PICKS), "--date", d, "--no-sync")
         for d in dates
     )
-    return RepairAction(layer="L2", dates=tuple(dates), commands=cmds,
-                        reason=f"补算 {len(dates)} 天的选股")
+    # 连带 L3：default 档 + 全档位重放
+    cmds.extend(
+        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        for d in dates
+    )
+    cmds.append(_backfill_cmd(dates, db_path))
+    return RepairAction(
+        layer="L1",
+        dates=tuple(dates),
+        commands=tuple(cmds),
+        reason=f"补抓 {lo}~{hi} 的行情缺口，并连带补 {len(dates)} 天的选股与计划",
+    )
 
 
-def _plan_l3(dates: Sequence[str], db_path: str) -> Optional[RepairAction]:
+def _plan_l2(
+    dates: Sequence[str],
+    plan_dates: Sequence[str],
+    db_path: str,
+) -> Optional[RepairAction]:
+    """L2 缺口：补选股 **并** 补出当天的计划。
+
+    选股缺失必然意味着当天没有计划（`audit_coverage` 见 L2 缺就 `continue`，
+    不会再报 L3）。只补选股的话，选股一落地计划立刻成为缺口，复检仍 rc=1，
+    得跑第二轮才收敛 —— Task 7 端到端实测踩过。所以这里一次把 L3 的命令也带上。
+
+    `plan_dates` 是 L2 ∪ L3 缺口日的并集：`build-all --backfill` 只需一条，
+    `--since` 取并集最早日（只按 L2 算会漏掉更早的 L3 缺口日）。
+    """
     if not dates:
         return None
     cmds: List[Tuple[str, ...]] = [
-        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        _py(str(ROOT / "pick_history.py"), "--db", db_path,
+            "--top", str(TOP_PICKS), "--date", d, "--no-sync")
         for d in dates
     ]
+    # `plan build` 写 portfolio="default" 档；`build-all` 只写 5W..50W 十个档位，
+    # 所以缺档位日期两者都不能少（体检的 EXPECTED_PORTFOLIOS 含 default）。
+    cmds.extend(
+        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        for d in dates
+    )
+    cmds.append(_backfill_cmd(plan_dates, db_path))
+    return RepairAction(
+        layer="L2", dates=tuple(dates), commands=tuple(cmds),
+        reason=f"补算 {len(dates)} 天的选股，并同步补出 {len(plan_dates)} 天的计划")
+
+
+def _backfill_cmd(plan_dates: Sequence[str], db_path: str) -> Tuple[str, ...]:
     # build-all --backfill 会跑两轮（无策略 + 每个策略各一遍），与 a-finder.sh site
     # 的第 3/4 步同源，因此产出的 params_hash 形状与 CI 一致。
-    # 它按 --since 重算**所有** >= since 的日期（不只缺失日）：数据层靠 upsert 幂等
-    # （ON CONFLICT(plan_date, portfolio, code, action, params_hash)），重复写只是更新；
-    # 之所以从 min(缺口日) 重放，是因为 paper-trade 的持仓/资金曲线需要从缺口日起
-    # 按库内已有状态往后推进 —— 缺口日之前的 carryover 不重放。
-    cmds.append(
-        _py(str(ROOT / "stock_cli.py"), "plan", "build-all",
-            "--backfill", "--since", min(dates), "--db", db_path)
-    )
+    # 它按 --since 重算**所有** >= since 的日期（不只缺失日）：完整日期命中原
+    # params_hash 走缓存短路结果不变；部分缺失的日期会用当前持仓重建，内容可能
+    # 与原样不同。之所以从 min(缺口日) 重放，是因为 paper-trade 的持仓/资金曲线
+    # 需要从缺口日起按库内已有状态往后推进 —— 缺口日之前的 carryover 不重放。
+    return _py(str(ROOT / "stock_cli.py"), "plan", "build-all",
+               "--backfill", "--since", min(plan_dates), "--db", db_path)
+
+
+def _plan_l3(
+    dates: Sequence[str],
+    plan_dates: Sequence[str],
+    db_path: str,
+    *,
+    with_backfill: bool = True,
+    skip: Sequence[str] = (),
+) -> Optional[RepairAction]:
+    """L3 缺口：每个日期补 default 档，再从最早缺口日重放全档位。
+
+    `skip` 是已经由 L2 动作补过的日期（同一个 action 里避免重复生成命令）；
+    `with_backfill=False` 表示全档位重放已由 L2 动作统一发出，这里不再重复。
+    """
+    if not dates:
+        return None
+    skipped = set(skip)
+    cmds: List[Tuple[str, ...]] = [
+        _py(str(ROOT / "stock_cli.py"), "plan", "build", "--db", db_path, "--date", d)
+        for d in dates if d not in skipped
+    ]
+    if with_backfill:
+        cmds.append(_backfill_cmd(plan_dates, db_path))
+    if not cmds:
+        return None
     return RepairAction(layer="L3", dates=tuple(dates), commands=tuple(cmds),
                         reason=f"补算 {len(dates)} 天的交易计划（含各策略轮次）")
 
@@ -1192,12 +1268,16 @@ def plan_repairs(
         actions.append(act)
 
     l2 = sorted(by_layer.get("L2", []))
-    act = _plan_l2(l2, db_path)
+    l3 = sorted(by_layer.get("L3", []))
+    # 计划命令的日期范围 = L2 ∪ L3：L2 缺的日期计划同样缺，两者共用一条重放
+    plan_dates = sorted(set(l2) | set(l3))
+
+    act = _plan_l2(l2, plan_dates, db_path)
     if act:
         actions.append(act)
 
-    l3 = sorted(by_layer.get("L3", []))
-    act = _plan_l3(l3, db_path)
+    # L2 已经带上全档位重放时，L3 动作只补它自己的 default 档，避免重复命令
+    act = _plan_l3(l3, plan_dates, db_path, with_backfill=not l2, skip=l2)
     if act:
         actions.append(act)
 
@@ -1232,6 +1312,50 @@ def _default_runner(cmd: Sequence[str]) -> Tuple[int, str]:
         return 124, f"命令超时（>{COMMAND_TIMEOUT_S}s）: {shlex.join(cmd)}"
     tail = (proc.stdout or "")[-1500:] + (proc.stderr or "")[-1500:]
     return proc.returncode, tail
+
+
+def _side_effect_counts(db_path: str) -> Dict[str, Optional[int]]:
+    """数组合状态相关表的行数（修复前/后各一次）。
+
+    只读打开（`mode=ro`）：库不存在时**不能**顺手建一个空库出来。
+    表不存在或读不到 → None（不猜，不报 0）。
+    """
+    counts: Dict[str, Optional[int]] = {t: None for t in SIDE_EFFECT_TABLES}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return counts
+    try:
+        for table in SIDE_EFFECT_TABLES:
+            try:
+                counts[table] = int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except sqlite3.Error:
+                counts[table] = None
+    finally:
+        conn.close()
+    return counts
+
+
+def _side_effect_diff(
+    before: Dict[str, Optional[int]],
+    after: Dict[str, Optional[int]],
+) -> Dict[str, Dict[str, int]]:
+    """前后行数差；读不到的那张表直接不报（不猜）。"""
+    diff: Dict[str, Dict[str, int]] = {}
+    for table in SIDE_EFFECT_TABLES:
+        b, a = before.get(table), after.get(table)
+        if b is None or a is None:
+            continue
+        diff[table] = {"before": b, "after": a, "delta": a - b}
+    return diff
+
+
+def _changed_side_effects(
+    side_effects: Dict[str, Dict[str, int]],
+) -> Dict[str, int]:
+    """只留真的变了的那几张表（delta != 0）。"""
+    return {t: v["delta"] for t, v in side_effects.items() if v.get("delta")}
 
 
 def run_repairs(
@@ -1348,11 +1472,20 @@ def main(argv=None, *, runner: Runner = _default_runner) -> int:
     else:
         print("无需修复")
 
+    # 副作用记账：L3 的重放会改写组合状态（open_positions / trade_events），
+    # 这些变化会被巡检自己的 export+deploy 推到线上，必须留痕。
+    before_counts = _side_effect_counts(args.db)
     outcomes = run_repairs(actions, runner=runner, dry_run=args.dry_run)
+    side_effects = _side_effect_diff(before_counts, _side_effect_counts(args.db))
+    changed = _changed_side_effects(side_effects)
+    if changed:
+        detail = "、".join(f"{t} {v:+d}" for t, v in sorted(changed.items()))
+        print(f"::notice::修复改写了组合状态（{detail}）—— 组合页数字可能与修复前不同")
 
     payload = {
         "today": today.isoformat(),
         "skipped": skipped,
+        "side_effects": side_effects,
         "actions": [
             {"layer": a.layer, "dates": list(a.dates), "reason": a.reason}
             for a in actions

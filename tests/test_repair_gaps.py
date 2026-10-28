@@ -102,6 +102,44 @@ def test_price_window_follows_report_today_not_wall_clock():
     assert repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY) == []
 
 
+def test_l1_gap_cascades_to_picks_and_plans():
+    """L1 缺 ⇒ 该日选股/计划必然也缺（没行情算不出选股），体检因抑制不报它们。
+
+    若只补行情，复检会立刻报 L2/L3 缺、单轮不收敛 —— 正是「整天缺失」的主场景
+    （2026-10-26 那种）。所以 L1 动作必须连带补 L2/L3。
+    """
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L1", "行情只有 0 只")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    assert len(actions) == 1
+    a = actions[0]
+    assert a.layer == "L1"
+    cmds = a.commands
+    # 1) 先补行情
+    assert _has(cmds[0], "sync-hs300-range")
+    assert "--gap-fill" in cmds[0]
+    # 2) 再补选股
+    assert any(_has(c, "pick_history.py") and "2026-10-26" in c for c in cmds)
+    # 3) 再补计划（default 档 + 全档位重放）
+    assert any("build" in c and "2026-10-26" in c for c in cmds)
+    assert any("build-all" in c and "--backfill" in c for c in cmds)
+    # 顺序：行情在最前（选股依赖行情）
+    assert _has(cmds[0], "sync-hs300-range")
+
+
+def test_l1_cascade_uses_same_dates_only():
+    """连带补的日期只覆盖 L1 缺口日期，不要牵连其它日期。"""
+    actions = repair_mod.plan_repairs(
+        _report([("2026-10-26", "L1", "行情只有 0 只")]),
+        db_path="hs300.db", today=TODAY,
+    )
+    cmds = actions[0].commands
+    for c in cmds:
+        if _has(c, "pick_history.py") or "build" in c:
+            assert "2026-10-26" in c or "--since" in c
+
+
 def test_l2_gap_plans_pick_history():
     actions = repair_mod.plan_repairs(
         _report([("2026-10-26", "L2", "无选股数据")]),
