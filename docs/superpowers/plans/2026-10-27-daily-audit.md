@@ -1734,7 +1734,9 @@ name: daily-audit
 
 # 每晚 21:00（北京）巡检数据产出：三层体检 → 自动补齐 → 复检 → 发布 → 报告。
 #
-# 与 deploy-site.yml 完全解耦：巡检失败不影响早班发布，反之亦然。
+# 与 deploy-site.yml 是各自独立的 workflow，**失败互不影响**（巡检失败不影响早班发布，
+# 反之亦然）；但两者**共用 hs300.db 缓存**（`hs300-db-*` 前缀、restore-keys 互相兜底），
+# 所以「解耦」指失败隔离，不是数据隔离。
 # 为什么要有这条链路：GitHub schedule 对该仓库不可靠（10-26 的 07:30 那班
 # 延迟到 14:27 UTC，10-27 三班一次都没触发），且缺口一旦静默发生没人知道。
 on:
@@ -1781,17 +1783,42 @@ jobs:
         id: trade-day
         run: |
           set -uo pipefail
-          python3 -c "
+          # 交易日口径只有一个来源：market_calendar.trading_days（与体检同一份）。
+          # 手写一份 is_workday(d) and d.weekday() < 5 就是又一份口径，
+          # 设计文档里「口径漂移的代价已经付过一次」说的就是这种事。
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
           import datetime as dt
-          from chinese_calendar import is_workday
+          from market_calendar import trading_days
           d = dt.date.today()
-          ok = is_workday(d) and d.weekday() < 5
-          print(f'today_bj={d.isoformat()}')
-          print(f'is_trade_day={str(ok).lower()}')
-          " | tee -a "$GITHUB_OUTPUT"
+          window = trading_days(d - dt.timedelta(days=60), d)
+          ok = bool(window)
+          # 日历不可用时不能谎报「非交易日」—— 那会把「不知道」说成「不是交易日」。
+          # 用 unknown 表达，日历不可用的事实由体检步的 rc=2 暴露。
+          is_trade = (d.isoformat() in window) if ok else None
+          print(f"today_bj={d.isoformat()}")
+          print(f"is_trade_day={'unknown' if is_trade is None else str(is_trade).lower()}")
+          print(f"calendar_ok={str(ok).lower()}")
+          PY
+          # 日历不可用时 trading_days 返回 []：体检那一步会以 rc=2（无法判定）
+          # 失败，这里只留一条明确的红注释说明根因。
+          if grep -qx 'calendar_ok=false' "$GITHUB_OUTPUT"; then
+            echo "::error::交易日历不可用（chinese_calendar 缺失或无当年数据），无法判定今天是否交易日"
+          fi
+          # cron 排的是「周一到周五」，但长假（如国庆）会落在这上面。那天跑巡检只是
+          # 「巡检历史」，没有当日新增产出 —— 明确写进 Step Summary，别让绿色心跳
+          # 被读成「今天的数据已更新」。
+          if grep -qx 'is_trade_day=false' "$GITHUB_OUTPUT"; then
+            {
+              echo "### 非交易日，仅巡检历史"
+              echo ""
+              echo "今天（$(grep -m1 '^today_bj=' "$GITHUB_OUTPUT" | cut -d= -f2)）不是 A 股交易日：本次按近 30 天窗口检查历史数据，不期待当日新增行情/选股/计划。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: 三层体检
         id: audit
+        env:
+          TODAY: ${{ steps.trade-day.outputs.today_bj }}
         run: |
           set -uo pipefail
           if [ ! -f hs300.db ]; then
@@ -1799,8 +1826,13 @@ jobs:
             echo "no_db=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          # 显式传 --today：手工 workflow_dispatch 跨零点时，「今天」还没开盘，
+          # 不传就会把当天算进应有交易日 → 报出「今天 行情只有 0 只」这种假缺口。
+          ARGS=()
+          [ -n "${TODAY:-}" ] && ARGS+=(--today "$TODAY")
           set +e
-          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit.json
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit.json \
+            ${ARGS[@]+"${ARGS[@]}"}
           rc=$?
           set -e
           echo "audit_rc=$rc" >> "$GITHUB_OUTPUT"
@@ -1808,16 +1840,28 @@ jobs:
             echo "::error::体检无法判定（日历不可用或库读取失败）—— 绝不当作无缺口"
             exit 1
           fi
+          # 报告必须落盘：体检崩了却没写出报告时，下游会一路静默降级
+          # （修复步拿不到报告 → 复检干净 → 通知把「读不到」当成「没有缺口」），
+          # 最后发出一条绿色「✅ 巡检通过」。这里当致命错误处理（2026-10-28 评审复现）。
+          if [ ! -s /tmp/audit.json ]; then
+            echo "::error::体检报告没有落盘（/tmp/audit.json 不存在或为空）—— 绝不当作无缺口"
+            exit 1
+          fi
           echo "（$rc = 1 表示有缺口，符合预期时会继续修复）"
 
       - name: 自动修复
         id: repair
         if: steps.audit.outputs.audit_rc == '1'
+        env:
+          TODAY: ${{ steps.trade-day.outputs.today_bj }}
         run: |
           set -uo pipefail
+          ARGS=()
+          [ -n "${TODAY:-}" ] && ARGS+=(--today "$TODAY")
           set +e
           python3 scripts/repair_gaps.py --db hs300.db \
-            --report /tmp/audit.json --out /tmp/repair.json
+            --report /tmp/audit.json --out /tmp/repair.json \
+            ${ARGS[@]+"${ARGS[@]}"}
           rc=$?
           set -e
           echo "repair_rc=$rc" >> "$GITHUB_OUTPUT"
@@ -1826,12 +1870,23 @@ jobs:
       - name: 复检
         id: recheck
         if: steps.audit.outputs.audit_rc == '1'
+        env:
+          TODAY: ${{ steps.trade-day.outputs.today_bj }}
         run: |
           set -uo pipefail
+          ARGS=()
+          [ -n "${TODAY:-}" ] && ARGS+=(--today "$TODAY")
           set +e
-          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit2.json
+          python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit2.json \
+            ${ARGS[@]+"${ARGS[@]}"}
           rc=$?
           set -e
+          # 复检报告同样必须落盘：没有它就无从判断「还缺不缺」，更不能导出部署。
+          if [ "$rc" -eq 2 ] || [ ! -s /tmp/audit2.json ]; then
+            echo "::error::复检无法判定或报告没有落盘（/tmp/audit2.json）—— 绝不当作无缺口"
+            echo "recheck_rc=2" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "recheck_rc=$rc" >> "$GITHUB_OUTPUT"
 
       - name: 导出修复后的数据（仅在复检干净时）
@@ -1879,13 +1934,19 @@ jobs:
           if [ "${{ steps.audit.outputs.no_db }}" = "true" ]; then
             ARGS="$ARGS --no-db"
           fi
+          # 非交易日的标注必须进推送正文（不只写 Step Summary）：
+          # 手机上收到的推送才是用户真会读的那一条。
+          if [ "${{ steps.trade-day.outputs.is_trade_day }}" = "false" ]; then
+            ARGS="$ARGS --non-trading-day"
+          fi
           python3 scripts/notify_audit.py $ARGS
 
-      - name: 有未修复缺口则让 run 变红
-        # 通知本身总是 rc=0（告警渠道失败不该掩盖结论），这里把「需人工」显式暴露成红灯
-        if: always() && steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0'
+      - name: 有未修复缺口或修复失败则让 run 变红
+        # 通知本身总是 rc=0（告警渠道失败不该掩盖结论），这里把「需人工」显式暴露成红灯。
+        # 修复失败（repair_rc=1）同样要红：不能只发一条通知就让 run 变绿。
+        if: always() && ((steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0') || steps.repair.outputs.repair_rc == '1')
         run: |
-          echo "::error::巡检发现无法自动修复的缺口，详见 Step Summary 与通知"
+          echo "::error::巡检发现无法自动修复的缺口或修复失败，详见 Step Summary 与通知"
           exit 1
 ```
 
