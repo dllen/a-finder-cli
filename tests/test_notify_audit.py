@@ -1006,13 +1006,62 @@ def test_main_warns_on_non_positive_window_days(tmp_path, monkeypatch, capsys):
     assert "近 60 天" in sent["body"]       # 退回报告自带值，不是静默用 30
 
 
-def test_main_bad_pre_report_degrades_to_warning(tmp_path, monkeypatch, capsys):
-    """原报告只是对照：读不到时用复检报告判剩余，只 warning 不阻断。"""
+def test_main_bad_pre_report_is_fatal(tmp_path, monkeypatch, capsys):
+    """原报告读不到 = 致命错误（I-1）：绝不静默降级成「没有对照」。
+
+    2026-10-28 评审复现的失败形态：体检有缺口但报告没落盘 → 修复步拿不到报告 →
+    复检干净 → 通知步传 `--audit audit2.json --audit-pre audit.json`，原报告读不到
+    就静默降级成「没有对照」→ discovered=[] → 「✅ 巡检通过」。
+    显式传了 --audit-pre 却读不到，说明体检那一步没落盘，必须按致命错误处理。
+    """
     post = _write_json(tmp_path, "audit2.json",
                        {"today": "2026-10-27", "gaps": []})
     sent = _capture_post(monkeypatch)
     assert nf.main(["--audit", str(post),
                     "--audit-pre", str(tmp_path / "nope.json"),
-                    "--topic", "t"]) == 0
-    assert sent["title"].startswith("✅")
+                    "--topic", "t"]) == 2
+    assert sent["title"].startswith("🚨")
+    assert "✅" not in sent["body"]
+    assert "巡检通过" not in sent["body"]
     assert "读取" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- I-1 回归
+
+
+def test_main_missing_audit_pre_never_reports_pass(tmp_path, monkeypatch):
+    """I-1 核心回归：体检有缺口但报告没落盘 → 通知不许报通过。
+
+    场景照抄评审复现：体检 rc=1（有缺口）但报告没写出来；复检报告干净；
+    通知拿到「原报告路径」却读不到 → 绝不能把 discovered 降级成空列表然后发 ✅。
+    """
+    post = _write_json(tmp_path, "audit2.json", {
+        "today": "2026-10-27",
+        "expected_dates": ["2026-10-26"],
+        "gaps": [],
+    })
+    missing_pre = tmp_path / "audit.json"          # 体检没落盘
+    sent = _capture_post(monkeypatch)
+
+    rc = nf.main(["--audit", str(post), "--audit-pre", str(missing_pre),
+                  "--today", "2026-10-27", "--topic", "t"])
+
+    assert rc == 2
+    assert sent["title"].startswith("🚨")
+    assert "✅" not in sent["body"]
+    assert "巡检通过" not in sent["body"]
+
+
+def test_main_malformed_audit_pre_is_fatal(tmp_path, monkeypatch, capsys):
+    """原报告存在但形状坏（gaps 不是对象数组）同样不能降级 —— 对照不可信。"""
+    post = _write_json(tmp_path, "audit2.json",
+                       {"today": "2026-10-27", "gaps": []})
+    pre = _write_json(tmp_path, "audit.json", {"today": "2026-10-27", "gaps": ""})
+    sent = _capture_post(monkeypatch)
+
+    rc = nf.main(["--audit", str(post), "--audit-pre", str(pre), "--topic", "t"])
+
+    assert rc == 2
+    assert sent["title"].startswith("🚨")
+    assert "✅" not in sent["body"]
+    assert capsys.readouterr().err.count("::error::") == 1

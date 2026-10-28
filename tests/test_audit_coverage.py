@@ -171,3 +171,48 @@ def test_cli_json_output(db, capsys):
     import json
     payload = json.loads(capsys.readouterr().out)
     assert "gaps" in payload and "expected_dates" in payload
+
+
+# ------------------------------------------------- I-1：报告没落盘 ≠ 无缺口
+
+
+def test_cli_write_failure_returns_two_without_traceback(db, tmp_path, capsys):
+    """报告写盘失败 → rc=2（无法判定），不吐 traceback，也绝不返回 0/1。
+
+    2026-10-28 评审复现的失败形态：写盘抛异常 → traceback → rc=1，
+    但报告文件并不存在。下游（修复步 / 通知步）会把「读不到」当成「没有缺口」，
+    最后发出一条绿色心跳。这里把写盘失败提升为 rc=2，与「日历不可用/库读不了」同级。
+    """
+    path, conn = db
+    for d in ("2026-10-23", "2026-10-26", "2026-10-27"):
+        _seed_full_day(conn, d)
+    out = tmp_path / "no-such-dir" / "audit.json"      # 父目录不存在 → 写盘失败
+
+    rc = audit_mod.main(["--db", path, "--today", "2026-10-27",
+                         "--window-days", "4", "--out", str(out)])
+
+    assert rc == 2
+    assert not out.exists()
+    captured = capsys.readouterr()
+    assert "::error::" in captured.err
+    assert "Traceback" not in captured.err + captured.out
+    # 报告没写出来就不能先打印「✅ 三层无缺口」——日志不能骗人
+    assert "三层无缺口" not in captured.out
+
+
+def test_cli_write_failure_does_not_print_clean_banner(db, tmp_path, capsys):
+    """有缺口但写盘失败时，也不能先吐「❌ 发现 N 处缺口」让人以为体检完成了。"""
+    path, conn = db
+    for d in ("2026-10-23", "2026-10-26", "2026-10-27"):
+        _seed_full_day(conn, d)
+    conn.execute("DELETE FROM daily_picks WHERE date='2026-10-26'")
+    conn.commit()
+    out = tmp_path / "no-such-dir" / "audit.json"
+
+    rc = audit_mod.main(["--db", path, "--today", "2026-10-27",
+                         "--window-days", "4", "--out", str(out)])
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "❌ 发现" not in captured.out
+    assert "体检区间" not in captured.out

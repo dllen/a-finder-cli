@@ -11,7 +11,7 @@
     python3 scripts/audit_coverage.py --db hs300.db
     python3 scripts/audit_coverage.py --db hs300.db --window-days 30 --json
 
-退出码：0 = 无缺口；1 = 有缺口；2 = 无法判定（日历不可用/库读取失败）。
+退出码：0 = 无缺口；1 = 有缺口；2 = 无法判定（日历不可用/库读取失败/报告写不出来）。
 """
 
 # 注意：这里**不能**加 `from __future__ import annotations`。
@@ -208,14 +208,21 @@ def main(argv=None) -> int:
         print(f"::error::读取数据库失败: {exc}", file=sys.stderr)
         return 2
 
+    payload = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    if args.out:
+        # 报告必须落盘：写不出来 = 无法判定（rc=2），与「日历不可用/库读不了」同级。
+        # 绝不能先打印「✅ 三层无缺口」再崩 —— 下游（修复步/通知步）会把
+        # 「报告读不到」当成「没有缺口」，最后发出一条绿色心跳（2026-10-28 评审复现）。
+        try:
+            Path(args.out).write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            print(f"::error::写入体检报告失败: {exc}", file=sys.stderr)
+            return 2
+
     if args.json:
-        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        print(payload)
     else:
         _print_human(report)
-
-    if args.out:
-        Path(args.out).write_text(
-            json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
     return 0 if report.ok else 1
 

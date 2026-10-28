@@ -17,6 +17,10 @@
                  用「原 gaps - 复检 gaps」判「已修复」，剩余仍以 --audit 为准；
                  复检 expected_dates 没覆盖到的原缺口并入「剩余」（🚨），
                  既不断言已修复，也不让它在通知里消失。
+                  **显式传了却读不到 = 致命错误**（rc=2 + 🚨）：那说明体检那一步
+                  没落盘报告，降级成「没有对照」会造出「✅ 巡检通过」的假心跳
+                  （2026-10-28 评审复现：体检有缺口但报告没落盘 → 复检干净 →
+                  通知把读不到的原报告当成没有对照 → 绿色心跳）。
   --repair     : {"skipped": [...], "outcomes": [{"layer","dates","ok","reason"}], ...}
 `outcomes[].ok is True` 才算修复成功（`"false"` 这类真值字符串不算）；
 `reason` 非字符串先 str() 归一化 —— 坏类型只降级，不能炸掉整条通知。
@@ -28,7 +32,7 @@ ok 只等于修复命令退出码为 0，不等于数据真的补齐（sync 写 
 
 退出码：0 = 通知已产出（含「需人工」，那靠 🚨 措辞 + ::error:: 注释暴露，
         是否让 CI 变红由体检/修复步骤的退出码决定）；
-        2 = 没有体检输入、体检报告不可用、--today 不合法。
+        2 = 没有体检输入、体检报告不可用（含原报告 --audit-pre）、--today 不合法。
         前两种「体检自己坏了」的场景仍然会写 Summary + 推一条 🚨，只是退出码非 0。
         `--repair` 缺失/损坏只降级为 ::warning:: —— 修复信息是补充，不能因此不发告警。
 
@@ -316,20 +320,23 @@ def _load_repair(path: str) -> tuple[List[Dict], List[Dict]]:
     return outcomes, skipped
 
 
-def _load_pre_gaps(path: str) -> Optional[List[Dict]]:
+def _load_pre_gaps(path: str, *, fatal: bool = False) -> Optional[List[Dict]]:
     """读修复前的原报告，只用来算「发现 / 已修复」。
 
-    读不到或形状不对就返回 None：剩余缺口仍由复检报告决定，
-    原报告只是对照，丢了不该阻止告警，也不该编出「已修复」。
+    读不到或形状不对就返回 None，由调用方决定怎么处理：
+      - fatal=False → 降级为「没有对照」（只在没显式传 --audit-pre 时才会发生）
+      - fatal=True  → 致命错误。显式传了 --audit-pre 却读不到 = 体检那一步没落盘，
+        此时静默降级会造出「✅ 巡检通过」的假心跳（2026-10-28 评审复现）。
     """
-    payload = _read_json(path, fatal=False)
+    payload = _read_json(path, fatal=fatal)
     if payload is None:
         return None
-    gaps = _items(payload, "gaps", path, fatal=False)
+    gaps = _items(payload, "gaps", path, fatal=fatal)
     if gaps is None:
         return None
     if not all(_has_date_layer(g) for g in gaps):
-        print(f"::warning::{path} 的 gaps 项缺少 date/layer，忽略原报告对照",
+        print(f"::{'error' if fatal else 'warning'}::{path} 的 gaps 项缺少 date/layer，"
+              f"{'原报告对照不可信' if fatal else '忽略原报告对照'}",
               file=sys.stderr)
         return None
     return gaps
@@ -568,7 +575,15 @@ def main(argv=None) -> int:
         if args.repair:
             outcomes, skipped = _load_repair(args.repair)
         if args.audit and args.audit_pre:
-            pre_gaps = _load_pre_gaps(args.audit_pre)
+            # 显式传了原报告却读不到 = 体检那一步没落盘（I-1）：
+            # 这时「没有对照」不是降级，是把「体检没跑成」说成「巡检通过」。
+            # 按致命错误处理：rc=2 + 🚨，绝不发 ✅ 心跳。
+            pre_gaps = _load_pre_gaps(args.audit_pre, fatal=True)
+            if pre_gaps is None:
+                return _alarm_no_report(
+                    reason=f"修复前的体检报告不可用：{args.audit_pre}"
+                           "（体检步骤没能落盘报告，绝不当作「没有对照」）",
+                    today=today_hint, topic=args.topic, annotate=False)
 
     today = _pick_today(args.today, audit_payload)
     if today is None:

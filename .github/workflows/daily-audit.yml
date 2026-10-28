@@ -88,6 +88,13 @@ jobs:
             echo "::error::体检无法判定（日历不可用或库读取失败）—— 绝不当作无缺口"
             exit 1
           fi
+          # 报告必须落盘：体检崩了却没写出报告时，下游会一路静默降级
+          # （修复步拿不到报告 → 复检干净 → 通知把「读不到」当成「没有缺口」），
+          # 最后发出一条绿色「✅ 巡检通过」。这里当致命错误处理（2026-10-28 评审复现）。
+          if [ ! -s /tmp/audit.json ]; then
+            echo "::error::体检报告没有落盘（/tmp/audit.json 不存在或为空）—— 绝不当作无缺口"
+            exit 1
+          fi
           echo "（$rc = 1 表示有缺口，符合预期时会继续修复）"
 
       - name: 自动修复
@@ -112,6 +119,12 @@ jobs:
           python3 scripts/audit_coverage.py --db hs300.db --out /tmp/audit2.json
           rc=$?
           set -e
+          # 复检报告同样必须落盘：没有它就无从判断「还缺不缺」，更不能导出部署。
+          if [ "$rc" -eq 2 ] || [ ! -s /tmp/audit2.json ]; then
+            echo "::error::复检无法判定或报告没有落盘（/tmp/audit2.json）—— 绝不当作无缺口"
+            echo "recheck_rc=2" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "recheck_rc=$rc" >> "$GITHUB_OUTPUT"
 
       - name: 导出修复后的数据（仅在复检干净时）
