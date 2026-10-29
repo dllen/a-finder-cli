@@ -117,6 +117,25 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   （10W…50W）行是最新的；本地只跑 `plan build`（写 `default` 档），档位行可能停在很久以前。
   排查「组合页/日期筛选看不到近期日期」时先看本地库的 `MAX(plan_date) WHERE portfolio!='default'`，
   不要当成 bug。线上数据以 CI 为准，本地只用于调试。
+- **⚠️ 但「线上站点由 CI 发布」是错的（2026-10-29 查明）**：`git log origin/gh-pages` 只有
+  一个提交 `update site data 2026-10-27-20:26` —— 这个 message 格式来自
+  `a-finder.sh:157` 的 `git commit-tree`（**本地**发布路径）；CI 的
+  `peaceiris/actions-gh-pages` 用的是 `"site: 自动更新 <date>"`，格式不同。
+  ⇒ **站点一直由本地库发布，CI 缓存库是另一条谱系**，两边独立漂移。
+  更坑的是 `export_json.py` 只从 `daily_picks`/`trade_plan` 出 JSON、**不看
+  `daily_prices`**，所以「站点页面正常」**不能**证明 CI 库的行情齐全。
+  推论：排查数据问题要分别看两个库，别拿站点当 CI 库的健康证明。
+- **缓存 key 必须永远带 run_id**：`actions/cache` 不允许覆盖已存在的 key，固定 key
+  会让缓存**永久冻结**（2026-10-26 的 `hs300-db` 就是这样）。改 key 后还要确认
+  旧条目是否仍能被 `restore-keys` 命中 —— `'hs300-db'.startswith('hs300-db-')` 是
+  **False**，所以 10-26 17:49 改 key 的那一刻旧条目直接变成不可达的孤儿，
+  CI 行情谱系断在 2026-10-13（详见 `.learnings/ERRORS.md`）。
+  恢复缓存后要加**新鲜度校验**：`MAX(daily_prices.trade_date)` 落后太多就判定
+  谱系孤儿、走冷启动重建，别指望增量补。
+- **数据源能力边界**：**10-29 只存在于东财**（腾讯 qfqday / 新浪都只到 10-28）。
+  东财被限流时备源链会静默少一天。审计的 L1 判据是 `>=280 只`，
+  280~299 只的「半截天」**不会被拦**。补完要验 `COUNT(DISTINCT code)=300`，
+  尤其当日行情。
 
 # 每日巡检与自动补齐（daily-audit.yml）
 - 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检。与 deploy-site 是各自独立的

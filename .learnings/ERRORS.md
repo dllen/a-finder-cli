@@ -310,3 +310,43 @@ Priority: eastmoney > sina > tencent
 - Related Files: data_providers.py, sync_service.py
 
 ---
+
+## [2026-10-29] CI 缓存固定 key 冻结 → hs300.db 谱系断在 10-13
+
+**Area**: ci / infra
+
+### Summary
+deploy-site.yml 建档时用了固定缓存 key `hs300-db`（2026-10-25 14:40），
+10-26 首次运行把该 key 写死成"每天从同一份旧库增量"；10-26 17:49 改成
+`hs300-db-<run_id>` + `restore-keys: hs300-db-` 后，旧条目因
+`'hs300-db'.startswith('hs300-db-')` 为 False 而**永久不可达**，
+CI 行情谱系就此断在 2026-10-13。
+
+### Error
+```
+🚨 2026-10-29 巡检发现无法自动修复的缺口
+剩余：L1 2026-10-14~2026-10-16（3 天）、2026-10-19~2026-10-23（5 天）、2026-10-26~2026-10-29（4 天）
+```
+
+### Context
+- 判定方法：把 daily_prices 截止日设为 2026-10-13 的库喂给 audit_coverage，
+  缺失日渲染成**完全相同**的三个区间 → 谱系断点确认在 10-13
+- 陷阱：**站点是本地 `a-finder.sh site --push` 发的**（gh-pages 唯一提交
+  "update site data 2026-10-27-20:26" 来自 a-finder.sh:157 的 commit-tree），
+  与 CI 缓存库是两个谱系。export_json.py 只从 daily_picks/trade_plan 出 JSON，
+  不看 daily_prices → 站点健康**不能**证明 CI 库健康
+- 通知误导：原因行被"超出 7 天自动修复窗"去重后覆盖，而 10-22~10-29 这 6 天
+  实际在窗口内（已尝试但失败）；"建议 fallback" 指向的是本地库（当时是好的）
+
+### Suggested Fix
+- 缓存 key 永远带 run_id；改 key 之后要确认旧条目是否还能被 restore-keys 命中
+- 恢复后加**新鲜度校验**：MAX(daily_prices.trade_date) 落后太多 → 判定谱系孤儿，
+  走冷启动重建，别指望增量补
+- 通知按日期分别给出原因，别用去重后的单句覆盖全部缺口
+
+### Metadata
+- Reproducible: yes（用截止日 10-13 的合成库可复现告警的日期分组）
+- Related Files: .github/workflows/deploy-site.yml, .github/workflows/daily-audit.yml,
+  scripts/audit_coverage.py, scripts/repair_gaps.py, scripts/notify_audit.py
+
+---
