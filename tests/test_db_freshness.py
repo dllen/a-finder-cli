@@ -162,3 +162,44 @@ def test_cli_github_output(tmp_path, monkeypatch):
     assert "orphan=true" in text
     assert "latest=2026-10-13" in text
     assert "rc=3" in text
+
+
+# ------------------------------------------------------------------ 假新鲜（M1）
+# 只用 MAX(trade_date) 会造出两类假新鲜，都会让 CI 跳过同步、把不完整的票池发出去。
+
+
+def test_partial_day_on_expect_is_not_fresh(tmp_path):
+    """半截天：期望日只有 50 只 → 必须判不新鲜。
+
+    审计的 L1 阈值是 >=280，而 sync 步的「等数据落地」重试只在真去同步时才跑；
+    若这里判新鲜 → skip_sync=true → 重试永不执行 → 半截票池直接发出去。
+    """
+    p = _make_db(tmp_path / "a.db", ["2026-10-29"], codes_per_day=50)
+    r = db.assess(str(p), "2026-10-29")
+    assert r["stale"] is True
+    assert r["codes_on_expect"] == 50
+    assert "只有 50 只" in r["reason"]
+    assert db._code_for(r, 3) == 1
+
+
+def test_future_dirty_row_does_not_make_db_fresh(tmp_path):
+    """未来日期脏行把 MAX 顶到未来时，仍必须按 expect 当天的代码数判定。"""
+    p = _make_db(tmp_path / "a.db", ["2026-11-20"], codes_per_day=1)
+    r = db.assess(str(p), "2026-10-29")
+    assert r["stale"] is True
+    assert r["codes_on_expect"] == 0
+    assert db._code_for(r, 3) == 1
+
+
+def test_full_day_on_expect_is_fresh(tmp_path):
+    p = _make_db(tmp_path / "a.db", ["2026-10-29"], codes_per_day=300)
+    r = db.assess(str(p), "2026-10-29")
+    assert r["stale"] is False
+    assert r["codes_on_expect"] == 300
+    assert db._code_for(r, 3) == 0
+
+
+def test_min_codes_threshold_is_configurable(tmp_path):
+    p = _make_db(tmp_path / "a.db", ["2026-10-29"], codes_per_day=100)
+    assert db.assess(str(p), "2026-10-29", min_codes=280)["stale"] is True
+    assert db.assess(str(p), "2026-10-29", min_codes=50)["stale"] is False

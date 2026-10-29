@@ -42,12 +42,17 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from market_calendar import trading_days  # noqa: E402
+from market_calendar import calendar_ready_for, trading_days  # noqa: E402
 
 # 落后多少个交易日就判定为「陈旧谱系」而不是「正常增量」。
 # 3 天 ≈ 跨一个周末 + 1 天：正常的节假日/数据源延迟不会超过这个量级；
 # 一旦超过，说明不是「今天没抓到」，而是**这条谱系很久没推进了**（缓存孤儿）。
 DEFAULT_MAX_LAG = 3
+
+# 与 scripts/audit_coverage.py 的 MIN_CODES 必须一致：两侧阈值不同会让
+# 「CI 绿灯发布」与「巡检报 L1 缺口」同时成立，互相打脸。
+# 250（ci_check_data 旧默认）与 280（audit）曾经并存，现已统一到 280。
+MIN_CODES = 280
 
 
 def _latest_trade_date(db_path: str) -> Optional[str]:
@@ -76,6 +81,7 @@ def assess(
     expect: str,
     *,
     max_lag: int = DEFAULT_MAX_LAG,
+    min_codes: int = MIN_CODES,
 ) -> Dict[str, object]:
     """算出库相对 expect 的新鲜度。返回可直接序列化成 JSON 的字典。"""
     expect_date = dt.date.fromisoformat(expect)
@@ -112,23 +118,47 @@ def assess(
     # 用交易日历算，天然跨过周末与长假。
     if latest >= expect:
         result["lag_trading_days"] = 0
+        # 「有这一天的行」不等于「有这一天的完整行情」。只用 MAX(trade_date) 判
+        # 会造成两类假新鲜，两类都会让 CI 跳过同步、把不完整的票池发出去：
+        #   ① 半截天（1~279 只）：审计的 L1 阈值是 >=280，300 只也在里面，
+        #      而这里若直接判「新鲜」，sync 步的 3 次「等数据落地」重试就永不执行；
+        #   ② 未来日期脏行（MAX 被一条错误日期顶到未来）：lag 算成 0，于是永远
+        #      判新鲜 —— 必须显式按 **expect 当天** 的代码数判据，而不是只看 MAX。
+        codes = _count_codes(db_path, expect)
+        result["codes_on_expect"] = codes
+        if codes < min_codes:
+            result["stale"] = True
+            result["reason"] = (
+                f"期望交易日 {expect} 只有 {codes} 只行情（要求 >= {min_codes}）——"
+                "行情未完整落地，不能算新鲜"
+            )
+            return result
         result["stale"] = False
-        result["codes_on_expect"] = _count_codes(db_path, expect)
-        result["reason"] = "库已含期望交易日"
+        result["reason"] = "库已含期望交易日的完整行情"
         return result
+
+    # 走到这里说明 expect 还没有任何行 —— 但 expect 之前的日期仍可能有半截天。
+    # 这里不逐个回查历史（成本高、且历史日由 audit 负责），只把「expect 当天
+    # 代码数」报出来，供调用方判断（当前是 0）。
+    result["codes_on_expect"] = _count_codes(db_path, expect)
 
     # 从 latest 的次日开始找应该有的交易日
     window_start = dt.date.fromisoformat(latest) + dt.timedelta(days=1)
     missing: List[str] = trading_days(window_start, expect_date)
     # 日历不可用时 trading_days 返回 [] —— 那就退化为「按工作日数」，
     # 并在 reason 里说明，别让「算不出来」看起来像「不落后」。
+    # 注意：窗口里**确实没有交易日**时也会返回 []（例如 expect 落在补班的周六），
+    # 那种情况日历是好的，不能诬告成不可用 —— 用 calendar_ready_for 区分。
     if not missing and window_start <= expect_date:
         cursor = window_start
         while cursor <= expect_date:
             if cursor.weekday() < 5:
                 missing.append(cursor.isoformat())
             cursor += dt.timedelta(days=1)
-        result["reason"] = "（交易日历不可用，按工作日估算）"
+        if not calendar_ready_for(expect_date):
+            result["reason"] = "（交易日历不可用，按工作日估算）"
+        else:
+            result["reason"] = "（工作日估算：区间内无交易日历命中）"
 
     lag = len(missing)
     result["lag_trading_days"] = lag
@@ -164,6 +194,9 @@ def main(argv=None) -> int:
     ap.add_argument("--expect", required=True, help="期望交易日 YYYY-MM-DD")
     ap.add_argument("--max-lag", type=int, default=DEFAULT_MAX_LAG,
                     help=f"落后多少个交易日算陈旧谱系（默认 {DEFAULT_MAX_LAG}）")
+    ap.add_argument("--min-codes", type=int, default=MIN_CODES,
+                    help=f"期望交易日至少多少只才算行情完整（默认 {MIN_CODES}，"
+                         "必须与 audit_coverage.MIN_CODES 一致）")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--github-output", action="store_true",
                     help="把 fresh/lag/orphan 写进 $GITHUB_OUTPUT")
@@ -175,7 +208,8 @@ def main(argv=None) -> int:
         print(f"::error::--expect 不是合法日期: {args.expect}", file=sys.stderr)
         return 2
 
-    result = assess(args.db, args.expect, max_lag=args.max_lag)
+    result = assess(args.db, args.expect, max_lag=args.max_lag,
+                    min_codes=args.min_codes)
     code = _code_for(result, args.max_lag)
 
     if args.json:

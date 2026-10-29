@@ -399,13 +399,21 @@ cmd_fallback() {
     [[ "$force" -eq 1 ]] && fargs+=(--force)
     python3 "$ROOT_DIR/scripts/needs_fallback.py" "${fargs[@]}" || need=$?
   else
-    echo "⚠ 无法读取线上日期，按需要兜底处理"
-    need=1
+    echo "⚠ 无法读取线上日期，无法判定 —— 按「不兜底」处理（拿不准就别发布）"
+    need=2
   fi
   rm -f "$tmp"
 
-  if [[ "$need" -eq 0 && "$force" -eq 0 ]]; then
-    echo "✅ 线上已是最新（或还没到 deadline ${deadline}），本地不动作（避免与 CI 双跑）"
+  # 只有 need==1（明确「线上落后且已过 deadline」）才发布。
+  # need==2（参数错/网络读不到）一律**不发布**：本地兜底只是兜底，
+  # 在判据不可信时强行 push 会覆盖线上更好的版本，且会诱导 CI 判 skip。
+  # 原实现把 2 也当「按需要兜底处理」，等于 deadline 这道门可能被绕过（fail-open）。
+  if [[ "$need" -ne 1 && "$force" -eq 0 ]]; then
+    if [[ "$need" -eq 0 ]]; then
+      echo "✅ 线上已是最新（或还没到 deadline ${deadline}），本地不动作（避免与 CI 双跑）"
+    else
+      echo "⏭ 无法判定是否需要兜底（rc=${need}），本地不发布；确认后可用 --force 手动补跑"
+    fi
     return 0
   fi
   if [[ "$dry" -eq 1 ]]; then

@@ -496,24 +496,94 @@ def insert_trade_plan(
     return cur.lastrowid if cur.rowcount > 0 else 0
 
 
+def canonical_plan_portfolio(conn: sqlite3.Connection, plan_date: str) -> Optional[str]:
+    """该日期用于**展示/汇总**的规范档位。无行时返回 None。
+
+    为什么需要：`trade_plan` 是**多档位 × 多轮次**的宽表 ——
+      - 10 个资金档位（5W…50W）+ 1 个 `default`
+      - 每个档位下还有多个 `params_hash` 轮次（`plan build-all` 会跑「无策略 +
+        每个策略各一遍」，回补时逐轮追加）
+    所以一个交易日的行数是 ~5000，而**用户要看的是一套计划**（`MAX_POSITIONS=8`）。
+    曾经 `get_trade_plan_by_date` 不过滤也不去重，把这 5000 行直接喂给前端：
+    计划页把每只票重复渲染几十遍，dashboard 的 `size_total` 汇总成 46.79（即 4679%，
+    而 `MAX_TOTAL` 是 0.75）。这是 2026-10-29 查出的用户可见数据错误。
+
+    为什么优先 `default`：只有 `default` 是 `plan build` 的产出，遵守
+    `MAX_POSITIONS`/`MAX_TOTAL`（实测 8 行、仓位合计 ≤75%）。而 10 个档位是
+    `plan build-all` 的策略研究产出（`ignore_capacity=True`），一轮就有 16 行、
+    仓位合计 178% —— 那是「各策略各自的候选」，**不是**一套可执行计划。
+    没有 default 的早期日期退到行数最多的档位（只作展示，不宣称是完整计划）。
+    """
+    row = conn.execute(
+        "SELECT portfolio FROM trade_plan WHERE plan_date = ? "
+        "GROUP BY portfolio "
+        "ORDER BY (portfolio = 'default') DESC, COUNT(*) DESC, portfolio "
+        "LIMIT 1",
+        (plan_date,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def canonical_plan_round(
+    conn: sqlite3.Connection,
+    plan_date: str,
+    portfolio: str,
+) -> Optional[str]:
+    """该 (日期, 档位) 下用于展示的**单一轮次**（`params_hash`）。
+
+    一套计划 = 一次 `build_plan` 的产出 = 一个 `params_hash`。跨轮次按 code 取
+    「最新一条」会拼出**不存在的计划**：A 轮选 {1,2,3}、B 轮选 {4,5,6}，并集是
+    {1..6}，仓位合计变成两轮之和（实测 2026-08-20 因此显示 380%）。
+    所以必须整轮取，不能按行挑。
+
+    选轮规则：行数最多的那一轮（该轮覆盖的持仓最全）；并列时取最新写入的
+    （`MAX(plan_id)` 最大），保证同一份数据每次渲染稳定、可复现。
+    """
+    row = conn.execute(
+        "SELECT params_hash FROM trade_plan "
+        "WHERE plan_date = ? AND portfolio = ? "
+        "GROUP BY params_hash "
+        "ORDER BY COUNT(*) DESC, MAX(plan_id) DESC "
+        "LIMIT 1",
+        (plan_date, portfolio),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def get_trade_plan_by_date(
     conn: sqlite3.Connection,
     plan_date: str,
     include_failed: bool = False,
+    portfolio: Optional[str] = None,
 ) -> List[Dict]:
-    """Return all trade_plan rows for a date with stock name. Excludes status='failed' unless asked.
+    """Return the canonical trade_plan rows for a date, with stock name.
+
+    默认只返回**一个规范档位**的**单一轮次**（见 `canonical_plan_portfolio` /
+    `canonical_plan_round`）。原因：表里同时存着 10 个档位与多轮策略，
+    不去重的话一个交易日 ~5000 行全是重复，前端会重复渲染、汇总会算成 4679%。
+
+    需要看别的档位时显式传 `portfolio=`。数据结构没变，只是「默认视图」
+    从「全表」改成「一套计划」。
 
     Stock name comes from `hs300_metadata` (the table that actually stores names).
     `hs300_constituents.name` is intentionally empty in this codebase — see
     data_providers.fetch_hs300_constituents_from_api for why.
     """
+    if portfolio is None:
+        portfolio = canonical_plan_portfolio(conn, plan_date)
+
     sql = ("SELECT tp.*, m.name AS name "
            "FROM trade_plan tp LEFT JOIN hs300_metadata m ON m.code = tp.code "
            "WHERE tp.plan_date = ?")
+    params: List[object] = [plan_date]
+    if portfolio is not None:
+        round_hash = canonical_plan_round(conn, plan_date, portfolio)
+        sql += " AND tp.portfolio = ? AND tp.params_hash = ?"
+        params.extend([portfolio, round_hash])
     if not include_failed:
         sql += " AND tp.status = 'ok'"
     sql += " ORDER BY tp.action DESC, tp.code"  # buy first, then hold/exit
-    cur = conn.execute(sql, (plan_date,))
+    cur = conn.execute(sql, tuple(params))
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -688,27 +758,38 @@ def get_last_refresh(conn: sqlite3.Connection) -> Optional[Dict]:
     return {"date": row[0], "updated_at": row[1]}
 
 
-def get_today_plan_summary(conn: sqlite3.Connection, today: str) -> Dict:
-    """Counts by action + total buy size + failed count for a given plan_date."""
-    cur = conn.execute(
-        """SELECT action, status, COUNT(*), COALESCE(SUM(size_pct), 0.0)
-           FROM trade_plan WHERE plan_date = ? GROUP BY action, status""",
-        (today,),
-    )
+def get_today_plan_summary(
+    conn: sqlite3.Connection,
+    today: str,
+    portfolio: Optional[str] = None,
+) -> Dict:
+    """Counts by action + total buy size + failed count for a given plan_date.
+
+    基于 `get_trade_plan_by_date` 的**规范行集**聚合，不是直接 `GROUP BY action`
+    扫全表。为什么必须这样：`trade_plan` 同时存 10 个档位 × 多轮策略，
+    旧实现对一个交易日 ~5000 行直接 SUM(size_pct)，于是 dashboard 显示
+    `size_total = 46.79`（4679%，而 `MAX_TOTAL` 只有 0.75）、`buy = 394`
+    （而 `MAX_POSITIONS` 是 8）。数字看着像数据，其实是重复行叠加，
+    比缺失更难被发现（2026-10-29 查出）。
+
+    复用同一个取数函数也保证了「计划页看到的行」与「dashboard 汇总的数字」
+    永远来自同一集合 —— 两处各自拼 SQL 迟早会漂移。
+    """
+    rows = get_trade_plan_by_date(conn, today, include_failed=True, portfolio=portfolio)
     buy = hold = exit_ = failed = 0
     size_total = 0.0
-    for action, status, count, sum_size in cur.fetchall():
-        if action == "buy" and status == "ok":
-            buy += count
-            size_total += sum_size
-        elif action == "buy" and status == "failed":
-            failed += count  # buy + failed
-        elif action == "hold" and status == "ok":
-            hold += count
-        elif action == "exit" and status == "ok":
-            exit_ += count
-        elif status == "failed":  # hold/exit + failed
-            failed += count
+    for r in rows:
+        action = r.get("action")
+        status = r.get("status")
+        if status == "failed":
+            failed += 1  # buy/hold/exit 失败都计入失败数
+        elif action == "buy":
+            buy += 1
+            size_total += float(r.get("size_pct") or 0.0)
+        elif action == "hold":
+            hold += 1
+        elif action == "exit":
+            exit_ += 1
     return {
         "date": today,
         "buy": buy, "hold": hold, "exit": exit_,

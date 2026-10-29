@@ -64,6 +64,29 @@ def _step_block(text: str, marker: str) -> str:
     return "\n".join(out)
 
 
+
+def _code_only(block: str) -> str:
+    """去掉注释行与行尾注释，只留真正会被执行的 YAML/Python 内容。
+
+    为什么必须有：这些测试是**文本断言**，而本仓库的注释极详尽 ——
+    修复时写的「为什么」注释里往往正好含有被断言的字样（例如
+    `audit_rc == '0'`、`restore-keys`、`degraded-`）。于是「把代码改回 bug 版本、
+    只留注释」也能让测试通过 —— 测试变成自我安慰。实测已发生：把 daily-audit 的
+    key 回退成 bug 版本、保留解释注释，旧断言仍然通过。
+    """
+    out = []
+    for line in block.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        # 去掉行尾注释（YAML 里 `key: x  # 说明` 的注释部分）
+        idx = line.find(" #")
+        if idx != -1:
+            line = line[:idx]
+        out.append(line)
+    return "\n".join(out)
+
+
 def _save_steps(text: str):
     """找出所有**保存缓存**的步骤块。
 
@@ -284,3 +307,78 @@ def test_deploy_site_does_not_resave_unchanged_db():
     assert any("skip_sync" in b for b in blocks), (
         "缓存保存条件里必须有 skip_sync != 'true'（没同步就不要重复存）"
     )
+
+
+def test_daily_audit_treats_gap_free_db_as_clean_lineage_root():
+    """体检**无缺口**时也必须算「干净」，不能因为复检没跑就隔离健康库。
+
+    复检步骤的 if 是 `audit_rc == '1'`（有缺口才复检）。所以体检无缺口时
+    `recheck_rc` 是**空字符串**，`'' == '0'` 为假 —— 只看 recheck_rc 的三元表达式
+    会把一个干干净净的库判成 degraded 隔离掉，于是「体检通过反而让谱系不推进」。
+    这是本仓库改这行时真实踩过的反向 bug，用测试钉住。
+    """
+    text = _text("daily-audit.yml")
+    blocks = [b for b in _save_steps(text)]
+    assert blocks, "daily-audit 应当有缓存保存步骤"
+    save = _code_only(blocks[0])
+    assert "audit_rc == '0'" in save, (
+        "缓存 key 的「干净」判据必须包含 audit_rc == '0'（体检无缺口时复检不跑）"
+    )
+    assert "recheck_rc == '0'" in save, (
+        "缓存 key 的「干净」判据必须包含 recheck_rc == '0'（修复后复检干净）"
+    )
+    # 两个条件是「或」：任一为真即干净
+    assert "||" in save, "两个干净条件之间应当是 ||（任一满足即可）"
+
+
+def test_daily_audit_quarantines_when_audit_could_not_judge():
+    """体检 rc=2（无法判定）时不得当成干净 —— 三元表达式必须落到 degraded 分支。
+
+    这条靠「上面那条判据只认 '0'」来保证：audit_rc='2' 与 recheck_rc='' 都不等于
+    '0'，所以表达式为假 → degraded。这里显式写下语义，防止将来有人把 `== '0'`
+    放宽成「非空即干净」。
+    """
+    text = _text("daily-audit.yml")
+    save = _code_only([b for b in _save_steps(text)][0])
+    key_lines = [ln for ln in save.splitlines() if ln.strip().startswith("key:")]
+    assert key_lines
+    key = key_lines[0]
+    # 不能出现「只要非空就算干净」这类宽松判据
+    assert "!= ''" not in key, "不得用「非空即干净」的判据：audit_rc=2 会被误判为干净"
+    assert "degraded-hs300-db-" in key
+
+
+# ---------------------------------------------------------------- 不变量 6
+# 「管道 + $?」必须开 pipefail，否则 rc 永远是最后一环（tee）的 0。
+
+
+def test_gap_heal_post_check_captures_real_exit_code():
+    """gap-heal 补抓后体检的 rc 必须来自 check_gaps，不是 tee。
+
+    `python3 ... | tee f; rc=$?` 里 `$?` 是 **tee** 的状态（恒 0），所以：
+      - 「补抓后仍有缺口则失败」这道红灯永不亮；
+      - 缓存 key 的 clean 恒为 true → 谱系守卫等于没生效。
+    实测（30 天全缺的库）：旧写法 rc=0；开 pipefail 后 rc=1。
+    """
+    text = _text("gap-heal.yml")
+    block = _code_only(_step_block(text, "体检（补抓后，仍有缺口则失败）"))
+    assert block, "gap-heal 应当有补抓后的体检步骤"
+    assert "pipefail" in block, (
+        "必须在管道前开 set -o pipefail：GitHub 默认 shell 是 `bash -e {0}`，"
+        "不带 pipefail，rc=$? 会取到 tee 的 0"
+    )
+    assert "clean=false" in block, "体检不过关必须写出 clean=false"
+
+
+def test_weekly_evolve_requires_strictly_latest_db():
+    """weekly-evolve 只让**严格最新**的库当谱系根，不许「落后 ≤3 天」也算合格。
+
+    它与 deploy-site 都在周五 08:30 UTC 跑；若它恢复到的缓存比 deploy-site 本轮
+    要保存的更旧，它保存的库就会**倒退**谱系 1~3 天（restore-keys 取最新条目）。
+    """
+    text = _text("weekly-evolve.yml")
+    code = _code_only(text)
+    assert "lag > 0" in code, (
+        "谱系根资格必须是 lag == 0（严格最新）；放宽成 lag > 3 会让根倒退"
+    )
+    assert "lag > 3" not in code, "不得再容忍落后 3 天"

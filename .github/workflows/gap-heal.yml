@@ -78,13 +78,20 @@ jobs:
       - name: 体检（补抓后，仍有缺口则失败）
         id: check_after
         run: |
-          set +e
-          python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 | tee /tmp/gaps_after.txt
-          rc=$?
-          set -e
+          # `rc=$?` 取的是**管道最后一环**（tee）的退出码，不是 check_gaps 的 ——
+          # 所以必须先开 pipefail，否则 rc 恒为 0：既让「仍有缺口则失败」这道红灯
+          # 永远不亮，也让下游缓存 key 的 clean 恒为 true（等于没有谱系守卫）。
+          # 注意 GitHub 默认 shell 是 `bash -e {0}`，**不带 -o pipefail**
+          # （只有显式 shell: bash 才带），所以要自己开。
+          # 开了 pipefail 后管道的 `$?` 就是第一个非零退出码（即 check_gaps 的），
+          # 比读 PIPESTATUS 更稳（`||` 后面再读 PIPESTATUS 容易拿到赋值命令自己的状态）。
+          set -o pipefail
+          rc=0
+          python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 \
+            | tee /tmp/gaps_after.txt || rc=$?
           { echo "## 体检（补抓后）"; echo '```'; cat /tmp/gaps_after.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -ne 0 ]; then
-            echo "::error::补抓后仍有缺口（详见上文明细）；可能是数据源当日无数据或停牌集中"
+            echo "::error::补抓后仍有缺口（rc=$rc，详见上文明细）；可能是数据源当日无数据或停牌集中"
             echo "clean=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi

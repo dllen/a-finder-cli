@@ -86,9 +86,24 @@ def past_deadline(now: dt.datetime, deadline: str) -> bool:
       所以本地兜底的语义必须是「CI 已经放弃了，我来救」，而不是「谁先到谁发」。
       过了 deadline（默认 17:00）线上仍落后 → 那才是 CI 真的没成。
     """
-    hh, mm = str(deadline).split(":")
-    cutoff = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    # 注意：deadline 必须先**校验**，不能直接 split+int。写错（`25:00` / `abc` /
+    # 空串）会让 Python 抛 ValueError 并以 **1** 退出，而 1 在本脚本的契约里是
+    # 「需要兜底」→ 一个笔误就把 deadline 这道防双写门整个绕过、直接发布。
+    # 解析失败一律走 2（参数错误，调用方按「不要兜底」处理），绝不 fail-open。
+    hh, mm = _parse_hhmm(deadline)
+    cutoff = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     return now >= cutoff
+
+
+def _parse_hhmm(text: str) -> tuple[int, int]:
+    """解析 HH:MM；非法时抛 ValueError（由调用方转成 rc=2）。"""
+    parts = str(text).strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"deadline 必须是 HH:MM，收到 {text!r}")
+    hh, mm = int(parts[0]), int(parts[1])
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"deadline 越界（HH 0-23 / MM 0-59），收到 {text!r}")
+    return hh, mm
 
 
 def main(argv=None) -> int:
@@ -108,7 +123,15 @@ def main(argv=None) -> int:
 
     # deadline 门在**所有网络请求之前**判：还没到点就不该去抢跑，
     # 也不该浪费一次请求。非交易日（线上已是最新）同样会在这里自然通过。
-    if not args.force and not past_deadline(dt.datetime.now(), args.deadline):
+    # 参数错必须先转 rc=2（= 不要兜底），绝不能让它以 ValueError 退出成 1
+    # —— 1 的语义是「需要兜底」，一个笔误就会绕过整道防双写门。
+    try:
+        reached = past_deadline(dt.datetime.now(), args.deadline)
+    except ValueError as exc:
+        print(f"::error::--deadline 非法：{exc}（按「不兜底」处理，避免本地抢跑）",
+              file=sys.stderr)
+        return 2
+    if not args.force and not reached:
         print(f"未到 deadline {args.deadline}（现在 {dt.datetime.now():%H:%M}），"
               f"让 CI 先跑 —— 本地不抢跑（这是避免双写分叉的关键）")
         return 0

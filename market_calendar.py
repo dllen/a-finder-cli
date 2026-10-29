@@ -42,6 +42,33 @@ def _workday_fn():
     return _WORKDAY_FN
 
 
+def calendar_ready_for(day: dt.date) -> bool:
+    """日历是否**覆盖**这一天。覆盖不全（或依赖不可用）返回 False。
+
+    为什么必须能和「这一天不是交易日」区分开：
+      `trading_days()` 对**任何**异常都返回 `[]`，而 `[]` 既可能是「区间内没有
+      交易日」（正常），也可能是「这个年份根本没有数据」（故障）。两者混为一谈时，
+      调用方只能猜。
+
+    已确认的定时炸弹（2026-10-29 实测）：`chinese_calendar` 1.11.0（PyPI 最新）
+    只覆盖 **2004–2026**，对 2027 抛 `NotImplementedError: no available data for
+    year 2027`。所以从 **2027-01-01 起**：
+      - `audit_coverage` 每晚 rc=2（无法判定）→ 修复/复检/导出/部署全部不跑
+      - `deploy-site` 里内联的 `is_workday` 直接 traceback → 发布链整条停摆
+    该包按年更新（国务院发布次年放假安排后才发版），所以在 2027 数据发布前，
+    唯一正确做法是**让调用方优雅降级**，而不是等它上线。这个函数就是给那些
+    调用方用的判据。
+    """
+    wd = _workday_fn()
+    if wd is None:
+        return False
+    try:
+        wd(day)
+    except Exception:
+        return False
+    return True
+
+
 def trading_days(
     start: dt.date,
     end: dt.date,
@@ -56,6 +83,8 @@ def trading_days(
       - include_known_weekend=True  → 该日在 known 里则保留（同步用：库里有就认）
 
     chinese_calendar 不可用时返回 []（调用方自行降级，绝不猜）。
+    需要区分「区间内无交易日」与「日历不可用/没这个年份」时，先调
+    `calendar_ready_for()` 判可用性，别靠 `trading_days() == []` 猜。
     """
     wd = _workday_fn()
     if wd is None:

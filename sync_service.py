@@ -9,6 +9,7 @@ import market_calendar
 from config import SyncConfig
 from db_repository import (
     FundamentalsHistoryRow,
+    PriceRow,
     StockMeta,
     get_completed_codes,
     get_fetch_offsets,
@@ -37,6 +38,10 @@ from data_providers import (
 from errors import FetchError, InvalidConfigError
 from logger import get_logger
 from utils import date_to_str, parse_date
+
+# A 股收盘结算点（北京时间 HH:MM）。之前抓到的当日日线是**未收盘的半截 K 线**，
+# 见 _market_settled 的说明（2026-10-27 真实损坏：254/300 只）。
+SETTLE_HOUR, SETTLE_MINUTE = 15, 5
 
 
 class RateLimiter:
@@ -199,6 +204,89 @@ def _build_missing_segments(
     ]
 
 
+def _market_settled(now: Optional[dt.datetime] = None) -> bool:
+    """当前时刻是否已过 A 股收盘结算点（15:05 北京时间）。
+
+    为什么要这个判据（2026-10-29 查出的真实数据损坏）：
+      数据源在**盘中**也会返回「今天」的日线，但那是一根**未收盘的半截 K 线**
+      （开/低来自早盘，收=当前价，量只有一部分）。`logs/fetch_success.log` 记录
+      2026-10-27 12:15 与 12:19 有两次 gap-fill（午休时段），各写入 rows=1/只，
+      于是 300 只全部存了半截日线：26 日量 41599 → 27 日 16961（44%）→ 28 日 38805，
+      600519 的收盘 1348.0 而真实是 1355.90。实测 **254/300 只**受影响。
+
+      这种损坏**不会自愈**：gap-fill 只补「缺失」的日期（`_build_missing_segments`
+      看的是有没有行），而半截日线**有行**，于是永远不会被重抓；审计的 L1 判据是
+      「>=280 只」，300 只全都“有数据”也拦不住。它还会污染 MA/动量/回测窗口与
+      当天用收盘价算出的计划。
+
+      留 15:05 而不是 15:00：收盘集合竞价到 15:00 结束，源的日线结算略有延迟，
+      卡在整点边界容易把最后一笔漏掉。CI 在 15:30 北京跑，不受影响。
+    """
+    now = now or dt.datetime.now()
+    if now.weekday() >= 5:      # 周末不可能有当天的新日线
+        return True
+    return (now.hour, now.minute) >= (SETTLE_HOUR, SETTLE_MINUTE)
+
+
+def _drop_unsettled_today(
+    rows: List["PriceRow"],
+    today: Optional[dt.date] = None,
+    *,
+    now: Optional[dt.datetime] = None,
+) -> List["PriceRow"]:
+    """丢掉「今天」的未结算日线，别把盘中半截 K 线当完整日线入库。
+
+    只丢**今天**这一天：历史日期的行一律保留（它们只可能是完整的）。
+    丢掉的代价是「今天晚些时候还得再抓一次」—— 那正是正确行为，且比存一根
+    错误日线便宜得多（后者会永久污染该日期，见 `_market_settled` 的说明）。
+    """
+    if _market_settled(now):
+        return rows
+    today_str = (today or dt.date.today()).isoformat()
+    kept = [r for r in rows if r.trade_date != today_str]
+    if len(kept) != len(rows):
+        get_logger().warning(
+            "丢弃 %d 条未结算的当日日线（trade_date=%s，收盘结算点之前抓取）",
+            len(rows) - len(kept), today_str,
+        )
+    return kept
+
+
+def _resolve_constituents(db_path: str) -> Dict[str, str]:
+    """取沪深300成分股；接口取不到时回退到**本地库已有的代码列表**。
+
+    为什么必须有这个回退（2026-10-29 事故的主因，复盘见 .learnings/ERRORS.md）：
+      `fetch_hs300_constituents()` 只有东财一个源（`data_providers.py:69-71`），
+      **没有备源**。东财被限流时它返回空 → 行情同步直接 `raise FetchError` →
+      CLI 没捕获 → 进程 traceback 退出 1，**一行行情都没写**。
+
+      于是 `daily-audit` 的 L1 修复（`repair_gaps._plan_l1` 的第一条命令就是这个
+      同步）在「东财被限流」—— 也就是事故本身的成因 —— 这个条件下**必然失败**，
+      跟补多长的窗口、跟复权口径都无关。这是「缺口永远补不上」的真正根。
+      `sync_hs300_metadata` 早就有这个回退（见其中 `get_all_codes` 分支），
+      而真正需要它的行情同步反而没有。
+
+    回退时返回 `{code: ""}`（名称为空，由 K 线返回的 name 回填），
+    语义与元数据同步保持一致，不要把「拿不到成分股名单」升级成「没法抓行情」——
+    库里有 300 个代码，抓这些代码的 K 线完全不需要重新拉名单。
+    """
+    mapping = fetch_hs300_constituents()
+    if mapping:
+        return mapping
+    conn = open_db(db_path)
+    try:
+        with conn:
+            codes = get_all_codes(conn)
+    finally:
+        conn.close()
+    if not codes:
+        raise FetchError("无法获取沪深300成分股列表，且本地数据库为空（无法回退）")
+    get_logger().warning(
+        "沪深300成分股获取失败，改用本地数据库代码列表（%d 只）", len(codes)
+    )
+    return {code: "" for code in codes}
+
+
 def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional[Callable[[int, str], None]] = None) -> Dict[str, int]:
     logger = get_logger()
     if mode not in {"incremental", "full"}:
@@ -210,9 +298,7 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional
     start = today - dt.timedelta(days=365)
     start_str = date_to_str(start)
     end_str = date_to_str(today)
-    mapping = fetch_hs300_constituents()
-    if not mapping:
-        raise FetchError("无法获取沪深300成分股列表")
+    mapping = _resolve_constituents(db_path)
     if config.limit is not None:
         mapping = {code: mapping[code] for code in list(sorted(mapping.keys()))[: config.limit]}
     logger.info("同步开始: mode=%s symbols=%s", config.mode, len(mapping))
@@ -257,6 +343,8 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional
                 continue
             if name:
                 names[code] = name
+            # 别把盘中的半截日线当完整日线入库（见 _market_settled）
+            rows = _drop_unsettled_today(rows)
             total_rows += insert_prices(conn, rows)
             if rows:
                 updated_offsets[code] = max(row.trade_date for row in rows)
@@ -301,9 +389,7 @@ def sync_hs300_range(
     if start > end:
         raise InvalidConfigError("start 必须早于或等于 end")
     end_str = date_to_str(end)
-    mapping = fetch_hs300_constituents()
-    if not mapping:
-        raise FetchError("无法获取沪深300成分股列表")
+    mapping = _resolve_constituents(db_path)
     if limit is not None:
         mapping = {code: mapping[code] for code in list(sorted(mapping.keys()))[:limit]}
     logger.info("区间同步开始: %s~%s symbols=%s", start_date, end_date, len(mapping))
@@ -421,6 +507,10 @@ def sync_hs300_range(
                         rows, name = future.result()
                         if name:
                             per_code_name[code] = name
+                        # 同上：收盘结算点之前抓到的当日日线是半截的，丢弃而不是入库。
+                        # 注意要在 insert 之前过滤，否则 per_code_last_date 会把
+                        # 未结算的今天当成 offset 推进，明天就不再重抓这一天。
+                        rows = _drop_unsettled_today(rows)
                         inserted = insert_prices(conn, rows)
                         total_rows += inserted
                         per_code_rows[code] = per_code_rows.get(code, 0) + inserted

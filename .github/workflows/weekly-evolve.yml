@@ -72,10 +72,15 @@ jobs:
           window = trading_days(today - dt.timedelta(days=14), today)
           lag = len([d for d in window if d > latest])
           print(f"行情最新日 {latest}，落后 {lag} 个交易日")
-          if lag > 3:
-              print(f"::error::库落后 {lag} 个交易日（>3），判定为陈旧谱系，不保存缓存")
+          # 要求**严格最新**（lag == 0），不是「落后不超过 3 天」。
+          # 为什么：本 workflow 与 deploy-site 都在周五 08:30 UTC 跑，如果它恢复到的
+          # 是「deploy-site 本轮还没保存」的旧缓存，它保存的库就**比恢复到的那个更旧或相同**。
+          # 而 restore-keys 取最新条目 → 这个旧库会变成下一个 run 的起点，把谱系**倒退**
+          # 1~3 天。一个严格比手上更差的库，永远不该成为最新的谱系根。
+          if lag > 0:
+              print(f"::error::库落后 {lag} 个交易日（要求 0），不保存为谱系根")
               sys.exit(1)
-          print("库合格，可以作为谱系根")
+          print("库是最新的，可以作为谱系根")
           PY
 
       - name: Save hs300.db to cache（只让「合格」的库当谱系根）

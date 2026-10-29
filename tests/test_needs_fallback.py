@@ -105,3 +105,23 @@ def test_past_deadline_helper():
     assert nf.past_deadline(dt.datetime(2026, 10, 27, 17, 0), "17:00") is True
     assert nf.past_deadline(dt.datetime(2026, 10, 27, 17, 1), "17:00") is True
     assert nf.past_deadline(dt.datetime(2026, 10, 27, 9, 30), "08:00") is True
+
+
+def test_malformed_deadline_is_parameter_error_not_fallback(tmp_path):
+    """非法 --deadline 必须 rc=2（不兜底），绝不能 fail-open 成 1。
+
+    退出码 1 的语义是「需要兜底」。若 `--deadline 25:00` 因 ValueError 退出成 1，
+    一个笔误就绕过了整道防双写门 → 本地立刻抢跑发布。
+    """
+    path = _write(tmp_path, ["2026-10-23"])
+    for bad in ("25:00", "abc", "", "17:99", "1:2:3"):
+        assert nf.main(["--dates-json", path, "--deadline", bad,
+                        "--today", "2026-10-27"]) == 2, bad
+
+
+def test_valid_deadline_still_works(tmp_path):
+    path = _write(tmp_path, ["2026-10-23"])
+    assert nf.main(["--dates-json", path, "--deadline", "00:00",
+                    "--today", "2026-10-27"]) == 1
+    assert nf.main(["--dates-json", path, "--deadline", "23:59",
+                    "--today", "2026-10-27"]) == 0

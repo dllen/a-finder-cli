@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from market_calendar import trading_days  # noqa: E402
+from market_calendar import calendar_ready_for, trading_days  # noqa: E402
 
 WINDOW_DAYS = 30
 MIN_CODES = 280
@@ -136,8 +136,19 @@ def audit(
     start = today - dt.timedelta(days=window_days)
     expected = trading_days(start, today)
     if not expected:
+        # 区分「日历坏了/没这个年份」与「区间内确实没有交易日」，否则报错信息会
+        # 把人引到错误的排查方向。已确认的定时炸弹：chinese_calendar 1.11.0 只覆盖
+        # 2004–2026，从 2027-01-01 起每晚都会走到这里（见 market_calendar
+        # .calendar_ready_for 的说明）。
+        if not calendar_ready_for(today):
+            raise CalendarUnavailable(
+                "交易日历不可用：chinese_calendar 没有 "
+                f"{today.year} 年的数据（当前版本只覆盖到某一年份）——"
+                "这不是数据缺口，需要升级 chinese_calendar 到覆盖该年份的版本；"
+                "在升级前 daily-audit 每晚都会无法判定")
         raise CalendarUnavailable(
-            "交易日历不可用（chinese_calendar 未安装或该年份无数据），无法判定基准")
+            f"交易日历判定 {start}~{today} 区间内没有交易日（窗口内无交易日，"
+            "通常是把 --window-days 调得太小或 --today 落在长假里），无法判定基准")
 
     if not Path(db_path).exists():
         raise FileNotFoundError(f"数据库不存在: {db_path}")
@@ -197,7 +208,18 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None, help="把 JSON 报告写入该文件")
     args = ap.parse_args(argv)
 
-    today = dt.date.fromisoformat(args.today) if args.today else None
+    # --today 必须先校验：`fromisoformat` 抛 ValueError 时若不捕获，进程会以
+    # 未捕获异常退出，退出码是 **1** —— 按本脚本的契约「1 = 有缺口」，
+    # CI 会把它读成「发现缺口」进而跑去修复。参数错必须走 2（无法判定）。
+    if args.today:
+        try:
+            today = dt.date.fromisoformat(args.today)
+        except ValueError:
+            print(f"::error::--today 不是合法日期: {args.today!r}（需要 YYYY-MM-DD）",
+                  file=sys.stderr)
+            return 2
+    else:
+        today = None
     try:
         report = audit(args.db, today=today, window_days=args.window_days,
                        min_codes=args.min_codes)
