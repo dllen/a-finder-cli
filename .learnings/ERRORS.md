@@ -350,3 +350,45 @@ CI 行情谱系就此断在 2026-10-13。
   scripts/audit_coverage.py, scripts/repair_gaps.py, scripts/notify_audit.py
 
 ---
+
+## [2026-10-29] 两谱系分叉：CI 的同步判据读错了对象（已修）
+
+**Area**: ci / infra
+
+### Summary
+上一条事故的**根因不是缓存 key，而是「CI 的 freshness 判据读的是线上站点」**。
+站点可以被另一个写者（本地 `a-finder.sh site --push`）发布，而 `dates.json` 只反映
+`daily_picks`/`trade_plan`、**不看 `daily_prices`**。于是：
+
+  本地先发布当天 → 线上已有该日期 → CI 判 skip → 跳过同步**且**跳过缓存保存
+  → CI 行情谱系永远不推进（断在 2026-10-13），两个库持续分叉。
+
+缓存 key 冻结只是让这条谱系**停住**，判据错位让它**不可能自己恢复**。
+
+### Fix（现在的不变量，别退回）
+1. 同步判据 = **CI 自己的库**：新增 `scripts/db_freshness.py`，落后按**交易日**算。
+   退出码 0 新鲜 / 1 可增量补 / 2 无库 / 3 **陈旧谱系**（落后 >3 交易日 → 冷启动 400 天）。
+2. **Restore 提到 freshness 之前** —— 判据要读自己的库，得先恢复。
+3. **`skip_sync` 与「要不要发布」分开**：另有 `site_stale`，线上缺当天就仍要发布。
+   混成一个 skip 会让「库新鲜但站点缺当天」变成没人发布。
+4. **没同步就不重复存缓存**：8 班/天 × 200MB × 7 天 ≈ 11GB，会打爆 10GB 配额。
+5. **本地兜底加 deadline**（默认 17:00 北京）：过了 deadline 线上仍落后才动手。
+   `needs_fallback.py --deadline` + `a-finder.sh fallback --deadline/--force`。
+   本地抢跑本身就在制造分叉。
+
+### 踩坑记录
+- macOS bash 3.2：`echo "... $deadline），..."` 会把中文全角括号吞进变量名 →
+  `unbound variable`。**必须写 `${deadline}`**（与已有条目同一类坑）。
+- `[ "$x" = "2" ] && echo ...` 放在 case 分支末尾时，条件不成立会让该表达式返回 1，
+  成为整个 step 的退出码 → **步骤失败**。要写成 `if ...; then ...; fi`。
+- 测试里做 workflow 文本断言时，`restore-keys` / `degraded-` 字样常出现在**注释**里，
+  子串匹配会误判。要过滤注释行，或只匹配 `key:` 行。
+
+### Metadata
+- Reproducible: yes
+- Related Files: .github/workflows/deploy-site.yml, scripts/db_freshness.py,
+  scripts/needs_fallback.py, a-finder.sh
+- Tests: tests/test_db_freshness.py, tests/test_cache_lineage_workflow_contract.py,
+  tests/test_needs_fallback.py
+
+---

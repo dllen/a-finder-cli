@@ -222,3 +222,65 @@ def test_monotonicity_guard_falls_back_to_expected_day_not_no_floor():
         assert "--expect-latest" in text, (
             f"{name}: 查不到线上日期时必须用 --expect-latest 兜底，不能无下限放行"
         )
+
+
+# ---------------------------------------------------------------- 不变量 5
+# 同步判据必须是「CI 自己的库」，不能是「线上站点」。
+#
+# 2026-10-29 两谱系事故的根因：freshness 读线上 dates.json。而站点可以被本地
+# `a-finder.sh site --push` 发布 —— 一旦本地先把当天发上去，CI 判 skip →
+# 跳过同步、也跳过缓存保存 → 行情谱系永远不推进。
+# 而且 export_json.py 的 dates.json 来自 daily_picks/trade_plan，**不看
+# daily_prices** →「站点有这天」根本不等价于「CI 库有这天的行情」。
+
+
+def test_deploy_site_freshness_queries_its_own_db_not_the_site():
+    """deploy-site 的同步判据必须查自己的库（db_freshness.py）。"""
+    text = _text("deploy-site.yml")
+    block = _step_block(text, "检查是否需要跑（判据 = CI 自己的库，不是线上站点）")
+    assert block, "deploy-site 应当有 freshness 步骤"
+    assert "db_freshness.py" in block, (
+        "同步判据必须用 db_freshness.py 查 CI 自己的库，不能只看线上站点"
+    )
+    assert "--db hs300.db" in block, "判据要读 CI 自己的 hs300.db"
+
+
+def test_deploy_site_restore_precedes_freshness():
+    """Restore 必须在 freshness 之前 —— 否则要查自己的库时库还没拿回来。"""
+    text = _text("deploy-site.yml")
+    restore_at = text.find("- name: Restore hs300.db from cache")
+    freshness_at = text.find("- name: 检查是否需要跑")
+    assert restore_at != -1 and freshness_at != -1
+    assert restore_at < freshness_at, (
+        "Restore 必须在 freshness 之前：判据要查 CI 自己的库，得先把库恢复出来"
+    )
+
+
+def test_deploy_site_splits_skip_sync_from_publishing():
+    """sync 与 publish 必须分开决策。
+
+    把两者混成一个 skip 是旧实现的错误：库已新鲜但线上站点缺当天时，
+    所有人都会跳过 → 当天没人发布。
+    """
+    text = _text("deploy-site.yml")
+    assert "skip_sync" in text, "应当有独立的 skip_sync 输出"
+    assert "site_stale" in text, "应当有独立的 site_stale 输出（决定要不要发布）"
+    # 发布条件不能只看 skip_sync：site_stale=true 时库新鲜也要发布
+    deploy_block = _step_block(text, "部署 gh-pages")
+    assert "run == 'true'" in deploy_block, (
+        "部署条件应当用汇总后的 run 输出（兼顾「刚同步」与「站点缺当天」两种情况）"
+    )
+
+
+def test_deploy_site_does_not_resave_unchanged_db():
+    """没同步时不该再存一份缓存。
+
+    密集排班 8 班/天 × 200MB × 7 天保留 ≈ 11GB，会打爆 actions/cache 的 10GB
+    配额（超额会淘汰别的条目，包括早班的正常缓存）。
+    """
+    text = _text("deploy-site.yml")
+    blocks = [b for b in _save_steps(text) if "actions/cache" in b]
+    assert blocks
+    assert any("skip_sync" in b for b in blocks), (
+        "缓存保存条件里必须有 skip_sync != 'true'（没同步就不要重复存）"
+    )

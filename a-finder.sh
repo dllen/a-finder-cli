@@ -377,13 +377,15 @@ cmd_backtest() {
 # ============================ cron (launchd 入口) ============================
 
 cmd_fallback() {
-  # 用法: a-finder.sh fallback [--force] [--dry-run]
-  # 只在「线上还没有当天数据」时才本地跑并推送，避免与 CI 双跑、双推。
-  local force=0 dry=0
-  for a in "$@"; do
-    case "$a" in
-      --force) force=1 ;;
-      --dry-run) dry=1 ;;
+  # 用法: a-finder.sh fallback [--force] [--dry-run] [--deadline HH:MM]
+  # 只在「CI 已经放弃了」时才本地跑并推送，避免与 CI 双跑、双推。
+  local force=0 dry=0 deadline="17:00"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      --deadline) deadline="$2"; shift 2 ;;
+      *) shift ;;
     esac
   done
 
@@ -391,7 +393,11 @@ cmd_fallback() {
   tmp="$(mktemp)"
   # 用 curl 取（python urllib 会被 Cloudflare 拦成 403/404；curl 正常）
   if curl -sf --max-time 20 "https://ycu.space/data/dates.json" -o "$tmp"; then
-    python3 "$ROOT_DIR/scripts/needs_fallback.py" --dates-json "$tmp" || need=$?
+    # deadline 门在 needs_fallback.py 里（过了 deadline 线上仍落后才算 CI 真没成）。
+    # 这是避免双写分叉的关键：本地抢跑会让 CI 以为「已发布」而跳过同步。
+    local fargs=(--dates-json "$tmp" --deadline "$deadline")
+    [[ "$force" -eq 1 ]] && fargs+=(--force)
+    python3 "$ROOT_DIR/scripts/needs_fallback.py" "${fargs[@]}" || need=$?
   else
     echo "⚠ 无法读取线上日期，按需要兜底处理"
     need=1
@@ -399,14 +405,14 @@ cmd_fallback() {
   rm -f "$tmp"
 
   if [[ "$need" -eq 0 && "$force" -eq 0 ]]; then
-    echo "✅ 线上已是最新，本地不动作（避免与 CI 双跑）"
+    echo "✅ 线上已是最新（或还没到 deadline ${deadline}），本地不动作（避免与 CI 双跑）"
     return 0
   fi
   if [[ "$dry" -eq 1 ]]; then
     echo "[dry-run] 需要兜底：将执行 site --push"
     return 0
   fi
-  echo "▶ 线上落后，本地兜底：site --push"
+  echo "▶ 线上落后且已过 deadline ${deadline}，本地兜底：site --push"
   cmd_site "$DEFAULT_DB" 20 site --push
 }
 

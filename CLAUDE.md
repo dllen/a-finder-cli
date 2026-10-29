@@ -107,10 +107,12 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **每周体检 + 自愈 + 备份**（`gap-heal.yml`，周日 10:00 北京）：`scripts/check_gaps.py`
   扫最近 30 个交易日覆盖度 → `sync-hs300-range --gap-fill` 补抓 → 再扫一次（仍有缺口则红）
   → 顺手把 `hs300.db` 压成 artifact（90 天），缓存丢失时可秒恢复不必重抓 400 天。
-- **本地兜底（可选，第三条腿）**：`bash a-finder.sh fallback` 先查线上 `dates.json`，
-  只有线上落后才本地跑 `site --push`（`scripts/needs_fallback.py` 判定，避免与 CI 双跑）；
+- **本地兜底（可选，第三条腿）**：`bash a-finder.sh fallback` 过了 **deadline（默认 17:00
+  北京）** 且线上仍落后，才本地跑 `site --push`（`scripts/needs_fallback.py --deadline`）；
   `bash a-finder.sh fallback-install` 生成 launchd plist（工作日 17:10），按打印的命令
   装到 `~/Library/LaunchAgents`。站点域名是 **ycu.space**（github.io 路径已 404）。
+  手动早于 deadline 补跑用 `--force` 绕过。**deadline 是防双写分叉的关键**：CI 在
+  15:30–17:00 有 8 个班次，本地抢跑会让 CI 以为「已发布」而跳过同步。
 - 本地 `a-finder.sh site --push` 已由 CI 接管；本地 cron（无条件跑）应停用，
   用上面的 `fallback`（有条件）替代，避免与 CI 双跑。
 - **本地 hs300.db 与 CI 的库会分叉，这是预期行为**：CI 每天跑 `plan build-all` 所以档位
@@ -125,6 +127,29 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   更坑的是 `export_json.py` 只从 `daily_picks`/`trade_plan` 出 JSON、**不看
   `daily_prices`**，所以「站点页面正常」**不能**证明 CI 库的行情齐全。
   推论：排查数据问题要分别看两个库，别拿站点当 CI 库的健康证明。
+
+## 两谱系分叉：已修的根因与现在的不变量（2026-10-29）
+
+根因只有一句话：**CI 的同步判据读错了对象** —— 它读「线上站点有没有今天」，
+但站点可以被本地发布，而 `dates.json` 又只反映 `daily_picks`/`trade_plan`、
+**不看 `daily_prices`**。于是本地先发布 → CI 判 skip → 跳过同步也跳过缓存保存
+→ CI 行情谱系冻结（断在 2026-10-13），两个库持续分叉。
+
+现在的不变量（改这块代码前先读懂，别再退回）：
+
+1. **同步判据 = CI 自己的库**。`deploy-site.yml` 的 freshness 用
+   `scripts/db_freshness.py --db hs300.db`，落后按**交易日**算（不是自然日）。
+   退出码：0 新鲜 / 1 可增量补 / 2 无库 / 3 **陈旧谱系**（落后 > 3 个交易日 →
+   冷启动 400 天窗口重建，别指望每天补一点）。
+2. **Restore 必须在 freshness 之前**。判据要读自己的库，就得先把库恢复出来。
+   顺序反了就只能读线上站点 —— 那正是事故本身。
+3. **`skip_sync` 与「要不要发布」分开决策**。混成一个 skip 会导致：
+   库已新鲜但线上缺当天 → 所有人都跳过 → 当天没人发布。
+   所以另有 `site_stale`（线上缺当天就仍要发布）。
+4. **没同步就不重复存缓存**。8 班/天 × 200MB × 7 天保留 ≈ 11GB，会打爆
+   `actions/cache` 的 10GB 配额，淘汰掉别的重要条目。
+5. **本地兜底只在「CI 已经放弃」时动手**：过了 deadline（默认 17:00 北京）
+   线上仍落后才算数。本地抢跑本身就在制造分叉。
 - **缓存 key 必须永远带 run_id**：`actions/cache` 不允许覆盖已存在的 key，固定 key
   会让缓存**永久冻结**（2026-10-26 的 `hs300-db` 就是这样）。改 key 后还要确认
   旧条目是否仍能被 `restore-keys` 命中 —— `'hs300-db'.startswith('hs300-db-')` 是
