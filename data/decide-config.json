@@ -1,0 +1,10 @@
+{
+  "total_capital": 100000.0,
+  "stock_ratio": 0.8,
+  "cb_ratio": 0.2,
+  "max_positions": 8,
+  "max_single_weight": 0.1,
+  "max_stock_exposure": 0.75,
+  "cb_capital": 20000.0,
+  "max_cb_positions": 3
+}
