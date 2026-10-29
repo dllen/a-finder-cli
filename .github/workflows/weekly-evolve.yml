@@ -34,10 +34,56 @@ jobs:
             hs300-db-
 
       - name: Run strategy evolution
+        id: evolve
         run: python stock_cli.py evolve --db hs300.db
 
-      - name: Save hs300.db to cache
+      - name: 检查库是否仍是合格的谱系根
+        id: verify
+        if: always()
+        run: |
+          set -uo pipefail
+          # 谱系根资格：库里有行情，且最新日不落后太多。
+          # 为什么加这道守卫：restore-keys 取**最新**的匹配条目，谁最后保存谁就是
+          # 下一个 run 的起点。这个 workflow 原来保存缓存时**完全没有 if 守卫**，
+          # 一次失败的 evolve（或一个本来就陈旧的库）都会成为谱系根，缺口被固化
+          # 并逐日传递 —— 2026-10-29 查明 CI 行情谱系断在 2026-10-13 就是这么来的。
+          # 「落后太多」用交易日算，不用自然日：周末不该算落后。
+          python3 - <<'PY'
+          import datetime as dt, sqlite3, sys
+          from pathlib import Path
+          from market_calendar import trading_days
+
+          db = Path("hs300.db")
+          if not db.exists():
+              print("::error::缓存里没有 hs300.db，不保存缓存（避免把坏库当谱系根）")
+              sys.exit(1)
+          try:
+              conn = sqlite3.connect("hs300.db")
+              row = conn.execute("SELECT MAX(trade_date) FROM daily_prices").fetchone()
+              latest = row[0] if row else None
+              conn.close()
+          except Exception as exc:
+              print(f"::error::读 daily_prices 失败: {exc}")
+              sys.exit(1)
+          if not latest:
+              print("::error::daily_prices 为空，不保存缓存（空库当谱系根会清空后继 run）")
+              sys.exit(1)
+          today = dt.date.today()
+          window = trading_days(today - dt.timedelta(days=14), today)
+          lag = len([d for d in window if d > latest])
+          print(f"行情最新日 {latest}，落后 {lag} 个交易日")
+          if lag > 3:
+              print(f"::error::库落后 {lag} 个交易日（>3），判定为陈旧谱系，不保存缓存")
+              sys.exit(1)
+          print("库合格，可以作为谱系根")
+          PY
+
+      - name: Save hs300.db to cache（只让「合格」的库当谱系根）
+        if: always()
         uses: actions/cache@v4
         with:
           path: hs300.db
-          key: hs300-db-${{ github.run_id }}
+          # 合格 → hs300-db-<run_id>（下一个 run 从它继续）；
+          # 不合格 → degraded-hs300-db-<run_id>（**必须不以 hs300-db- 开头**，
+          # 否则 restore-keys 仍然命中它，等于没隔离；留作事后排查用）。
+          key: ${{ steps.verify.outcome == 'success' && format('hs300-db-{0}', github.run_id) || format('degraded-hs300-db-{0}', github.run_id) }}

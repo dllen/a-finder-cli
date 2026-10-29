@@ -162,19 +162,56 @@ jobs:
       - name: 导出静态站 + 校验产物
         id: export
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
         run: |
           set -uo pipefail
           # open_db 在库不存在时会新建空库 → 导出"成功"但站点无数据。
           # 2026-10-27 线上就是被这样的空产物 force-push 清空的，必须校验内容。
           python3 export_json.py --db hs300.db --out site
-          python3 scripts/verify_site_export.py --site site
+          # 单调性守卫：产物最新日不得比**线上**更旧。
+          # 为什么必须比线上：2026-10-29 查明 CI 缓存库与本地库是两条独立谱系
+          # （CI 行情谱系断在 2026-10-13，站点却由本地库发布到 10-29）。孤儿库
+          # 导出的 dates.json=["2026-10-13"] 能通过 --min-dates 1 的门禁 → CI
+          # 会把比线上旧 16 天的站点 force-push 上去：页面看着正常、数据停在
+          # 半个月前，比 2026-10-27 的空站点更隐蔽。拿线上最新日当下限。
+          LIVE_LATEST=$(curl -sf --max-time 20 https://ycu.space/data/dates.json \
+            | python3 -c "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")
+          if [ -n "$LIVE_LATEST" ]; then
+            echo "线上最新日: $LIVE_LATEST（产物的下限）"
+            python3 scripts/verify_site_export.py --site site --not-older-than "$LIVE_LATEST"
+          else
+            # 查不到线上日期时不敢用「无下限」放行：那正是空站点事故的同款漏洞。
+            echo "::warning::查不到线上最新日，改用期望交易日 $EXPECT 作为下限"
+            python3 scripts/verify_site_export.py --site site --expect-latest "$EXPECT"
+          fi
 
-      - name: Save hs300.db to cache
+      - name: Save hs300.db to cache（只让「行情已落地」的库当谱系根）
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.freshness.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: hs300.db
-          key: hs300-db-${{ github.run_id }}
+          # 谱系根的资格：本班同步后行情门禁通过（prices_ok=true）。
+          # 为什么：actions/cache 的 restore-keys 取**最新**的匹配条目，谁最后保存谁
+          # 就是下一个 run 的起点。原来的无条件保存让一个「同步没推进」的库也成为
+          # 谱系根 → 缺口被固化并逐日传递（2026-10-29 查明 CI 行情谱系断在
+          # 2026-10-13 就是这么来的）。
+          # 门禁没过时存到 degraded- 前缀：**必须不以 hs300-db- 开头**，否则
+          # restore-keys 仍然命中它，等于没隔离（留作事后排查用）。
+          key: ${{ steps.sync.outputs.prices_ok == 'true' && format('hs300-db-{0}', github.run_id) || format('degraded-hs300-db-{0}', github.run_id) }}
+
+      - name: 提示：CI 库未推进时的排查方向
+        # 站点由**本地** a-finder.sh site --push 发布（gh-pages 提交信息格式可证），
+        # 而本 workflow 的 freshness 步骤读的是**线上** dates.json。于是本地发布
+        # 一天 → 线上已有当天 → freshness 判定 skip → 本 workflow 连缓存都不保存
+        # → CI 的行情谱系永远停在 2026-10-13（2026-10-29 查明）。
+        # 这不是自动能修的：要么让 CI 也发布站点，要么让本地不再发布。
+        # 这里只留提示，避免下一个人重新踩同一个坑。
+        if: always() && steps.freshness.outputs.skip == 'true'
+        run: |
+          echo "::notice::本班因线上已发布 ${{ steps.trade-day.outputs.today_bj }} 而跳过同步。" \
+               "站点由本地 \`bash a-finder.sh site --push\` 发布，CI 缓存库未随之推进 —— " \
+               "这是已知的两谱系问题（见 CLAUDE.md「站点由本地发布」条目），不是本次 run 的失败。"
 
       - name: 部署 gh-pages
         # 只在导出校验通过时部署：宁可站点停留在上一版，也不要用空产物清空线上

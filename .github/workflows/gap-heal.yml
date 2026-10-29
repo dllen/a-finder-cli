@@ -76,6 +76,7 @@ jobs:
             --gap-fill --concurrency 6 --rate 6 --retries 3 --backoff 0.8 2>&1 | tail -20 || true
 
       - name: 体检（补抓后，仍有缺口则失败）
+        id: check_after
         run: |
           set +e
           python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 | tee /tmp/gaps_after.txt
@@ -84,8 +85,10 @@ jobs:
           { echo "## 体检（补抓后）"; echo '```'; cat /tmp/gaps_after.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -ne 0 ]; then
             echo "::error::补抓后仍有缺口（详见上文明细）；可能是数据源当日无数据或停牌集中"
+            echo "clean=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          echo "clean=true" >> "$GITHUB_OUTPUT"
 
       - name: 备份 hs300.db（artifact，90 天）
         if: always()
@@ -107,9 +110,15 @@ jobs:
           path: /tmp/hs300-*.db.gz
           retention-days: 90
 
-      - name: Save hs300.db to cache
+      - name: Save hs300.db to cache（只让「补抓后无缺口」的库当谱系根）
         if: always()
         uses: actions/cache@v4
         with:
           path: hs300.db
-          key: hs300-db-${{ github.run_id }}
+          # 谱系根的资格：补抓后体检必须干净。
+          # 为什么：restore-keys 取**最新**的匹配条目，谁最后保存谁就是下一个 run
+          # 的起点。原来的 if: always() 让一次补抓失败的库也成为谱系根 → 缺口被
+          # 固化并逐日传递（2026-10-29 查明 CI 行情谱系断在 2026-10-13）。
+          # 不干净时存到 degraded- 前缀：**必须不以 hs300-db- 开头**，否则
+          # restore-keys 仍然命中它，等于没隔离（留作事后排查用）。
+          key: ${{ steps.check_after.outputs.clean == 'true' && format('hs300-db-{0}', github.run_id) || format('degraded-hs300-db-{0}', github.run_id) }}
