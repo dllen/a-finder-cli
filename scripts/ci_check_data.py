@@ -76,7 +76,11 @@ def check(db_path: str, expect: str, min_codes: int, prices_only: bool,
         reasons: List[str] = []
         if latest_price < expect:
             reasons.append(f"行情最新 {latest_price} < 期望交易日 {expect}")
-        if codes_on_expect and codes_on_expect < min_codes:
+        # 不能用 `if codes_on_expect and codes_on_expect < min_codes`：
+        # **0 是 falsy**，于是「期望日一行行情都没有」这个最严重的情况反而**不报错**
+        # （实测 `--expect 2026-10-26`（该日 0 行）→ rc=0，还打印「✅ 通过」）。
+        # 只在 expect <= latest_price（说明这一天本该有数据了）时校验。
+        if expect <= latest_price and codes_on_expect < min_codes:
             reasons.append(f"{expect} 只有 {codes_on_expect} 只股票有行情（< {min_codes}）")
         if latest_price == expect and codes_on_latest < min_codes:
             reasons.append(f"{latest_price} 只有 {codes_on_latest} 只股票有行情（< {min_codes}）")
