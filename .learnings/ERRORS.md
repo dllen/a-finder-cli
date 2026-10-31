@@ -543,3 +543,63 @@ CI 缓存谱系从 2026-10-14 起断了 13 天 → 这 13 天全部超 7 天窗�
 - See Also: ERR-20261030-001
 
 ---
+
+## [ERR-20261031-002] 冷启动失败反而是绿的 run + pick_history 静默成功
+
+**Logged**: 2026-10-31T10:10:00+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: ci
+
+### Summary
+10-31 排查「巡检 run 变红」时，顺手查出两个**互相掩盖**的缺陷：
+一个让最严重的失败变绿，另一个让「什么都没做」报告成成功。
+
+### Error
+```
+Error: 巡检发现无法自动修复的缺口或修复失败，详见 Step Summary 与通知
+Error: Process completed with exit code 1.
+```
+（这条本身是**正确**的：当时确实有缺口没补上。但顺着它查出了下面两个。）
+
+### Root causes
+
+**缺陷 A：冷启动彻底失败 → run 变绿（最严重）。**
+红灯条件原本是：
+```yaml
+if: always() && ((audit_rc == '1' && recheck_rc != '0') || repair_rc == '1')
+```
+上游的「冷启动同步」失败时 `exit 1`，而后续步骤默认**不跑**（没有 `always()`）
+⇒ `audit_rc` 是**空字符串** ⇒ `'1'` 判假、`repair_rc` 也是空 ⇒
+**两个分支都为假 ⇒ run 是绿的**。
+最该被看见的失败（缓存谱系没重建起来）变成了看不见。
+⇒ 体检/修复/复检三步都加 `always()`；红灯条件补上
+  「audit_rc 为空也算有事」「recheck_rc == '2'（无法判定）」
+  「cold_sync_failed == 'true'」。
+
+**缺陷 B：pick_history 一条都没产出却退出 0。**
+`run_picks` 在「无可用行情数据」（历史不足 221 天 / 指定日期没行情）时走
+early-return，**什么都不写、退出码却是 0**。
+修复脚本把「退出码 == 0」当作「这一步成功了」⇒ 报告「L2 已修复」，
+复检却还是报 L2 缺 ⇒ 「一轮收敛」要跑第二轮才成立，
+而中间那一轮看起来是绿的，日志里全是 ✓。
+⇒ `pick_history.main` 在总产出为 0 时 `raise SystemExit(1)`。
+
+### 踩坑记录
+- 「退出码 0」不等于「做成了」。凡是「可能什么都不产出」的脚本，
+  都要让「没产出」变成非零退出码 —— 否则调用方无从分辨。
+- GitHub Actions 里**没有 `always()` 的步骤，在上游失败时不会跑**，
+  它的 output 就是**空字符串**（不是 '0' 也不是 '1'）。
+  判据写成 `== '1'` 时，空字符串被判成「没发生」而不是「没跑成」——
+  方向正好相反，最危险。
+- `pick_history` 需要**221 天历史**（`build_market_from_db(min_days=221)`），
+  用只有几天的测试库跑它必然 0 条 —— 排查时别把这个当成 bug。
+
+### Metadata
+- Reproducible: yes
+- Related Files: .github/workflows/daily-audit.yml, pick_history.py,
+  scripts/repair_gaps.py
+- Tests: tests/test_daily_audit_workflow.py, tests/test_pick_history.py
+- See Also: ERR-20261030-001, ERR-20261031-001
+
+---

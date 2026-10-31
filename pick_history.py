@@ -1,6 +1,7 @@
 import argparse
 import datetime as dt
 import os
+import sys
 from typing import Callable, Dict, List, Optional
 
 from candidate_rules import ma_strategy_candidates, select_candidates_with_quota
@@ -398,6 +399,22 @@ def main() -> None:
     print(f"买入信号榜单: {result['buy']} 条")
     print(f"信号策略榜单: {result['signal']} 条")
     print(f"多因子榜单: {result['multi']} 条")
+
+    # 一条都没产出 ⇒ 必须**非零退出**（2026-10-31 修）。
+    #
+    # 为什么：修复脚本（repair_gaps）把「命令退出码 == 0」当作「这一步成功了」。
+    # 而「无可用行情数据」（历史不足 221 天 / 指定日期没行情）会走
+    # run_picks 的 early-return，**什么都不写、退出码却是 0** ——
+    # 修复脚本据此报告「L2 已修复」，复检却还是报 L2 缺 ⇒
+    # 「一轮收敛」要跑第二轮才成立，而中间那一轮看起来是绿的。
+    #
+    # 这类「什么都没做但报告成功」是最难排查的一类失败：日志里全是 ✓。
+    # 这里让它老老实实报错，让调用方知道「没修好」。
+    produced = sum(int(result.get(k, 0) or 0) for k in ("ma", "buy", "signal", "multi"))
+    if produced == 0:
+        print("::error::选股榜单一条都没产出（无可用行情数据？）—— "
+              "退出码非 0，让调用方知道这一步没修好", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -163,6 +163,13 @@ jobs:
 
       - name: 三层体检
         id: audit
+        # ⚠️ 这里**必须**带 always()（2026-10-31 修）：
+        # 上游的冷启动同步失败时 exit 1，后续步骤默认**不跑** →
+        # audit_rc 是空字符串 → 下面的红灯条件两个分支都为假 →
+        # **冷启动彻底失败反而是绿的 run**。最该被看见的失败变成了看不见。
+        # 带 always() 后体检照跑：库是空的/半截的，它会如实报出缺口，
+        # 红灯条件也就能如实触发。
+        if: always()
         env:
           TODAY: ${{ steps.trade-day.outputs.today_bj }}
         run: |
@@ -197,7 +204,9 @@ jobs:
 
       - name: 自动修复
         id: repair
-        if: steps.audit.outputs.audit_rc == '1'
+        # 同上：带 always()，上游（冷启动/体检）失败时也要跑完并如实记录
+        # repair_rc，否则红灯条件会漏判（audit_rc 为空 ⇒ 什么都不触发）。
+        if: always() && steps.audit.outputs.audit_rc == '1'
         env:
           TODAY: ${{ steps.trade-day.outputs.today_bj }}
           # 两个窗口都显式传出来，别依赖脚本默认值：
@@ -224,7 +233,9 @@ jobs:
 
       - name: 复检
         id: recheck
-        if: steps.audit.outputs.audit_rc == '1'
+        # 带 always()：修复失败时也要复检 —— 复检是「还缺什么」的唯一依据，
+        # 修复失败就不复检 ⇒ recheck_rc 为空 ⇒ 红灯条件少一个判据。
+        if: always() && steps.audit.outputs.audit_rc == '1'
         env:
           TODAY: ${{ steps.trade-day.outputs.today_bj }}
         run: |
@@ -330,7 +341,19 @@ jobs:
       - name: 有未修复缺口或修复失败则让 run 变红
         # 通知本身总是 rc=0（告警渠道失败不该掩盖结论），这里把「需人工」显式暴露成红灯。
         # 修复失败（repair_rc=1）同样要红：不能只发一条通知就让 run 变绿。
-        if: always() && ((steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0') || steps.repair.outputs.repair_rc == '1')
+        #
+        # 红灯的**充分条件**（任一成立即红）：
+        #   ① 有缺口且**复检没干净**（audit_rc=='1' 且 recheck_rc != '0'）
+        #   ② 修复命令失败（repair_rc=='1'）
+        #   ③ 复检无法判定（recheck_rc=='2'）
+        #   ④ 冷启动同步失败（cold_sync_failed=='true'）—— 它会让整条链断在体检之前
+        #   ⑤ **体检没跑成**（audit_rc 为空）—— 这条是 2026-10-31 补上的：
+        #      上游（冷启动/体检）失败时后续步骤不跑，audit_rc 是空字符串，
+        #      而旧写法 `audit_rc == '1'` 判它为假 ⇒ **冷启动彻底失败反而是绿的 run**。
+        #      最该被看见的失败变成了看不见。现在用「为空也算有事」覆盖它。
+        #
+        # 注意「体检有缺口但复检干净」= 修好了 ⇒ **不红**（这是成功路径）。
+        if: always() && ((steps.audit.outputs.audit_rc == '1' && steps.recheck.outputs.recheck_rc != '0') || steps.repair.outputs.repair_rc == '1' || steps.recheck.outputs.recheck_rc == '2' || steps.lineage.outputs.cold_sync_failed == 'true' || (steps.audit.outputs.audit_rc != '0' && steps.audit.outputs.audit_rc != '1'))
         run: |
           echo "::error::巡检发现无法自动修复的缺口或修复失败，详见 Step Summary 与通知"
           exit 1

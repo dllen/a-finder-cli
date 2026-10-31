@@ -138,6 +138,39 @@ def test_repair_rc_is_actually_used():
         "红灯条件里必须用上 repair_rc（否则它只是个没人看的输出）"
 
 
+def test_red_light_fires_when_audit_never_ran():
+    """体检**没跑成**（audit_rc 为空）时 run 必须变红。
+
+    2026-10-31 实测的隐患：上游冷启动同步失败时 exit 1，后续步骤默认不跑
+    ⇒ audit_rc 是空字符串 ⇒ 旧条件 `audit_rc == '1'` 判它为假 ⇒
+    **冷启动彻底失败反而是绿的 run**。最该被看见的失败变成了看不见。
+    """
+    block = _step_block(_workflow_text(), "有未修复缺口或修复失败则让 run 变红")
+    # 「audit_rc 为空」要能被判成「有事」
+    assert "audit_rc != '0'" in block
+    assert "audit_rc != '1'" in block
+    # 冷启动失败也要单独判（它让整条链断在体检之前）
+    assert "cold_sync_failed" in block
+
+
+def test_red_light_fires_on_recheck_undeterminable():
+    """复检 rc=2（无法判定）必须让 run 变红 —— 绝不能当成「没缺口」。"""
+    block = _step_block(_workflow_text(), "有未修复缺口或修复失败则让 run 变红")
+    assert "recheck_rc == '2'" in block
+
+
+def test_audit_repair_recheck_steps_run_even_if_upstream_failed():
+    """体检/修复/复检三步都要带 always()。
+
+    没有 always()：上游失败 → 后续步骤不跑 → audit_rc/repair_rc 为空
+    → 红灯条件判据缺失（2026-10-31 修的正是这个）。
+    """
+    text = _workflow_text()
+    for name in ("三层体检", "自动修复", "复检"):
+        block = _step_block(text, name)
+        assert "always()" in block, f"{name} 步必须带 always()，否则上游失败时它不跑、判据丢失"
+
+
 def test_trade_day_step_uses_shared_calendar():
     """M-3：交易日判定必须走 market_calendar.trading_days。
 
