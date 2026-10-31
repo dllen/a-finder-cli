@@ -46,15 +46,32 @@ class Gap:
     date: str
     layer: str          # "L1" | "L2" | "L3"
     detail: str
+    # L1 缺口当天实际落库的**只数**；L2/L3 恒为 None。
+    #
+    # 为什么必须有这个字段：修复脚本要靠它把 L1 缺口分成两类 ——
+    #   codes == 0  → 整天一行都没有（那天从没抓过，**没有序列可污染**）
+    #   codes 1..279 → 部分天（有行但不全，补它会与既有序列**混口径**）
+    # 两类的自动修复策略完全不同（见 repair_gaps.MISSING_DAYS_CAP /
+    # MAX_PRICE_DAYS）。以前只能从 detail 字符串里反解「行情只有 N 只」，
+    # 那是拿文案当数据源：改一个字文案就静默坏掉（2026-10-30 修）。
+    codes: Optional[int] = None
 
-    def to_dict(self) -> Dict[str, str]:
-        return {"date": self.date, "layer": self.layer, "detail": self.detail}
+    def to_dict(self) -> Dict:
+        return {"date": self.date, "layer": self.layer, "detail": self.detail,
+                "codes": self.codes}
 
     @classmethod
     def from_dict(cls, payload: Dict) -> "Gap":
-        """只取认识的键：报告里多出字段不算坏，少了必需字段才 KeyError。"""
+        """只取认识的键：报告里多出字段不算坏，少了必需字段才 KeyError。
+
+        `codes` 允许缺失（旧报告没有这个字段）→ None，
+        修复脚本据此按「无法分类」的保守口径处理，不擅自当零行。
+        """
+        codes = payload.get("codes")
+        if codes is not None and (not isinstance(codes, int) or isinstance(codes, bool)):
+            codes = None
         return cls(date=payload["date"], layer=payload["layer"],
-                   detail=payload["detail"])
+                   detail=payload["detail"], codes=codes)
 
 
 @dataclass
@@ -161,7 +178,8 @@ def audit(
         # L1 行情
         codes = prices.get(d, 0)
         if codes < min_codes:
-            report.gaps.append(Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）"))
+            report.gaps.append(
+                Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）", codes=codes))
             # L1 缺 → L2/L3 判定无意义，记 suppressed 备查，不报
             if d not in picks:
                 report.suppressed.append(Gap(d, "L2", "无选股（派生自 L1 缺失）"))

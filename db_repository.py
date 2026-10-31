@@ -17,6 +17,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     so non-idempotent statements (e.g. ALTER TABLE ADD COLUMN) only run once
     across the lifetime of a database, even though _run_migrations is called
     on every open_db().
+
+    **幂等兜底**：`_applied_migrations` 是「这个文件跑过了」的账本，但它
+    **不是**「这个文件的效果存在」的保证 —— 比如有人手工执行过迁移、或从一份
+    更新的缓存恢复了库，账本可能比实际 schema 旧。这种情况下再跑一次
+    `ALTER TABLE ... ADD COLUMN` 会因 "duplicate column name" 报错，而 SQLite
+    又**没有** `ADD COLUMN IF NOT EXISTS`，纯 SQL 无法自己兜住。
+    所以这里把该错误单独识别出来：**当成「已经加过了」**并照常记账，
+    让迁移可以安全重跑，而不是让每次 open_db() 都崩。
     """
     if not MIGRATIONS_DIR.exists():
         return
@@ -44,6 +52,18 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
                 (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
+        except sqlite3.OperationalError as exc:
+            # 列已存在 = 该迁移的效果已在库里（账本落后于实际 schema）。
+            # 视作已应用并记账，让迁移可重跑；其余错误照旧抛出。
+            if "duplicate column name" not in str(exc).lower():
+                conn.rollback()
+                raise
+            conn.rollback()
+            conn.execute(
+                "INSERT OR REPLACE INTO _applied_migrations (filename, applied_at) VALUES (?, ?)",
+                (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
         except sqlite3.Error:
             conn.rollback()
             raise
@@ -63,6 +83,14 @@ class PriceRow:
     pct_change: float
     change: float
     turnover: float
+    # 复权口径（"none" 不复权 / "qfq" 前复权）。
+    # 为什么要有这一列：备源链里东财(fqt=0)/新浪是不复权、腾讯(fqkline qfq)是
+    # 前复权 —— 东财不可用时链会退到腾讯，于是**前复权**价格被写进**不复权**
+    # 的表，除权日留下一段假跳空，污染 MA/动量/回测窗口（2026-10-29/30 事故，
+    # 见 docs/reports/ci-cache-fix-plan.md 的 F2/A5）。
+    # 默认 "none"：绝大多数构造点本来就是不复权口径，且这样其它模块
+    # （akshare_data_provider / market_data）无需改动。
+    adj_basis: str = "none"
 
 
 @dataclass
@@ -426,6 +454,14 @@ def upsert_checkpoint(
 
 
 def insert_prices(conn: sqlite3.Connection, rows: Iterable[PriceRow]) -> int:
+    """写入日行情行（含复权口径 ``adj_basis``）。
+
+    ``adj_basis`` 必须落库：混口径的事故只有被**记下来**才可被检测
+    （见 :func:`get_adj_basis_breakdown`）。列由迁移
+    ``db/migrations/2026_10_30_daily_prices_adj_basis.sql`` 添加；
+    库若是迁移之前的旧结构，写入会因缺列报错 —— 这正是我们想要的：
+    **宁可同步失败，也不要把口径丢掉的行写进库里**。
+    """
     data = [
         (
             r.code,
@@ -440,6 +476,7 @@ def insert_prices(conn: sqlite3.Connection, rows: Iterable[PriceRow]) -> int:
             r.pct_change,
             r.change,
             r.turnover,
+            (r.adj_basis or "none"),
         )
         for r in rows
     ]
@@ -448,12 +485,47 @@ def insert_prices(conn: sqlite3.Connection, rows: Iterable[PriceRow]) -> int:
     conn.executemany(
         """
         INSERT OR REPLACE INTO daily_prices (
-            code, trade_date, open, close, high, low, volume, amount, amplitude, pct_change, change, turnover
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            code, trade_date, open, close, high, low, volume, amount, amplitude, pct_change, change, turnover, adj_basis
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         data,
     )
     return len(data)
+
+
+def get_adj_basis_breakdown(
+    conn: sqlite3.Connection,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Tuple[str, str, int]]:
+    """统计区间内各复权口径出现了多少行 —— 让「混口径」变成**可检测**的。
+
+    用途：2026-10-29/30 那次事故里，前复权价格被静默写进不复权的表，
+    除权日留下假跳空，MA/动量/回测窗口全被污染，而库里**没有任何标记**能证明
+    它发生过。落了 ``adj_basis`` 之后，用这个函数就能一眼看出某天（或某段）
+    是不是混了两种口径。
+
+    :param conn: 已打开的数据库连接
+    :param start_date: 起始交易日（含），``None`` 表示不限
+    :param end_date: 结束交易日（含），``None`` 表示不限
+    :return: ``[(adj_basis, trade_date, 行数), ...]``，按口径、日期升序
+    """
+    sql = (
+        "SELECT COALESCE(adj_basis, 'none') AS b, trade_date, COUNT(*) "
+        "FROM daily_prices "
+    )
+    params: List[str] = []
+    clauses: List[str] = []
+    if start_date:
+        clauses.append("trade_date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("trade_date <= ?")
+        params.append(end_date)
+    if clauses:
+        sql += "WHERE " + " AND ".join(clauses) + " "
+    sql += "GROUP BY b, trade_date ORDER BY b, trade_date"
+    return [(row[0], row[1], row[2]) for row in conn.execute(sql, params).fetchall()]
 
 
 def insert_trade_plan(

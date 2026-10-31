@@ -157,3 +157,64 @@ def test_notify_step_marks_non_trading_day():
     block = _step_block(_workflow_text(), "通知")
     assert "--non-trading-day" in block
     assert "is_trade_day" in block
+
+
+# ---------------------------------------------------------------- 陈旧谱系自愈
+
+
+def test_trade_day_step_runs_before_lineage_check():
+    """交易日判定必须在谱系检测**之前**。
+
+    谱系检测与冷启动同步都要用 `steps.trade-day.outputs.today_bj`；
+    顺序反了 → 那个变量是空 → `--expect ""` → 判定必然失败 → 冷启动永远不触发。
+    """
+    names = _step_names(_workflow_text())
+    assert "判定今天日期与是否交易日" in names
+    assert "检测陈旧谱系（落后过多则弃库冷启动）" in names
+    assert names.index("判定今天日期与是否交易日") < \
+        names.index("检测陈旧谱系（落后过多则弃库冷启动）")
+
+
+def test_lineage_check_uses_db_freshness_orphan_signal():
+    """谱系检测必须用 db_freshness 的 rc=3（陈旧谱系）判据，不要手搓口径。"""
+    block = _step_block(_workflow_text(), "检测陈旧谱系（落后过多则弃库冷启动）")
+    assert "db_freshness.py" in block
+    assert '"$rc" -eq 3' in block
+    # 命中孤儿判据 → 删库 + 标记冷启动
+    assert "rm -f hs300.db" in block
+    assert "cold_start=true" in block
+
+
+def test_cold_start_sync_runs_before_audit():
+    """冷启动同步必须在体检**之前**。
+
+    体检的基准是「应有交易日」，谱系缺了 400 天就会报出 400 天的 L1 缺口 ——
+    逐日补抓要几百次请求，必然被限流打断。一次大窗口同步快得多。
+    """
+    names = _step_names(_workflow_text())
+    assert "冷启动同步（陈旧谱系重建，400 天）" in names
+    assert names.index("冷启动同步（陈旧谱系重建，400 天）") < \
+        names.index("三层体检")
+
+
+def test_cold_start_sync_retries_and_fails_loudly():
+    """冷启动同步要重试（数据源 15:30 后才出数），且 3 轮失败必须让步骤失败。
+
+    静默失败 = 冷启动没发生却当成发生过 → 后面拿一个半截库当好库用。
+    """
+    block = _step_block(_workflow_text(), "冷启动同步（陈旧谱系重建，400 天）")
+    assert "ci_check_data.py" in block
+    assert "sleep 120" in block
+    assert "exit 1" in block
+    assert "::error::" in block
+
+
+def test_repair_step_passes_both_windows():
+    """修复步要把两个窗口都显式传出去（零行宽窗 / 部分窄窗）。
+
+    不传就用脚本默认值 —— 一旦默认值与 workflow 的期望漂移，
+    零行缺口会退回窄窗，「永远修不上的缺口」复发且没人知道。
+    """
+    block = _step_block(_workflow_text(), "自动修复")
+    assert "--max-price-days" in block
+    assert "--missing-days-cap" in block

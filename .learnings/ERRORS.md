@@ -392,3 +392,92 @@ CI 行情谱系就此断在 2026-10-13。
   tests/test_needs_fallback.py
 
 ---
+
+## [ERR-20261030-001] daily-audit L1 缺口永远修不上（2026-10-30 巡检）
+
+**Logged**: 2026-10-30T21:00:00+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: ci
+
+### Summary
+巡检报「无法自动修复的缺口」：L1 2026-10-14~2026-10-16、2026-10-19~2026-10-23、
+2026-10-26~2026-10-30。根因是**两个**独立缺陷叠加，不是单一 bug。
+
+### Error
+```
+🚨 2026-10-30 巡检发现无法自动修复的缺口
+剩余：L1 2026-10-14~2026-10-16（3 天）、2026-10-19~2026-10-23（5 天）、2026-10-26~2026-10-30（5 天）
+原因：行情缺口超出 7 天自动修复窗（复权口径风险），只报警
+建议：手动跑 bash a-finder.sh fallback 或检查数据源
+```
+
+### Root causes（两个，缺一不可）
+
+**缺陷 1：L1 修复窗口只有一个，且用日历日。**
+`repair_gaps.MAX_PRICE_DAYS = 7` 对**所有** L1 缺口一视同仁。
+CI 缓存谱系从 2026-10-14 起断了 13 天 → 这 13 天全部超 7 天窗口 →
+每晚重复报警、永远不修、run 永远红。窗口还是**日历日**：国庆 8 个日历日
+只有 5 个交易日，长假后必然错判（该修的判成超窗，不该修的判成在窗内）。
+
+**缺陷 2：在窗内的那 8 天（10-23~10-30）尝试过，但补抓失败了。**
+10-29 的数据**只有东财有**（腾讯 qfqday / 新浪都只到 10-28，实测）。
+东财不可达时备源链落到腾讯 **qfq 前复权**，而东财/新浪是 **fqt=0 不复权** ——
+`daily_prices` 没有复权口径列，备源补进来的行会**静默混口径**。
+
+⇒ 只放宽窗口（缺陷 1）**修不好** 10-23~10-30：补抓照样会失败。
+
+**缺陷 3（次要，但让人查错地方）：通知的建议指向了错误的产物。**
+`bash a-finder.sh fallback` 修的是**本地库**，而坏掉的是 **CI 缓存库**
+（Actions Cache 里的 hs300.db）。本地库当时是健康的（300/300 只到 10-29），
+照着建议跑本地兜底毫无作用 —— 真正坏的那个产物一直坏着。
+
+### Fix
+
+1. **L1 分两类，两个窗口**（`repair_gaps.py`）：
+   - 零行缺口（当天 0 只 = 那天从没抓过，**没有序列可污染**）→ 宽窗
+     `MISSING_DAYS_CAP = 60` 个交易日，可自动补抓。
+   - 部分缺口（当天 1~279 只 = 抓了但没抓全，补它会与既有序列**混复权口径**）
+     → 窄窗 `MAX_PRICE_DAYS = 7` 个交易日，超期只报警。
+   - 分类依据是新增的 `Gap.codes` 字段（体检报告落盘当天实际只数）。
+     以前只能从 detail 字符串反解「行情只有 N 只」—— 那是拿文案当数据源。
+   - 报告里没有 `codes`（旧报告）→ 按**保守**口径当部分缺口处理，宁可少修。
+2. **窗口按交易日算**（`_trading_days_back`）：日历日窗口在长假后必然错判。
+   日历不可用 → 一律当超窗（只报警），绝不退化成日历日。
+3. **复权口径可检测**：`daily_prices` 加 `adj_basis` 列（migration），
+   备源链按口径优先级选（不复权优先），混口径事后可查。
+4. **通知说人话**：原因按**类别**归组（不再把「尝试过但失败」和
+   「压根没试」混成一句）；建议**点名正确的产物**（CI 缓存库 vs 本地库）。
+   修复失败时记 `failed_command`，通知里能看出是「拉行情」那步挂了。
+5. **陈旧谱系自愈**：`daily-audit.yml` 加谱系检测（`db_freshness` rc=3）
+   + 冷启动同步（400 天），命中就弃库重建，而不是在烂谱系上打补丁。
+
+### 踩坑记录
+- **口径只放进返回值 ≠ 落库带上了口径**（复核时发现并修掉）：第一版实现让
+  `fetch_daily_kline_smart` 返回 `(rows, name, source, basis)`，但**没有把 basis
+  盖到每一行上**。`PriceRow.adj_basis` 的默认值是 `"none"` ⇒ 腾讯（前复权）抓回来
+  的行落库时带着默认的 `"none"` ⇒ **比没有这一列更坏**：库里的标记在说「没混口径」，
+  实际已经混了。这比「没有列」更隐蔽 —— 检测看起来是绿的。
+  正确做法：在 `fetch_daily_kline_smart` 里对返回的每一行 `row.adj_basis = basis`，
+  并加测试守住（`tests/test_price_adj_basis.py::TestBasisStampedOnRows`）。
+  ⇒ **凡是「新增一列用来标记某种状态」，都要问一句：谁在写这一列？**
+- 旧的 `test_price_window_follows_report_today_not_wall_clock` 用 **2026-10-18**
+  做断言 —— 那是**周日**，从来不会出现在体检报告里。改成交易日口径后
+  它的边界变了，才暴露出来。**测试里的日期要用真实交易日。**
+- macOS bash 3.2：`[ "$x" = "3" ] && echo ...` 放在 if 外面，条件不成立时
+  整个 step 的退出码变成 1 → 步骤失败。要写成 `if ...; then ...; fi`。
+- workflow 里 `steps.trade-day.outputs.today_bj` 必须在**引用它的步骤之前**产出。
+  把谱系检测插到 trade-day 之前 → 那个变量是空 → 冷启动永远不触发。
+
+### Metadata
+- Reproducible: yes
+- Related Files: scripts/repair_gaps.py, scripts/audit_coverage.py,
+  scripts/notify_audit.py, scripts/db_freshness.py, data_providers.py,
+  db_repository.py, db/migrations/2026_10_30_daily_prices_adj_basis.sql,
+  .github/workflows/daily-audit.yml
+- Tests: tests/test_repair_gaps.py, tests/test_audit_coverage.py,
+  tests/test_notify_audit.py, tests/test_daily_audit_workflow.py,
+  tests/test_price_adj_basis.py
+- See Also: ERR-20261029-001（两谱系分叉）
+
+---

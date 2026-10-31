@@ -37,6 +37,12 @@
 ok 只等于修复命令退出码为 0，不等于数据真的补齐（sync 写 0 行同样 rc=0）；
 复检报告里的 gaps 按定义就是「现在仍缺」，任何减法都会造出「🛠 已修复」的假消息。
 
+「建议：」块必须点名**正确的产物**：巡检体检的是 CI 缓存库（Actions Cache 里的
+hs300.db），而 `bash a-finder.sh fallback` 修的是**本地库** —— 本地库与 CI 缓存库
+是两条独立漂移的谱系（2026-10-29/30 事故，见 CLAUDE.md「两谱系分叉」）。
+笼统地劝人跑 fallback 会把人指向已经健康的本地库，真正坏掉的缓存条目原样留着。
+所以 L1（行情）与 L2/L3（选股/计划）给不同的建议，见 `_advice_lines`。
+
 退出码：0 = 通知已产出（含「需人工」，那靠 🚨 措辞 + ::error:: 注释暴露，
         是否让 CI 变红由体检/修复步骤的退出码决定）；
         2 = 没有体检输入、体检报告不可用（含原报告 --audit-pre）、--today 不合法。
@@ -174,6 +180,103 @@ def _relevant_repairs(fixed: Sequence[Dict], repaired: Sequence[Dict]) -> List[D
     return relevant
 
 
+def _reason_lines(remaining: Sequence[Dict]) -> List[str]:
+    """把剩余缺口的原因**按类别**归组，每类一行。
+
+    为什么按类归组而不是逐条铺开（2026-10-30 修，见 ISSUE D）：
+      旧实现把每个缺口的 reason 去重后用「；」拼成一行。同一类原因
+      （例：7 个日期都因「超窗只报警」没修）会拼成一条长串，把**另一类**
+      原因淹掉 —— 2026-10-30 实测的通知只说了「超窗只报警」，
+      掩盖了真正要紧的那条：「10-23~10-30 在窗内、尝试过、但补抓失败」
+      （东财不可达）。两类原因的处置动作完全不同，必须都看得见。
+
+    每行形如：`原因（L1）：<原因文案>`。**不重复日期区间** ——
+    「剩余：L1 2026-10-14~2026-10-22」上面已经写过一次，再写一遍就是噪声。
+    同一类里若原因文案不同（例：不同天数、不同只数），取第一条 ——
+    它们是同一类，日期区间已经把差异说清楚了。
+    """
+    if not remaining:
+        return []
+    by_class: Dict[str, List[Dict]] = {}
+    for item in remaining:
+        klass = item.get("reason_class")
+        key = klass if isinstance(klass, str) and klass else "no_reason"
+        by_class.setdefault(key, []).append(item)
+    if not by_class:
+        return []
+
+    lines: List[str] = []
+    # 排序：先说「尝试过但失败」（最紧急、要立刻处理），再说只报警的。
+    order = ["repair_failed", "missing_lineage", "partial_basis_risk",
+             "partial_unknown", "no_reason"]
+
+    def _rank(k: str) -> int:
+        return order.index(k) if k in order else len(order)
+
+    for klass in sorted(by_class, key=_rank):
+        items = by_class[klass]
+        dates = [str(i.get("date") or "") for i in items]
+        layers = sorted({str(i.get("layer") or "") for i in items})
+        reason = ""
+        for item in items:
+            reason = _reason(item)
+            if reason:
+                break
+        if not reason:
+            # 没有修复信息时回退 gap 的 detail，
+            # 别让正文只剩「L1 2026-10-10」这种内部代码
+            for item in items:
+                detail = item.get("detail")
+                if detail:
+                    reason = f"{item.get('layer')} {item.get('date')}：{detail}"
+                    break
+        if not reason:
+            continue
+        # 不重复日期区间：「剩余：L1 2026-10-14~2026-10-22」上面已经写过一次，
+        # 这里再写一遍就成了噪声（测试 test_body_lists_layers_not_flat_noise
+        # 就是守这个的）。只标出**层**，让读者知道这条原因说的是哪一层。
+        scope = "/".join(layers) if layers else ""
+        lines.append(f"原因{f'（{scope}）' if scope else ''}：{reason}")
+    return lines
+
+
+def _advice_lines(remaining: Sequence[Dict]) -> List[str]:
+    """按剩余缺口的层给出「建议：」块。
+
+    为什么必须点名正确的产物（2026-10-29/30 事故）：
+    本地库与 CI 缓存库（Actions Cache 里的 hs300.db）是**两条独立漂移的谱系**
+    （见 CLAUDE.md「两谱系分叉」）。通知里那句笼统的「手动跑 bash a-finder.sh
+    fallback」指向的是**本地库** —— 本地库健康时跑它没有任何作用，
+    而真正坏掉的那个产物（缓存条目）仍然坏着。人和自动化都会去修错的东西。
+
+    所以按层分开给：
+      - L1 行情：需要外部数据源，只能重建 **CI 缓存库**（删 Actions 缓存条目让
+        下次 run 冷启动，或手动 dispatch daily-audit / deploy-site）。
+      - L2 选股 / L3 计划：纯重算，不需要外部数据源，直接在 CI 缓存库上跑
+        `scripts/repair_gaps.py --db hs300.db` 即可。
+      - 恒定一行：数据源是否被限流/不可达 —— 东财是主源，腾讯/新浪是降级源且
+        会落后于东财（10-29 实测：只有东财有 10-29 的数据）。
+    """
+    layers = {str(item.get("layer") or "") for item in remaining}
+    lines = ["建议："]
+    if "L1" in layers:
+        lines.append(
+            "  - 行情缺口（L1）→ 重建 **CI 缓存库**（GitHub Actions Cache 里的 "
+            "hs300.db）：删掉该 Actions 缓存条目让下次 run 冷启动，"
+            "或手动 dispatch daily-audit / deploy-site")
+        lines.append(
+            "    （`bash a-finder.sh fallback` 修的是**本地库**，本地库正常时跑它没用）")
+    if layers & {"L2", "L3"}:
+        lines.append(
+            "  - 选股/计划缺口（L2/L3）→ 在 CI 缓存库上跑 "
+            "`python3 scripts/repair_gaps.py --db hs300.db`"
+            "（纯重算，不需要外部数据源）")
+    lines.append(
+        "  - 数据源不可达/被限流 → 检查东财是否限流（主源），"
+        "腾讯/新浪是降级源且可能落后于东财")
+    return lines
+
+
 def format_message(
     *,
     status: str,
@@ -195,11 +298,17 @@ def format_message(
     non_trading_day 只影响正文首行的标注（no_db 的告警路径不涉及）。
     """
     if no_db:
+        # no_db 的坏产物是**CI 缓存库**（Actions Cache 里的 hs300.db），不是本地库。
+        # 2026-10-29/30 查明本地库与 CI 缓存库是两条独立漂移的谱系：
+        # 缓存条目被淘汰/过期时本地库照样健康，跑 `a-finder.sh fallback` 修的是
+        # 本地库，对缓存里缺失的 hs300.db 毫无作用 —— 会把人指向错误的产物。
+        # 正确的动作是让 CI 冷启动重建缓存（workflow_dispatch 一次 deploy-site）。
         return (
             "🚨 需人工：巡检无法执行（没有数据库）",
             f"🚨 {today} 巡检无法执行：缓存里没有数据库（hs300.db）\n"
             f"常见原因：早班 deploy-site 从未成功跑过，或 Actions 缓存已过期\n"
-            f"建议：手动跑 bash a-finder.sh fallback，或触发一次 deploy-site",
+            f"建议：触发一次 deploy-site（workflow_dispatch）让 CI 冷启动重建缓存库；\n"
+            f"      `bash a-finder.sh fallback` 只修**本地库**，修不了 Actions 缓存里的 hs300.db",
         )
 
     side_line = _side_effect_line(side_effects or {})
@@ -244,24 +353,17 @@ def format_message(
         # 只有原/复检两份 gaps 的差集能证明「已修复」；ok outcome 只代表命令
         # 退出码为 0，在有剩余缺口时拿它写「已修复」会自相矛盾。
         lines.append(f"已修复：{_summarize(fixed)}")
-    # skipped 项自带明确原因（例如行情超窗不自动修），直接透出比泛泛而谈有用；
-    # 没有修复信息时回退 gap 的 detail，别让正文只剩「L1 2026-10-10」这种内部代码。
-    notes: List[str] = []
-    for item in remaining:
-        reason = _reason(item)
-        if reason:
-            text = reason
-        elif item.get("detail"):
-            text = f"{item.get('layer')} {item.get('date')}：{item['detail']}"
-        else:
-            continue
-        if text not in notes:
-            notes.append(text)
-    if notes:
-        lines.append(f"原因：{'；'.join(notes)}")
+    # 「原因」按**类别**归组，不逐条铺开（2026-10-30 修，见 ISSUE D）。
+    #
+    # 为什么必须分组：旧实现把每个缺口的 reason 去重后用「；」拼成一行。
+    # 同一类原因（例：7 个日期都因超窗没修）会拼成一条长串，淹掉**另一类**
+    # 原因 —— 2026-10-30 实测：真正的信息是「10-23~10-30 尝试过但失败」，
+    # 而通知里只看到「超窗只报警」，把在窗内、真正失败的那几天掩盖了。
+    # 按类归组后，每类只说一次，并带上该类覆盖的日期区间。
+    lines.extend(_reason_lines(remaining))
     if side_line:
         lines.append(side_line)
-    lines.append("建议：手动跑 bash a-finder.sh fallback 或检查数据源")
+    lines.extend(_advice_lines(remaining))
     return title, "\n".join(lines)
 
 
@@ -437,8 +539,17 @@ def _remaining_gaps(
 
     也绝不凭 outcome 的 dates 造新缺口：修复动作是「一个 action 覆盖多天」，
     第一条命令失败就 break，failed outcome 的 dates 里可能含前半段已修好的日期。
+
+    每个缺口会被标上 `reason_class`，用于把「原因」按类别归组（见 ISSUE D）：
+      - `missing_lineage`     整天无行情且超宽窗 → 谱系断了，要重建缓存
+      - `partial_basis_risk`  部分行情超窄窗 → 混复权口径风险，只报警
+      - `partial_unknown`     信息不全 → 保守按部分处理
+      - `repair_failed`       尝试过但修复命令失败 → **不是**「超窗不修」，
+                              这两者混成一句会让用户去查错的方向
+      - `no_reason`           没有任何解释（兜底）
     """
     reasons: Dict[tuple, str] = {}
+    classes: Dict[tuple, str] = {}
     for o in outcomes:
         if _is_ok(o):
             continue
@@ -446,13 +557,23 @@ def _remaining_gaps(
         if not isinstance(layer, str):
             continue
         reason = _reason(o) or "修复命令失败"
+        # 补抓失败的具体命令写进理由：用户要能看出是「拉行情」那步挂了，
+        # 而不是笼统的「修复失败」（2026-10-30：10-23~10-30 尝试过但失败，
+        # 原因与「超窗没尝试」完全不同）。
+        failed = o.get("failed_command")
+        if isinstance(failed, str) and failed.strip():
+            reason = f"{reason}（失败命令：{failed.strip()}）"
         for d in _outcome_dates(o):
             reasons[(layer, d)] = reason
+            classes[(layer, d)] = "repair_failed"
     # skipped 项自带明确原因（例如行情超窗不自动修），优先于泛泛的失败原因
     for s in skipped:
         reason = _reason(s)
         if reason:
-            reasons[(s.get("layer"), s.get("date"))] = reason
+            key = (s.get("layer"), s.get("date"))
+            reasons[key] = reason
+            klass = s.get("reason_class")
+            classes[key] = klass if isinstance(klass, str) and klass else "no_reason"
 
     remaining: List[Dict] = []
     seen = set()
@@ -462,8 +583,12 @@ def _remaining_gaps(
             continue
         seen.add(key)
         item = dict(g)
+        # 只在**有原因**时才加 reason_class：没有原因的缺口不该被归到任何一类
+        # （「no_reason」不是一类，是「不知道」）。没有它，下面按类分组的
+        # 逻辑自然跳过这条，正文回退用 detail 兜底。
         if key in reasons:
             item["reason"] = reasons[key]
+            item["reason_class"] = classes.get(key, "no_reason")
         remaining.append(item)
     return remaining
 

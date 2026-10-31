@@ -8,6 +8,7 @@
   - 复检语义：剩余只认报告 gaps，ok outcome 不能抹掉复检仍缺的日期；
     原/复检双报告（--audit-pre）的差集才叫「已修复」
   - 坏类型（reason 是数字、ok 是字符串）只降级，不能炸掉通知
+  - 「建议：」块必须点名正确的产物：本地库 vs CI 缓存库（2026-10-29/30 事故）
 """
 
 import http.server
@@ -1181,3 +1182,219 @@ def test_non_trading_day_annotation_covers_all_statuses(status):
         status=status, today="2026-10-27", gaps=[gap],
         repaired=[], remaining=[gap], non_trading_day=True)
     assert "非交易日，仅巡检历史" in body
+
+
+# ---------------------------------------------------------------- 建议点名正确产物
+#
+# 2026-10-29/30 事故：通知里那句「手动跑 bash a-finder.sh fallback」指向的是
+# **本地库**，而体检报出来的缺口住在 **CI 缓存库**（Actions Cache 里的 hs300.db）。
+# 本地库与 CI 缓存库是两条独立漂移的谱系，本地库健康时跑 fallback 什么也没修，
+# 真正坏掉的缓存条目原样留着 —— 人被指向了错误的产物。
+
+
+_L1_GAP = {"date": "2026-10-26", "layer": "L1", "detail": "行情只有 0 只（阈值 280）"}
+_L2_GAP = {"date": "2026-10-27", "layer": "L2", "detail": "无选股"}
+_L3_GAP = {"date": "2026-10-28", "layer": "L3", "detail": "计划缺档位"}
+
+
+def test_manual_message_suggests_ci_cache_not_local_fallback_for_price_gaps():
+    """L1 缺口 → 建议必须点名 CI 缓存库，并声明 fallback 只修本地库。
+
+    修错产物比不修更糟：本地库健康时跑 fallback 让人以为处理过了。
+    """
+    title, body = nf.format_message(
+        status="manual", today="2026-10-29",
+        gaps=[dict(_L1_GAP)], repaired=[], remaining=[dict(_L1_GAP)])
+
+    assert "🚨" in title
+    # 点名正确的产物：CI 缓存库 + 具体动作
+    assert "CI 缓存库" in body
+    assert "Actions Cache" in body
+    assert "hs300.db" in body
+    assert "daily-audit" in body
+    # fallback 出现了，但必须是被「只修本地库」否定的
+    assert "fallback" in body
+    assert "本地库" in body
+    # 不能再出现旧那句笼统的劝告
+    assert "建议：手动跑 bash a-finder.sh fallback 或检查数据源" not in body
+
+
+def test_manual_message_suggests_repair_gaps_for_l2_l3():
+    """L2/L3 是纯重算 → 建议在 CI 缓存库上跑 repair_gaps.py。
+
+    同时不许声称要删缓存：L2/L3 不需要外部数据源，重算就能补上。
+    """
+    title, body = nf.format_message(
+        status="manual", today="2026-10-29",
+        gaps=[dict(_L2_GAP), dict(_L3_GAP)], repaired=[],
+        remaining=[dict(_L2_GAP), dict(_L3_GAP)])
+
+    assert "🚨" in title
+    assert "repair_gaps.py" in body
+    assert "hs300.db" in body
+    # 不该要求删 Actions 缓存（L2/L3 补一下就好）
+    assert "删掉该 Actions 缓存条目" not in body
+    assert "行情缺口（L1）" not in body
+
+
+def test_manual_message_with_both_layers_contains_both_advices():
+    """L1 与 L2/L3 同时存在 → 两段建议都要在（不能只留一段把另一半盖掉）。"""
+    remaining = [dict(_L1_GAP), dict(_L2_GAP), dict(_L3_GAP)]
+    title, body = nf.format_message(
+        status="manual", today="2026-10-29",
+        gaps=remaining, repaired=[], remaining=remaining)
+
+    assert "🚨" in title
+    assert "CI 缓存库" in body          # L1 段
+    assert "repair_gaps.py" in body      # L2/L3 段
+    assert "本地库" in body              # fallback 被否定
+    # 数据源检查是恒定的一行，两种情况都得有
+    assert "东财" in body
+    assert "腾讯" in body
+
+
+def test_manual_message_always_mentions_data_source_health():
+    """不管剩哪种缺口，都要提醒查数据源是否被限流/不可达。
+
+    10-29 实测：只有东财有当天数据，腾讯/新浪降级源只到 10-28 —— 东财被限流
+    时备源链会静默少一天，不提醒就查不到根因。
+    """
+    for gap in (_L1_GAP, _L2_GAP, _L3_GAP):
+        title, body = nf.format_message(
+            status="manual", today="2026-10-29",
+            gaps=[dict(gap)], repaired=[], remaining=[dict(gap)])
+        assert "限流" in body, gap
+        assert "东财" in body, gap
+        assert "腾讯" in body, gap
+
+
+def test_no_db_message_names_ci_cache_and_disclaims_local_fallback():
+    """no_db 的坏产物是 CI 缓存库 → 建议 workflow_dispatch 冷启动。
+
+    `a-finder.sh fallback` 必须出现但被否定（它只修本地库）。
+    """
+    title, body = nf.format_message(
+        status="manual", today="2026-10-29", gaps=[], repaired=[],
+        remaining=[], no_db=True)
+
+    assert "🚨" in title
+    assert "deploy-site" in body
+    assert "workflow_dispatch" in body
+    assert "Actions" in body
+    assert "fallback" in body
+    assert "本地库" in body
+    assert "修不了" in body
+    # 旧措辞必须消失
+    assert "建议：手动跑 bash a-finder.sh fallback，或触发一次 deploy-site" not in body
+
+
+def test_pass_heartbeat_has_no_advice_block():
+    """心跳路径不能长出「建议：」块（MAX_BODY 软上限 + 心跳要短）。"""
+    title, body = nf.format_message(
+        status="pass", today="2026-10-27", gaps=[], repaired=[], remaining=[])
+    assert "建议：" not in body
+    assert "CI 缓存库" not in body
+    assert len(body) < nf.MAX_BODY
+
+
+def test_repaired_message_has_no_advice_block():
+    """🛠 已修复路径同样不该带「建议：」块 —— 缺口已经没了，没什么可建议的。"""
+    gap = {"date": "2026-10-26", "layer": "L2", "detail": "无选股"}
+    title, body = nf.format_message(
+        status="repaired", today="2026-10-27", gaps=[gap],
+        repaired=[{"layer": "L2", "dates": ["2026-10-26"], "reason": "补算 1 天的选股"}],
+        remaining=[], fixed=[gap])
+    assert "建议：" not in body
+    assert "CI 缓存库" not in body
+
+
+def test_manual_message_via_cli_names_ci_cache(tmp_path, monkeypatch):
+    """端到端：主流程产出的 🚨 通知也要点名 CI 缓存库（不只是 format_message）。"""
+    audit = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-29",
+        "gaps": [dict(_L1_GAP)],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "CI 缓存库" in sent["body"]
+    assert "repair_gaps.py" not in sent["body"]     # 只有 L1，不该提 L2/L3 的重算
+    assert "本地库" in sent["body"]
+
+
+def test_manual_message_via_cli_l2_only_suggests_repair_gaps(tmp_path, monkeypatch):
+    """端到端：只有 L2 缺口时给 repair_gaps.py 的建议，不要求删缓存。"""
+    audit = _write_json(tmp_path, "audit.json", {
+        "today": "2026-10-29",
+        "gaps": [dict(_L2_GAP)],
+    })
+    sent = _capture_post(monkeypatch)
+
+    assert nf.main(["--audit", str(audit), "--topic", "t"]) == 0
+    assert sent["title"].startswith("🚨")
+    assert "repair_gaps.py" in sent["body"]
+    assert "删掉该 Actions 缓存条目" not in sent["body"]
+
+
+# ---------------------------------------------------------------- 原因分类
+
+
+def test_repair_failed_and_skipped_are_reported_separately():
+    """「尝试过但失败」与「压根没尝试」必须**分开**说，不能混成一句。
+
+    2026-10-30 的实际事故：旧实现把所有 reason 去重后用「；」拼成一行，
+    同一类原因（多个日期都「超窗只报警」）拼成一条长串，把**另一类**
+    原因（窗内尝试过但补抓失败）整个淹掉 —— 用户看到的理由指向错的日期。
+
+    这里两类都在时，两条原因都必须出现，且各自对应自己的缺口。
+    """
+    remaining = [
+        {"date": "2026-10-26", "layer": "L1", "detail": "行情只有 0 只",
+         "reason": "补抓失败：FetchError", "reason_class": "repair_failed"},
+        {"date": "2026-06-01", "layer": "L1", "detail": "行情只有 0 只",
+         "reason": "超出 60 个交易日自动修复窗，只报警",
+         "reason_class": "missing_lineage"},
+    ]
+    lines = nf._reason_lines(remaining)
+    assert len(lines) == 2, lines
+    assert any("补抓失败" in ln for ln in lines)
+    assert any("自动修复窗" in ln for ln in lines)
+
+
+def test_repair_failed_reason_is_listed_first():
+    """最紧急的那类（尝试过但失败）排在前面 —— 它需要立刻处理。"""
+    remaining = [
+        {"date": "2026-06-01", "layer": "L1", "detail": "x",
+         "reason": "超窗只报警", "reason_class": "missing_lineage"},
+        {"date": "2026-10-26", "layer": "L1", "detail": "x",
+         "reason": "补抓失败", "reason_class": "repair_failed"},
+    ]
+    lines = nf._reason_lines(remaining)
+    assert "补抓失败" in lines[0]
+    assert "超窗只报警" in lines[1]
+
+
+def test_failed_command_is_included_in_reason():
+    """修复失败时原因里要能看到**是哪条命令挂了**。
+
+    没有它，用户只知道「修复失败」，分不清是数据源不可达还是脚本本身坏了。
+    """
+    gaps = [{"date": "2026-10-26", "layer": "L1", "detail": "行情只有 0 只"}]
+    outcomes = [{"layer": "L1", "dates": ["2026-10-26"], "ok": False,
+                 "reason": "补抓失败",
+                 "failed_command": "python stock_cli.py sync-hs300-range"}]
+    remaining = nf._remaining_gaps(gaps, outcomes, [])
+    assert remaining[0]["reason_class"] == "repair_failed"
+    assert "sync-hs300-range" in remaining[0]["reason"]
+
+
+def test_reason_class_is_not_set_when_no_reason_exists():
+    """没有原因的缺口不该被归到任何一类（没有它就不是「不知道」而是真不知道）。"""
+    gaps = [{"date": "2026-10-26", "layer": "L2", "detail": "无选股"}]
+    remaining = nf._remaining_gaps(gaps, [], [])
+    assert "reason_class" not in remaining[0]
+
+
+def test_reason_lines_empty_when_no_remaining():
+    assert nf._reason_lines([]) == []

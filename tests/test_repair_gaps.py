@@ -32,10 +32,23 @@ def _has(cmd, needle):
 
 
 def _report(gaps, suppressed=None):
+    """构造一份体检报告。
+
+    `gaps` 里每项可以是 2 元组 (date, layer) / 3 元组 (date, layer, detail) /
+    4 元组 (date, layer, detail, codes) —— codes 是 L1 当天的实际只数，
+    修复脚本靠它区分「零行缺口」（可放宽窗口）与「部分缺口」（窄窗）。
+    """
+    def _mk(g):
+        if len(g) == 4:
+            return audit_mod.Gap(g[0], g[1], g[2], codes=g[3])
+        if len(g) == 3:
+            return audit_mod.Gap(g[0], g[1], g[2])
+        return audit_mod.Gap(g[0], g[1], "")
+
     return audit_mod.Report(
         today=TODAY.isoformat(), window_days=30,
         expected_dates=["2026-10-23", "2026-10-26", "2026-10-27"],
-        gaps=[audit_mod.Gap(*g) for g in gaps],
+        gaps=[_mk(g) for g in gaps],
         suppressed=[audit_mod.Gap(*g) for g in (suppressed or [])],
     )
 
@@ -80,8 +93,12 @@ def test_recent_l1_gap_plans_price_sync():
 
 
 def test_old_l1_gap_not_planned():
-    """超过 7 天的行情缺口不自动修（复权口径一致性风险）。"""
-    report = _report([("2026-10-10", "L1", "行情只有 0 只")])
+    """超出窗口的**部分**缺口不自动修（复权口径一致性风险）。
+
+    零行缺口（整天没抓）现在走宽窗（MISSING_DAYS_CAP），不在本用例范围内 ——
+    见 test_zero_row_l1_gap_uses_wide_window。
+    """
+    report = _report([("2026-10-10", "L1", "行情只有 150 只", 150)])
     assert repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY) == []
     # 但绝不静默：这些缺口要能说清为什么没修
     skipped = repair_mod.skipped_repairs(report, today=TODAY)
@@ -89,17 +106,98 @@ def test_old_l1_gap_not_planned():
 
 
 def test_price_window_follows_report_today_not_wall_clock():
-    """7 天窗口以报告的 today（体检日）为基准，不是执行时刻。"""
-    report = _report([("2026-10-18", "L1", "行情只有 0 只")])
-    # 报告 today = 2026-10-27 → 10-18 已超出窗口
+    """窗口以报告的 today（体检日）为基准，不是执行时刻。
+
+    用**部分**缺口（codes 已知且非 0）验证窄窗：它的窗口是 7 个**交易日**，
+    「相对隔了几天」在这个口径下才有确定答案。
+
+    缺口日选 2026-10-14（周五，真实交易日）：窄窗按交易日算，
+    today=10-27 时 horizon=10-16（10-14 超窗），today=10-20 时
+    horizon=10-09（10-14 在窗内）。旧实现用日历日 + 一个非交易日（10-18 周日）
+    做断言，在交易日口径下没有意义。
+    """
+    gap = "2026-10-14"
+    report = _report([(gap, "L1", "行情只有 150 只", 150)])
+    # 报告 today = 2026-10-27 → 10-14 已超出窄窗（7 个交易日）
     assert repair_mod.plan_repairs(report, db_path="hs300.db") == []
-    # 同一份缺口，体检日是 10-20 → 相对只隔 2 天，应当修
+    # 同一份缺口，体检日是 10-20 → 相对只隔 4 个交易日，应当修
     report.today = "2026-10-20"
     actions = repair_mod.plan_repairs(report, db_path="hs300.db")
     assert [a.layer for a in actions] == ["L1"]
-    assert actions[0].dates == ("2026-10-18",)
+    assert actions[0].dates == (gap,)
     # 显式 --today 优先于报告
     assert repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY) == []
+
+
+def test_zero_row_l1_gap_uses_wide_window():
+    """零行缺口（整天没抓）走**宽窗**（MISSING_DAYS_CAP=60 个交易日）。
+
+    为什么这是 2026-10-30 的核心修复：CI 缓存谱系断了 13 天（10-14 起缺），
+    旧实现对**所有** L1 缺口统一用 7 天日历窗口 → 这 13 天永远超窗 →
+    每晚重复报警、永远补不上、run 永远红。
+
+    零行缺口没有「既有序列」可污染（那天一行都没落库），补它只是让序列变完整，
+    不改写任何已入库的历史值 —— 与部分缺口的「混复权口径」风险性质不同。
+    """
+    old = "2026-09-28"     # 距 TODAY(10-27) 约 21 个交易日：超 7 天窄窗，在 60 天宽窗内
+    report = _report([(old, "L1", "行情只有 0 只（阈值 280）", 0)])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert [a.layer for a in actions] == ["L1"]
+    assert actions[0].dates == (old,)
+    # 在宽窗内 ⇒ 不是 skipped
+    assert repair_mod.skipped_repairs(report, today=TODAY) == []
+
+
+def test_partial_l1_gap_keeps_narrow_window():
+    """部分缺口（当天有行但不足 280 只）仍受窄窗约束 —— 混口径风险是真的。
+
+    东财/新浪是不复权（fqt=0），腾讯是前复权（qfq）。部分缺口意味着当天
+    已有某一口径的行，补进来的行可能来自**另一个口径**的备源，
+    混写会在除权日造出假跳空，污染 MA/动量/回测窗口与当天计划。
+    """
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 150 只（阈值 280）", 150)])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert [(s["layer"], s["date"]) for s in skipped] == [("L1", old)]
+    # 原因必须点明「混口径」，否则用户不知道该找谁
+    assert "复权口径" in skipped[0]["reason"]
+
+
+def test_l1_gap_without_codes_is_treated_conservatively():
+    """旧报告没有 `codes` 字段 → 无法分类 → 按**部分**处理（保守口径）。
+
+    宁可少修，也不能在「不知道是不是部分缺口」时用宽窗去填：
+    万一它是部分缺口，补抓会引入混口径的行。
+    """
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 0 只")])   # 没有 codes
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert [(s["layer"], s["date"]) for s in skipped] == [("L1", old)]
+    assert "无法确认" in skipped[0]["reason"]
+
+
+def test_calendar_unavailable_never_repairs_blindly(monkeypatch):
+    """交易日历不可用 → **一律只报警**，绝不盲修。
+
+    为什么必须这样：窗口是按交易日算的，日历坏了就算不出 horizon。
+    退化成「日历日」会误判（长假后该修的判成超窗、不该修的判成在窗内）；
+    退化成「工作日」更糟 —— 调休补班的周末 A 股不开市。
+    所以正确做法是**什么都不修，只报警**（宁可漏修，不可乱修）。
+    """
+    import market_calendar
+    monkeypatch.setattr(market_calendar, "_workday_fn", lambda: None)
+    monkeypatch.setattr(market_calendar, "_WORKDAY_LOADED", True, raising=False)
+
+    gap = "2026-10-26"     # 零行缺口，正常情况下会被自动补
+    report = _report([(gap, "L1", "行情只有 0 只（阈值 280）", 0)])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert [(s["layer"], s["date"]) for s in skipped] == [("L1", gap)]
 
 
 def test_l1_gap_cascades_to_picks_and_plans():
@@ -308,10 +406,32 @@ def test_cli_dry_run_exit_zero(capsys, tmp_path):
     assert rc == 0
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert [a["layer"] for a in payload["actions"]] == ["L1"]
-    # 30 天窗口里更早的 L1 缺口只报警（不出现在 actions，但要出现在 skipped）
-    assert payload["skipped"]
-    assert all(s["layer"] == "L1" and s["date"] < "2026-10-20"
-               for s in payload["skipped"])
+    # 空库的 30 天窗口全是**零行**缺口 → 落在宽窗内 → 全部可补、skipped 为空。
+    # （零行缺口走 MISSING_DAYS_CAP=60 个交易日，见 test_zero_row_l1_gap_uses_wide_window）
+    assert payload["skipped"] == []
+    assert payload["actions"][0]["dates"]
+
+
+def test_cli_dry_run_reports_skipped_beyond_wide_window(capsys, tmp_path):
+    """超出**宽窗**的零行缺口仍然只报警，且必须留痕（::warning:: + skipped）。
+
+    宽窗不是无限的：CI 缓存谱系断了太久（例如从半年前就没推进）时，
+    自动补抓的代价（数据源配额 + 复权口径）超过收益，这类必须人工重建。
+    """
+    db = _make_db(tmp_path)
+    far = "2026-06-01"     # 距 2026-10-27 约 100 个交易日：超 60 天宽窗
+    rep = _write_report(tmp_path, "2026-10-27", [
+        {"date": far, "layer": "L1", "detail": "行情只有 0 只（阈值 280）",
+         "codes": 0}])
+    out = tmp_path / "repair.json"
+    rc = repair_mod.main(["--db", db, "--report", rep, "--dry-run", "--out", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["actions"] == []
+    assert [s["date"] for s in payload["skipped"]] == [far]
+    # 原因要指向「重建谱系」而不是「复权口径风险」—— 零行缺口没有序列可混口径
+    assert "复权口径" not in payload["skipped"][0]["reason"]
+    assert "重建 CI 缓存谱系" in payload["skipped"][0]["reason"]
 
 
 def test_cli_report_path_uses_report_today(capsys, tmp_path):

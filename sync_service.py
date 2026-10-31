@@ -75,7 +75,14 @@ def _fetch_with_retry(
     backoff: float,
     limiter: RateLimiter,
     tracker: "SourceHealthTracker",
-) -> Tuple[List, str]:
+) -> Tuple[List, str, str, str]:
+    """抓取日 K，带重试。
+
+    返回 ``(rows, name, source, basis)``：``basis`` 是胜出源的复权口径
+    （``"none"`` 不复权 / ``"qfq"`` 前复权），调用方**必须**把它写进
+    ``daily_prices.adj_basis`` —— 否则 2026-10-29 那种「静默混口径」的事故
+    就又变成看不见的了（见 ``data_providers`` 模块 docstring）。
+    """
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
@@ -89,7 +96,7 @@ def _fetch_with_retry(
             time.sleep(sleep_for)
     if last_error:
         raise last_error
-    return [], ""
+    return [], "", "", ""
 
 
 def _fetch_meta_with_retry(code: str, retries: int, backoff: float, limiter: RateLimiter) -> Optional[StockMeta]:
@@ -334,7 +341,7 @@ def sync_hs300(db_path: str, mode: str, limit: Optional[int], progress: Optional
             else:
                 beg = start_str
             try:
-                rows, name = fetch_daily_kline_smart(code, beg, end_str, tracker)
+                rows, name, source, basis = fetch_daily_kline_smart(code, beg, end_str, tracker)
             except Exception as exc:  # noqa: BLE001
                 done += 1
                 logger.warning("拉取失败: code=%s error=%s", code, exc)
@@ -504,7 +511,7 @@ def sync_hs300_range(
                     code, segment = futures[future]
                     done += 1
                     try:
-                        rows, name = future.result()
+                        rows, name, source, basis = future.result()
                         if name:
                             per_code_name[code] = name
                         # 同上：收盘结算点之前抓到的当日日线是半截的，丢弃而不是入库。

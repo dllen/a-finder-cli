@@ -112,6 +112,72 @@ def test_l2_gap_detected(db):
     assert [g.layer for g in gap] == ["L2"]
 
 
+# ---------------------------------------------------------------- codes 字段
+
+
+def test_l1_gap_records_actual_code_count(db):
+    """L1 缺口必须带上当天**实际只数**（Gap.codes）。
+
+    修复脚本靠它区分两类缺口（2026-10-30 修）：
+      - codes == 0 → 整天没抓过，没有序列可污染 → 可用宽窗自动补
+      - codes 1..279 → 抓了但没抓全，补它会与既有序列**混复权口径** → 窄窗
+    以前只能从 detail 字符串反解「行情只有 N 只」—— 那是拿文案当数据源。
+    """
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    _seed_prices(conn, "2026-10-26", n=100)          # 只有 100 只 → L1 缺
+    report = audit_mod.audit(path, today=TODAY, window_days=4)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.layer == "L1"
+    assert gap.codes == 100
+
+
+def test_l1_fully_missing_day_records_zero_codes(db):
+    """整天没有一行 → codes == 0（不是 None）。"""
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    report = audit_mod.audit(path, today=TODAY, window_days=4)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.codes == 0
+
+
+def test_non_l1_gaps_have_no_codes(db):
+    """L2/L3 缺口不涉及只数 → codes 为 None。"""
+    path, conn = db
+    _seed_prices(conn, "2026-10-26")
+    report = audit_mod.audit(path, today=dt.date(2026, 10, 26), window_days=0)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.layer == "L2"
+    assert gap.codes is None
+
+
+def test_gap_roundtrip_preserves_codes():
+    """报告的 JSON 往返必须带上 codes（否则修复脚本拿不到分类依据）。"""
+    gap = audit_mod.Gap("2026-10-26", "L1", "行情只有 100 只（阈值 280）", codes=100)
+    again = audit_mod.Gap.from_dict(gap.to_dict())
+    assert again == gap
+    assert again.codes == 100
+
+
+def test_gap_from_dict_tolerates_missing_codes():
+    """旧报告没有 codes 字段 → None（不是 KeyError）。"""
+    again = audit_mod.Gap.from_dict(
+        {"date": "2026-10-26", "layer": "L1", "detail": "行情只有 0 只"})
+    assert again.codes is None
+
+
+def test_gap_from_dict_rejects_non_integer_codes():
+    """坏 codes（如字符串）→ 归一成 None，不猜、不炸。"""
+    again = audit_mod.Gap.from_dict(
+        {"date": "2026-10-26", "layer": "L1", "detail": "x", "codes": "100"})
+    assert again.codes is None
+    again2 = audit_mod.Gap.from_dict(
+        {"date": "2026-10-26", "layer": "L1", "detail": "x", "codes": True})
+    assert again2.codes is None
+
+
 def test_few_picks_rows_not_a_gap(db):
     """选股行数天然波动 → 只看有没有行，不设行数阈值（否则大量误报）。"""
     path, conn = db

@@ -27,6 +27,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             pct_change REAL,
             change REAL,
             turnover REAL,
+            -- adj_basis: 复权口径（none 不复权 / qfq 前复权）。
+            -- 只对**全新库**有意义；已部署库走 db/migrations/2026_10_30_daily_prices_adj_basis.sql。
+            -- 为什么要有：备源链里腾讯是前复权、东财/新浪是不复权，混写会在除权日
+            -- 留下假跳空（2026-10-29/30 事故，见 docs/reports/ci-cache-fix-plan.md F2/A5）。
+            adj_basis TEXT,
             PRIMARY KEY (code, trade_date)
         )
         """

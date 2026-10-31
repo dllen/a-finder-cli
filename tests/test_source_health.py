@@ -136,7 +136,7 @@ class TestFetchDailyKlineSmart:
         with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_sina.return_value = ([MagicMock()], "茅台")
-            rows, name = fetch_daily_kline_smart(
+            rows, name, source, basis = fetch_daily_kline_smart(
                 "600519", "20261001", "20261024", tracker
             )
         mock_em.assert_not_called()
@@ -152,7 +152,7 @@ class TestFetchDailyKlineSmart:
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_em.side_effect = ConnectionError("blocked")
             mock_sina.return_value = ([MagicMock()], "茅台")
-            rows, name = fetch_daily_kline_smart(
+            rows, name, source, basis = fetch_daily_kline_smart(
                 "600519", "20261001", "20261024", tracker
             )
         assert len(rows) > 0
@@ -169,7 +169,7 @@ class TestFetchDailyKlineSmart:
             mock_em.side_effect = Exception("fail")
             mock_sina.side_effect = Exception("fail")
             mock_tx.side_effect = Exception("fail")
-            rows, name = fetch_daily_kline_smart(
+            rows, name, source, basis = fetch_daily_kline_smart(
                 "600519", "20261001", "20261024", tracker
             )
         assert rows == []
@@ -184,7 +184,7 @@ class TestFetchDailyKlineSmart:
              patch("data_providers.fetch_daily_kline_sina") as mock_sina:
             mock_em.return_value = ([], "")  # 空 = 失败
             mock_sina.return_value = ([MagicMock()], "茅台")
-            rows, name = fetch_daily_kline_smart(
+            rows, name, source, basis = fetch_daily_kline_smart(
                 "600519", "20261001", "20261024", tracker
             )
         assert len(rows) > 0
@@ -205,8 +205,8 @@ class TestSyncServiceIntegration:
         with patch(
             "sync_service.fetch_daily_kline_smart"
         ) as mock_smart:
-            mock_smart.return_value = ([MagicMock()], "test")
-            rows, name = _fetch_with_retry(
+            mock_smart.return_value = ([MagicMock()], "test", "eastmoney", "none")
+            rows, name, source, basis = _fetch_with_retry(
                 "600519", "20261001", "20261024",
                 retries=0, backoff=0.1,
                 limiter=limiter, tracker=tracker,
@@ -225,7 +225,7 @@ class TestSyncServiceIntegration:
         with patch("sync_service.fetch_hs300_constituents") as mock_cons, \
              patch("sync_service.fetch_daily_kline_smart") as mock_smart:
             mock_cons.return_value = {"600519": "贵州茅台"}
-            mock_smart.return_value = ([], "")
+            mock_smart.return_value = ([], "", "", "")
             sync_hs300(db_path, "incremental", 1)
 
         mock_smart.assert_called()

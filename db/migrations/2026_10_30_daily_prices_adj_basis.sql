@@ -1,0 +1,21 @@
+-- db/migrations/2026_10_30_daily_prices_adj_basis.sql
+-- daily_prices 增加「复权口径」列。
+--
+-- 为什么必须有这一列（2026-10-29/30 事故，见 docs/reports/ci-cache-fix-plan.md
+-- 的 F2/F3 与 A5）：
+--   备源链里东财(push2his, fqt=0)与新浪是**不复权**，腾讯(fqkline, qfq)是
+--   **前复权**。东财被限流时链会**静默**退到腾讯，于是**前复权**价格被写进
+--   **不复权**的 daily_prices 表。除权除息日这一天两套口径的价差会在序列里
+--   留下一个**假跳空**，进而污染 MA / 动量 / 回测窗口以及当天的交易计划。
+--   scripts/repair_gaps.py 把自动修复窗卡死在 7 天，正是因为担心「更早的
+--   复权口径可能已变，填历史会污染序列」。
+--
+--   表里没有口径字段 ⇒ 混口径的事故**无法被检测**（静默、事后不可查）。
+--   落了这一列之后，`SELECT DISTINCT adj_basis, trade_date FROM daily_prices`
+--   就能一眼看出哪天混了口径（配套 helper：db_repository.get_adj_basis_breakdown）。
+--
+-- 注意：本文件是**给已部署库用的**（db_schema.py 里的 CREATE TABLE 只对全新库生效）。
+-- SQLite 的 `ALTER TABLE ... ADD COLUMN` 不支持 IF NOT EXISTS，重复执行会报
+-- "duplicate column name"；迁移执行器 db_repository._run_migrations 已对该错误
+-- 做幂等处理（视为已应用并记账），所以本文件可以安全重跑。
+ALTER TABLE daily_prices ADD COLUMN adj_basis TEXT;

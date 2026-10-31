@@ -39,14 +39,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Restore hs300.db from cache
-        uses: actions/cache@v4
-        with:
-          path: hs300.db
-          key: hs300-db-${{ github.run_id }}
-          restore-keys: |
-            hs300-db-
-
       - name: 判定今天日期与是否交易日
         id: trade-day
         run: |
@@ -81,6 +73,92 @@ jobs:
               echo ""
               echo "今天（$(grep -m1 '^today_bj=' "$GITHUB_OUTPUT" | cut -d= -f2)）不是 A 股交易日：本次按近 30 天窗口检查历史数据，不期待当日新增行情/选股/计划。"
             } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Restore hs300.db from cache
+        uses: actions/cache@v4
+        with:
+          path: hs300.db
+          key: hs300-db-${{ github.run_id }}
+          restore-keys: |
+            hs300-db-
+
+      # 陈旧谱系检测：缓存库落后太多时，删掉它走冷启动重建。
+      #
+      # 为什么必须有这一步（2026-10-30 实测的根因）：
+      #   巡检的 L1 自动修复窗口（零行缺口 60 个交易日 / 部分缺口 7 个交易日）
+      #   只能补「缺口」，补不了「整条谱系断在半路」的状态 —— 而缓存谱系一旦
+      #   断了两周以上，缺口就分散在两周的日期里，补抓要付出成倍的数据源配额，
+      #   还可能在中途被限流打断，失败后缺口又变成「超窗只报警」⇒ 永远红。
+      #
+      #   db_freshness 的 rc=3（落后 > MAX_LAG 个交易日）就是「这条谱系很久
+      #   没推进了」的判据。命中它就删库冷启动，比在烂谱系上打补丁可靠。
+      #   （deploy-site.yml 已有同样的判据；这里必须也有 —— 巡检是晚班，
+      #   白班的冷启动没跑成时，晚班要能自己收拾。）
+      - name: 检测陈旧谱系（落后过多则弃库冷启动）
+        id: lineage
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+          MAX_LAG: "3"
+        run: |
+          set -uo pipefail
+          if [ ! -f hs300.db ]; then
+            echo "orphan=true" >> "$GITHUB_OUTPUT"
+            echo "cold_start=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::无缓存 DB → 冷启动"
+            exit 0
+          fi
+          set +e
+          python3 scripts/db_freshness.py --db hs300.db \
+            --expect "$EXPECT" --max-lag "$MAX_LAG" --github-output
+          rc=$?
+          set -e
+          echo "freshness_rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 3 ]; then
+            echo "cold_start=true" >> "$GITHUB_OUTPUT"
+            echo "::error::缓存库谱系落后过多（孤儿）—— 丢弃该库，改走冷启动重建"
+            rm -f hs300.db
+          elif [ "$rc" -eq 2 ]; then
+            # 读不了库 / 空库：同样是「没有可用谱系」，按冷启动处理。
+            # 不能当成「库里很新」——那会让后续步骤把一个坏库当好库发布。
+            echo "cold_start=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::缓存库不可读或为空 → 按冷启动处理"
+            rm -f hs300.db
+          else
+            echo "cold_start=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 冷启动同步：把 400 天的行情一次性拉回来（陈旧谱系重建）。
+      #
+      # 为什么必须放在体检**之前**：体检的基准是「应有交易日」，谱系缺了 400 天
+      # 就会报出 400 天的 L1 缺口 —— 逐日补抓要几百次请求，必然被限流打断。
+      # 一次大窗口同步快得多，也更容易一次成功。
+      - name: 冷启动同步（陈旧谱系重建，400 天）
+        if: steps.lineage.outputs.cold_start == 'true'
+        env:
+          EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+        run: |
+          set -uo pipefail
+          echo "::notice::冷启动：窗口扩到 400 天，并发/限流上调"
+          ok=0
+          for attempt in 1 2 3; do
+            echo "── 第 $attempt 次冷启动同步 ──"
+            SYNC_END_DATE="$EXPECT" \
+              bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
+            # 数据源 15:30 后才出数/被限流时会失败，等 120s 再试（最多 3 轮）。
+            if python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" \
+              --prices-only --source direct; then
+              ok=1; break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "行情未就绪，120s 后重试…"
+              sleep 120
+            fi
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::冷启动同步 3 轮后仍未拿到期望交易日的完整行情"
+            echo "cold_sync_failed=true" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
       - name: 三层体检
@@ -122,10 +200,19 @@ jobs:
         if: steps.audit.outputs.audit_rc == '1'
         env:
           TODAY: ${{ steps.trade-day.outputs.today_bj }}
+          # 两个窗口都显式传出来，别依赖脚本默认值：
+          #   MAX_PRICE_DAYS  部分行情缺口（有行但不全）→ 窄窗（混复权口径风险）
+          #   MISSING_DAYS_CAP 零行行情缺口（整天没抓）  → 宽窗（没有序列可污染）
+          # 2026-10-30 的事故就是「统一 7 天窗」把 13 天的零行缺口永久挡在窗外，
+          # 每晚重复报警、永远修不上。以后调窗口必须改这里 + 改脚本默认值。
+          MAX_PRICE_DAYS: "7"
+          MISSING_DAYS_CAP: "60"
         run: |
           set -uo pipefail
           ARGS=()
           [ -n "${TODAY:-}" ] && ARGS+=(--today "$TODAY")
+          ARGS+=(--max-price-days "${MAX_PRICE_DAYS}")
+          ARGS+=(--missing-days-cap "${MISSING_DAYS_CAP}")
           set +e
           python3 scripts/repair_gaps.py --db hs300.db \
             --report /tmp/audit.json --out /tmp/repair.json \

@@ -1,3 +1,51 @@
+"""行情数据源接入层。
+
+**复权口径（adjustment basis）为什么必须显式记录**
+------------------------------------------------
+本模块接入的三个日 K 源，**口径并不一致**：
+
+===========  ==========================  ==================
+源            接口参数                    口径
+===========  ==========================  ==================
+eastmoney    ``push2his`` ``fqt=0``     不复权（none）
+sina         ``getKLineData``           不复权（none）
+tencent      ``fqkline`` ``qfq``        前复权（qfq）
+===========  ==========================  ==================
+
+2026-10-29/30 事故（复盘见 ``docs/reports/ci-cache-fix-plan.md`` 的 F2/F3 与 A5）：
+东财被限流时，备源链**静默**退到腾讯 qfq，把**前复权**价格写进一张
+**不复权**的 ``daily_prices`` 表。除权除息日这一天，两套口径的价差会在序列里
+留下一个**假跳空**，进而污染 MA / 动量 / 回测窗口以及当天的交易计划。
+``scripts/repair_gaps.py`` 之所以把自动修复窗卡死在 7 天，正是因为它担心
+「更早的复权口径可能已变，填历史会污染序列」。
+
+所以本模块的公开接口遵循两条原则：
+
+1. **口径是数据的一部分**，不是数据源的私有属性 —— 通过
+   :data:`SOURCE_BASIS` 暴露给调用方，随行情一起落到库里。
+2. **优先用不复权源** —— :data:`PREFERRED_BASIS` 是目标口径；只有在**完全没有**
+   不复权源可用时，才允许退到其他口径，并且**必须把用到的口径回报给调用方**。
+
+.. note::
+   另有一个事实必须记住：**2026-10-29 只有东财有**（腾讯 qfqday 与新浪当时都只到
+   10-28）。「退到腾讯」并不是对最近交易日的补救，它只会**静默少一天**。
+
+**公开名字（供 ``sync_service.py`` 与测试引用）**
+------------------------------------------------
+- :data:`SOURCE_BASIS` —— 源名 → 复权口径的登记表。
+- :data:`PREFERRED_BASIS` —— 目标口径常量（当前为 ``"none"``，即不复权）。
+- :data:`BASIS_NONE` / :data:`BASIS_QFQ` —— 口径字面量常量，避免各处硬编码字符串。
+- :func:`source_basis` —— 查某个源的口径（未知源返回 ``None``）。
+- :func:`fetch_daily_kline_smart` —— 口径感知的备源链，返回 ``(rows, name, source, basis)``。
+
+.. warning::
+   ``akshare_data_provider.fetch_daily_kline_akshare`` 用的是 ``adjust="qfq"``，
+   **也是前复权**，但它不在本模块的备源链里、目前也**没有任何调用方**。
+   如果哪天要把它接进链路，**必须**给它的 ``PriceRow`` 显式标上
+   ``adj_basis="qfq"``（``PriceRow`` 的默认值是 ``"none"``，直接用默认值会
+   把前复权数据**错标**成不复权 —— 那比不标记更坏）。
+"""
+
 import json
 import re
 import threading
@@ -8,6 +56,43 @@ from typing import Dict, List, Optional
 from db_repository import PriceRow, StockMeta
 from errors import FetchError
 from utils import retry_call
+
+# ---------------------------------------------------------------------------
+# 复权口径注册表
+# ---------------------------------------------------------------------------
+
+#: 口径字面量：不复权（原始成交价，除权日自然跳空）。
+BASIS_NONE = "none"
+#: 口径字面量：前复权（以最新价为基准向前调整历史价）。
+BASIS_QFQ = "qfq"
+
+#: 目标口径 —— 不复权。理由见模块 docstring 的「复权口径」一节。
+PREFERRED_BASIS = BASIS_NONE
+
+#: 源名 → 复权口径。**这是口径的唯一真相源**，新增源时必须同步登记，
+#: 否则 :func:`source_basis` 返回 ``None``，:func:`fetch_daily_kline_smart`
+#: 会把它当作「非首选口径」处理 —— 宁可漏抓也不错写。
+#:
+#: 注意 ``akshare``（``stock_zh_a_hist(adjust="qfq")``）**没有登记在这里** ——
+#: 它是前复权，但不在本模块的备源链里。哪天要接进来，必须同时登记成
+#: :data:`BASIS_QFQ`（见模块 docstring 的 warning）。
+SOURCE_BASIS: Dict[str, str] = {
+    "eastmoney": BASIS_NONE,   # push2his fqt=0
+    "sina": BASIS_NONE,        # getKLineData
+    "tencent": BASIS_QFQ,      # fqkline qfq
+}
+
+
+def source_basis(source: str) -> Optional[str]:
+    """查某个源的复权口径。
+
+    未登记的源返回 ``None`` —— 调用方必须把它当成「**非首选口径**」处理。
+    宁可少抓一天，也不要把口径不明的价格混进不复权的序列里。
+
+    :param source: 源名，如 ``"eastmoney"`` / ``"sina"`` / ``"tencent"``
+    :return: 口径字面量（``"none"`` / ``"qfq"``），未登记时为 ``None``
+    """
+    return SOURCE_BASIS.get(source)
 
 
 def fetch_url_text(url: str, params: Optional[Dict[str, str]] = None, referer: Optional[str] = None) -> str:
@@ -486,30 +571,68 @@ def fetch_daily_kline_smart(
     end_date: str,
     tracker: SourceHealthTracker,
 ) -> tuple:
-    """按 tracker 优先级依次尝试各数据源。
+    """按 tracker 优先级依次尝试各数据源，**并保证口径优先**。
 
-    第一个返回非空行的源胜出。每次成功/失败都反馈给 tracker。
-    所有可用源都失败时返回 ([], "")。
+    返回 ``(rows, name, source, basis)``：
+
+    - ``rows``  —— 行情行（``List[PriceRow]``），全源失败时为空列表。
+    - ``name``  —— 股票名称（腾讯/东财会带名字，新浪不带）。
+    - ``source``—— 胜出的源名（``"eastmoney"`` / ``"sina"`` / ``"tencent"``），
+      全源失败时为空串。
+    - ``basis`` —— 胜出源使用的**复权口径**（``"none"`` / ``"qfq"``），
+      全源失败时为空串。调用方**必须**把它落库（``daily_prices.adj_basis``），
+      否则混口径的事故就又变成看不见的了。
+
+    **口径策略**（2026-10-29/30 事故的修复，见模块 docstring）：
+
+    1. 先跑完**全部首选口径源**（``PREFERRED_BASIS``，当前是东财+新浪的不复权）。
+    2. 只有在**一个首选口径源都拿不到**时，才退到非首选口径源（腾讯 qfq）。
+       这是「宁可少抓一天，也不混口径」与「还是要拿到数据」之间的折中 ——
+       退到 qfq 时**必须**把口径回报出去，让调用方能记录、能报警。
+    3. 首选口径组**内部**仍然是「第一个返回非空行的源胜出」，健康探针给出的
+       优先级顺序不变（东财 > 新浪 > 腾讯）。
+
+    ⚠️ 仍然要记住：**2026-10-29 只有东财有**（腾讯 qfqday / 新浪当时都只到
+    10-28）。退到 qfq 拿到的不是最近那一天，而是一份**缺一天**的前复权序列。
+
+    每次成功/失败都反馈给 tracker（口径策略不改变健康度记账）。
     """
-    for source in tracker.get_ordered_sources():
-        if not tracker.is_available(source):
-            continue
-        try:
-            if source == "eastmoney":
-                rows, name = fetch_daily_kline_eastmoney(code, start_date, end_date)
-            elif source == "sina":
-                rows, name = fetch_daily_kline_sina(code, start_date, end_date)
-            elif source == "tencent":
-                rows, name = fetch_daily_kline_tencent(code, start_date, end_date)
-            else:
-                continue
+    ordered = [
+        s for s in tracker.get_ordered_sources() if tracker.is_available(s)
+    ]
 
-            if rows:
-                tracker.record_success(source)
-                return rows, name
-            else:
+    # 先跑首选口径组；一个都拿不到才退到其它口径的源。
+    preferred = [s for s in ordered if source_basis(s) == PREFERRED_BASIS]
+    others = [s for s in ordered if source_basis(s) != PREFERRED_BASIS]
+
+    for group in (preferred, others):
+        for source in group:
+            try:
+                if source == "eastmoney":
+                    rows, name = fetch_daily_kline_eastmoney(code, start_date, end_date)
+                elif source == "sina":
+                    rows, name = fetch_daily_kline_sina(code, start_date, end_date)
+                elif source == "tencent":
+                    rows, name = fetch_daily_kline_tencent(code, start_date, end_date)
+                else:
+                    continue
+
+                if rows:
+                    tracker.record_success(source)
+                    basis = source_basis(source) or ""
+                    # 把口径**盖到每一行上** —— 这一步不能省。
+                    #
+                    # 为什么不省：PriceRow.adj_basis 的默认值是 "none"（不复权）。
+                    # 胜出源若是腾讯（前复权）而我们不覆盖这个默认值，写进库的
+                    # 就是「前复权价格被标成不复权」—— 比不写这一列更坏：
+                    # **看起来**检测过了（全是 none、没有混口径告警），
+                    # 实际数据已经混了口径。宁可让缺列直接报错。
+                    for row in rows:
+                        row.adj_basis = basis
+                    return rows, name, source, basis
+                else:
+                    tracker.record_failure(source)
+            except Exception:
                 tracker.record_failure(source)
-        except Exception:
-            tracker.record_failure(source)
 
-    return [], ""
+    return [], "", "", ""
