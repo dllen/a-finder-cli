@@ -34,11 +34,18 @@ def _has(cmd, needle):
 def _report(gaps, suppressed=None):
     """构造一份体检报告。
 
-    `gaps` 里每项可以是 2 元组 (date, layer) / 3 元组 (date, layer, detail) /
-    4 元组 (date, layer, detail, codes) —— codes 是 L1 当天的实际只数，
-    修复脚本靠它区分「零行缺口」（可放宽窗口）与「部分缺口」（窄窗）。
+    `gaps` 里每项可以是：
+      2 元组 (date, layer)
+      3 元组 (date, layer, detail)
+      4 元组 (date, layer, detail, codes)  —— codes 是 L1 当天的实际只数
+      5 元组 (date, layer, detail, codes, bases) —— bases 是当天已有行
+              用到的复权口径集合（None = 口径不可得）
+    修复脚本靠 codes/bases 区分「零行缺口」「口径一致的部分缺口」
+    「会混口径的部分缺口」，三者的处置完全不同。
     """
     def _mk(g):
+        if len(g) == 5:
+            return audit_mod.Gap(g[0], g[1], g[2], codes=g[3], bases=g[4])
         if len(g) == 4:
             return audit_mod.Gap(g[0], g[1], g[2], codes=g[3])
         if len(g) == 3:
@@ -591,3 +598,79 @@ def test_side_effect_diff_skips_unreadable_tables():
         {"open_positions": 5, "trade_events": None},
     )
     assert diff == {"open_positions": {"before": 3, "after": 5, "delta": 2}}
+
+
+# ---------------------------------------------------------------- 复权口径分类
+
+
+def test_uniform_basis_partial_gap_uses_wide_window():
+    """已有行**口径一致**（都是不复权）的部分缺口 → 走宽窗，可自动补齐。
+
+    为什么（2026-10-31 修）：窄窗当初是为了防「补进来的行与既有行混口径」。
+    但只要已知当天的行就是不复权，补齐剩下那些票**不会混口径** ——
+    这个约束已经不存在了，宽窗没理由还挡着它。
+    实测的半截天（143→140→…→65 只）是**同步被中断**留下的，本来就该补，
+    却因为超了 7 天窗而永远只报警。
+    """
+    old = "2026-09-28"     # 距 TODAY(10-27) 约 21 个交易日：超窄窗，在宽窗内
+    report = _report([(old, "L1", "行情只有 143 只（阈值 280）", 143, ["none"])])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert [a.layer for a in actions] == ["L1"]
+    assert actions[0].dates == (old,)
+    assert repair_mod.skipped_repairs(report, today=TODAY) == []
+
+
+def test_qfq_basis_partial_gap_keeps_narrow_window():
+    """已有行是**前复权**（腾讯备源）的部分缺口 → 保留窄窗，超期只报警。
+
+    补不复权的行会与前复权行**混口径**：除权日造出假跳空，污染
+    MA/动量/回测窗口与当天计划。这是真的风险，不能因为「缺口看着小」就放宽。
+    """
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 143 只（阈值 280）", 143, ["qfq"])])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert [(s["layer"], s["date"]) for s in skipped] == [("L1", old)]
+    assert skipped[0]["reason_class"] == "partial_basis_risk"
+    assert "混口径" in skipped[0]["reason"]
+
+
+def test_unknown_basis_partial_gap_is_conservative():
+    """口径**不可得**（旧报告没有 bases）→ 保守走窄窗。
+
+    宁可少修，也不能在「不知道已有行是什么口径」时用宽窗去填：
+    万一它是前复权，补抓会引入混口径的行。
+    """
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 143 只（阈值 280）", 143, None)])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert skipped[0]["reason_class"] == "partial_unknown"
+    assert "口径不可得" in skipped[0]["reason"]
+
+
+def test_mixed_basis_partial_gap_is_not_repaired():
+    """当天同时有不复权与前复权两种口径 → 已混了，绝不能再往上补。"""
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 143 只（阈值 280）", 143,
+                        ["none", "qfq"])])
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY)
+    assert skipped[0]["reason_class"] == "partial_basis_risk"
+
+
+def test_uniform_basis_reason_says_it_is_safe_to_top_up():
+    """口径一致但超窗时，原因要说清「补齐不会混口径」—— 否则用户以为有风险。"""
+    old = "2026-09-28"
+    report = _report([(old, "L1", "行情只有 143 只（阈值 280）", 143, ["none"])])
+    # 把窗口调到 0 天，强制它超窗
+    actions = repair_mod.plan_repairs(report, db_path="hs300.db", today=TODAY,
+                                      missing_days_cap=0, max_price_days=0)
+    assert actions == []
+    skipped = repair_mod.skipped_repairs(report, today=TODAY,
+                                         missing_days_cap=0, max_price_days=0)
+    assert skipped[0]["reason_class"] == "partial_uniform_out_of_window"
+    assert "不会混口径" in skipped[0]["reason"]

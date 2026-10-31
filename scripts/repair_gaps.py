@@ -64,6 +64,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from audit_coverage import CalendarUnavailable, Report, audit  # noqa: E402
+from data_providers import BASIS_NONE  # noqa: E402
 from market_calendar import trading_days  # noqa: E402
 
 # 行情缺口的自动修复窗口有**两个**，不是一个（2026-10-30 修）。
@@ -81,10 +82,18 @@ from market_calendar import trading_days  # noqa: E402
 #      → 用宽窗（MISSING_DAYS_CAP）。
 #
 #   2) 部分缺口（当天 1~279 只）= 那天**抓了但没抓全**。库里已有那一段的
-#      一部分行，而补进来的行可能来自**另一个复权口径**的备源
+#      一部分行，补进来的行可能来自**另一个复权口径**的备源
 #      （腾讯 qfq 前复权 vs 东财/新浪 fqt=0 不复权，见 data_providers）。
 #      混写会在除权日造出假跳空，污染 MA/动量/回测窗口与当天计划。
 #      → 保留窄窗（MAX_PRICE_DAYS），更早的只报警。
+#
+# 但「部分缺口」还要再分一层（2026-10-31 改）：**已有的行是什么口径**。
+#   - 已有行**全是不复权**（东财主源）⇒ 这个半截天是**同步被中断**造成的
+#     （并发处理 300 只时进程被打断，前面的写进去了后面的没写完；
+#      巡检实测到的只数单调递减 143→140→137→…→65 正是这个形状）。
+#     补齐剩下的票**不会混口径** → 本来就该补，可以走宽窗。
+#   - 已有行含**前复权**（腾讯备源）⇒ 补不复权的行才会混口径 → 只报警。
+# 判据是体检报告里的 `Gap.bases`（当天已有行用到的口径集合）。
 MAX_PRICE_DAYS = 7      # 部分行情缺口（有行但不全）的自动修复窗口（交易日）
 MISSING_DAYS_CAP = 60   # 零行行情缺口（整天没抓）的自动修复窗口（交易日）
 TOP_PICKS = 20
@@ -172,9 +181,45 @@ def _gap_codes(report: Report, date: str) -> Optional[int]:
     return None
 
 
+def _gap_bases(report: Report, date: str) -> Optional[List[str]]:
+    """该日 L1 缺口**已有行**用到的复权口径集合。
+
+    - `[]`   → 当天一行都没有（零行缺口）：没有序列可污染。
+    - `["none"]` → 当天的行是**不复权**（东财/新浪主源）：补齐剩下的票
+      **不会混口径**，可以放心补 —— 这正是「同步被中断」留下的半截天。
+    - 含 `"qfq"` → 当天的行是**前复权**（腾讯备源）：补进来的不复权行会
+      与它们混口径（除权日假跳空），只能报警。
+    - `None` → 信息不可得（旧报告没有 `bases` 字段）→ 按保守口径处理。
+    """
+    for g in report.gaps:
+        if g.layer == "L1" and g.date == date:
+            return g.bases
+    return None
+
+
 def _is_zero_row_gap(report: Report, date: str) -> bool:
     """该 L1 缺口是否是「整天零行」（可放宽窗口补抓）。"""
     return _gap_codes(report, date) == 0
+
+
+def _basis_is_uniform(report: Report, date: str) -> bool:
+    """当天已有的行是否**口径一致**（且都是不复权）—— 可以安全补齐。
+
+    为什么要有这个判据（2026-10-31 修）：
+      巡检报出来的「部分缺口」（65~143 只）绝大多数**不是**「备源口径不同」
+      造成的，而是**同步被中断**造成的：并发处理 300 只票时进程被打断，
+      前面的写进去了、后面的没写完。已知的只数单调递减（143→140→137→…→65）
+      正是这个形状。
+      这种半截天里，已有的行**本来就是不复权**（东财主源），补齐剩下那些票
+      不会混口径 —— 本来就该补，不该只报警。
+      反过来，若已有的行是前复权（腾讯备源），补不复权的行才会混口径。
+
+    口径不可得（None）时返回 False → 保守走窄窗 + 只报警。
+    """
+    bases = _gap_bases(report, date)
+    if bases is None:
+        return False
+    return set(bases) == {BASIS_NONE}
 
 
 def _split_l1(report: Report, today: dt.date, *, max_price_days: int,
@@ -182,9 +227,18 @@ def _split_l1(report: Report, today: dt.date, *, max_price_days: int,
     """把 L1 缺口分成「可自动补」与「只报警」两拨。
 
     返回 (repairable, skipped)：
-      - repairable：零行缺口里落在 MISSING_DAYS_CAP 窗内的 + 部分缺口里落在
-        MAX_PRICE_DAYS 窗内的（两者的窗口不同，见模块常量）
-      - skipped：其余（超窗）
+      - repairable：
+          · 零行缺口（当天没有任何行）且落在 MISSING_DAYS_CAP 窗内
+          · **口径一致**的部分缺口（已有行都是不复权 ⇒ 补齐不混口径）
+            且落在 MISSING_DAYS_CAP 窗内
+      - skipped：其余（超窗，或口径不一致/不可得）
+
+    为什么「口径一致的部分缺口」也能走宽窗（2026-10-31 改）：
+      窄窗（7 个交易日）当初是为了防「补进来的行与既有行混复权口径」。
+      但只要**已知**当天的行就是不复权，补齐剩下那些票不会混口径 ——
+      这个约束已经不存在了，宽窗没有任何理由还挡着它。
+      实测的半截天（143→140→…→65 只）正是「同步被中断」留下的，
+      本来就该补齐，却因为超了 7 天窗而永远只报警。
     """
     zero_horizon = _horizon(today, missing_days_cap)
     part_horizon = _horizon(today, max_price_days)
@@ -198,8 +252,14 @@ def _split_l1(report: Report, today: dt.date, *, max_price_days: int,
                 repairable.append(d)
             else:
                 skipped.append(d)
+        elif _basis_is_uniform(report, d):
+            # 口径一致的部分缺口（同步被中断留下的半截天）：宽窗，可安全补齐。
+            if zero_horizon and d >= zero_horizon:
+                repairable.append(d)
+            else:
+                skipped.append(d)
         else:
-            # 部分缺口（或信息缺失）：窄窗。宁可漏修，不可混口径。
+            # 口径不一致或不可得 → 窄窗只报警。宁可漏修，不可混口径。
             if part_horizon and d >= part_horizon:
                 repairable.append(d)
             else:
@@ -393,18 +453,31 @@ def skipped_repairs(
             reason = (f"整天无行情（0 只），超出 {missing_days_cap} 个交易日"
                       "自动修复窗，只报警 —— 需要重建 CI 缓存谱系"
                       "（删 Actions 缓存条目或冷启动）")
+        elif _basis_is_uniform(report, g.date):
+            # 口径一致但超窗：已有的行是不复权，补齐不会混口径 ——
+            # 只是超了自动修复窗（抓取量太大），人工跑一次补抓即可。
+            reason_class = "partial_uniform_out_of_window"
+            reason = (f"部分行情缺失（当天只有 {_gap_codes(report, g.date)} 只，"
+                      f"已有行为不复权口径，补齐不会混口径），超出 "
+                      f"{max_price_days} 个交易日自动修复窗，只报警")
         else:
             codes = _gap_codes(report, g.date)
+            bases = _gap_bases(report, g.date)
             if codes is None:
                 reason_class = "partial_unknown"
                 reason = (f"行情缺口信息不完整，无法确认是整天缺失还是部分缺失，"
                           f"按保守口径（部分缺失）处理：超出 {max_price_days} 个交易日"
                           "自动修复窗，只报警")
+            elif bases is None:
+                reason_class = "partial_unknown"
+                reason = (f"部分行情缺失（当天只有 {codes} 只），但**复权口径不可得**，"
+                          f"无法确认补齐会不会混口径：超出 {max_price_days} 个交易日"
+                          "自动修复窗，只报警")
             else:
                 reason_class = "partial_basis_risk"
-                reason = (f"部分行情缺失（当天只有 {codes} 只，未达 280 只阈值），"
-                          f"超出 {max_price_days} 个交易日自动修复窗"
-                          "（复权口径风险：填补会与既有序列混口径），只报警")
+                reason = (f"部分行情缺失（当天只有 {codes} 只，已有行口径为 "
+                          f"{'/'.join(bases)}，补不复权的行会**混口径**），"
+                          f"超出 {max_price_days} 个交易日自动修复窗，只报警")
         out.append({"layer": g.layer, "date": g.date, "detail": g.detail,
                     "reason": reason, "reason_class": reason_class})
     return out

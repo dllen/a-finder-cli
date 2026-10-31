@@ -282,3 +282,81 @@ def test_cli_write_failure_does_not_print_clean_banner(db, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "❌ 发现" not in captured.out
     assert "体检区间" not in captured.out
+
+
+# ---------------------------------------------------------------- 口径集合
+
+
+def test_l1_gap_records_bases_of_existing_rows(db):
+    """L1 缺口必须带上当天**已有行**用到的口径集合（Gap.bases）。
+
+    修复脚本靠它区分两种**部分**缺口（2026-10-31 修）：
+      - 已有行都是不复权（东财主源）→ 同步被中断的半截天，补齐不混口径
+      - 已有行含前复权（腾讯备源）→ 补不复权的行会混口径，只能报警
+    光看「有多少只」分不清这两种。
+    """
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    _seed_prices(conn, "2026-10-26", n=100)
+    conn.execute(
+        "UPDATE daily_prices SET adj_basis = 'qfq' WHERE trade_date = '2026-10-26'"
+        " AND code LIKE '6000005%'")
+    conn.commit()
+    report = audit_mod.audit(path, today=TODAY, window_days=4)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.codes == 100
+    assert gap.bases == ["none", "qfq"]
+
+
+def test_l1_fully_missing_day_has_empty_bases(db):
+    """整天没有一行 → bases 是**空列表**（不是 None）。
+
+    空列表 = 「当天没有任何行」，与 None（「口径不可得」）必须能区分：
+    前者可以放心补，后者要保守处理。
+    """
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    report = audit_mod.audit(path, today=TODAY, window_days=4)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.codes == 0
+    assert gap.bases == []
+
+
+def test_gap_roundtrip_preserves_bases():
+    """JSON 往返必须保住 bases（否则修复脚本拿不到分类依据）。"""
+    gap = audit_mod.Gap("2026-10-26", "L1", "行情只有 100 只", codes=100,
+                        bases=["none"])
+    again = audit_mod.Gap.from_dict(gap.to_dict())
+    assert again.bases == ["none"]
+
+
+def test_gap_from_dict_tolerates_missing_bases():
+    """旧报告没有 bases → None（不是 KeyError）。"""
+    again = audit_mod.Gap.from_dict(
+        {"date": "2026-10-26", "layer": "L1", "detail": "x", "codes": 100})
+    assert again.bases is None
+
+
+def test_gap_from_dict_rejects_malformed_bases():
+    """坏 bases（非字符串列表）→ 归一成 None，不猜、不炸。"""
+    again = audit_mod.Gap.from_dict(
+        {"date": "2026-10-26", "layer": "L1", "detail": "x",
+         "codes": 100, "bases": [1, 2]})
+    assert again.bases is None
+
+
+def test_audit_tolerates_db_without_adj_basis_column(db):
+    """旧库（没有 adj_basis 列）→ 体检不能崩，bases 不可得即 None/[]。"""
+    path, conn = db
+    _seed_full_day(conn, "2026-10-23")
+    _seed_full_day(conn, "2026-10-27")
+    _seed_prices(conn, "2026-10-26", n=100)
+    conn.execute("ALTER TABLE daily_prices DROP COLUMN adj_basis")
+    conn.commit()
+    report = audit_mod.audit(path, today=TODAY, window_days=4)
+    gap = [g for g in report.gaps if g.date == "2026-10-26"][0]
+    assert gap.codes == 100
+    # 读不到口径列 → 不可得；修复脚本据此走保守口径
+    assert gap.bases == []

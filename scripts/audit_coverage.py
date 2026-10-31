@@ -55,23 +55,41 @@ class Gap:
     # MAX_PRICE_DAYS）。以前只能从 detail 字符串里反解「行情只有 N 只」，
     # 那是拿文案当数据源：改一个字文案就静默坏掉（2026-10-30 修）。
     codes: Optional[int] = None
+    # 该缺口日**已有行**用到的复权口径集合；L2/L3 恒为 None。
+    #
+    # 为什么必须记（2026-10-31 修）：光看「有多少只」分不清两种部分缺口 ——
+    #   ① 当天那部分行本来就是**不复权**（东财主源），只是同步被中断了，
+    #      补齐剩下的票**不会混口径**，可以放心补；
+    #   ② 当天那部分行是**前复权**（腾讯备源），补进来的不复权行会与它们
+    #      混口径 —— 除权日造出假跳空，只能报警。
+    # 有了它，修复脚本才能按「口径是否一致」而不是「按天数」来决定补不补。
+    # 空列表 = 当天没有任何行（零行缺口）；None = 信息不可得（旧报告/无该列）。
+    bases: Optional[List[str]] = None
 
     def to_dict(self) -> Dict:
         return {"date": self.date, "layer": self.layer, "detail": self.detail,
-                "codes": self.codes}
+                "codes": self.codes,
+                "bases": list(self.bases) if self.bases is not None else None}
 
     @classmethod
     def from_dict(cls, payload: Dict) -> "Gap":
         """只取认识的键：报告里多出字段不算坏，少了必需字段才 KeyError。
 
-        `codes` 允许缺失（旧报告没有这个字段）→ None，
+        `codes` / `bases` 允许缺失（旧报告没有这些字段）→ None，
         修复脚本据此按「无法分类」的保守口径处理，不擅自当零行。
         """
         codes = payload.get("codes")
         if codes is not None and (not isinstance(codes, int) or isinstance(codes, bool)):
             codes = None
+        bases = payload.get("bases")
+        if bases is not None:
+            if (not isinstance(bases, list)
+                    or not all(isinstance(b, str) for b in bases)):
+                bases = None
+            else:
+                bases = sorted(set(bases))
         return cls(date=payload["date"], layer=payload["layer"],
-                   detail=payload["detail"], codes=codes)
+                   detail=payload["detail"], codes=codes, bases=bases)
 
 
 @dataclass
@@ -118,7 +136,15 @@ class Report:
 
 
 def _read_layer_counts(db_path: str, since: str):
-    """读三层的覆盖情况。返回 (行情每日只数, 选股有行的日期, 计划每日档位集合)。"""
+    """读三层的覆盖情况。
+
+    返回 (行情每日只数, 行情每日口径集合, 选股有行的日期, 计划每日档位集合)。
+
+    「每日口径集合」是 2026-10-31 加的：它让修复脚本能区分两种**部分**缺口 ——
+    「同步被中断、已有的行本来就是不复权」（可以放心补）与
+    「已有的行是前复权备源」（补进来会混口径，只能报警）。
+    没有它就只剩「有多少只」这一个信号，分不清这两种情况。
+    """
     conn = sqlite3.connect(db_path)
     try:
         prices = {
@@ -126,6 +152,17 @@ def _read_layer_counts(db_path: str, since: str):
                 "SELECT trade_date, COUNT(DISTINCT code) FROM daily_prices"
                 " WHERE trade_date >= ? GROUP BY trade_date", (since,))
         }
+        # adj_basis 列可能不存在（旧库未迁移）—— 读不到就当「口径不可得」，
+        # 绝不用「全部 none」冒充：那会让修复脚本以为口径一致而盲目混写。
+        bases: Dict[str, List[str]] = {}
+        try:
+            for d, b in conn.execute(
+                "SELECT trade_date, COALESCE(adj_basis, 'none') FROM daily_prices"
+                " WHERE trade_date >= ? GROUP BY trade_date, adj_basis", (since,)
+            ):
+                bases.setdefault(d, []).append(b)
+        except sqlite3.Error:
+            bases = {}
         picks = {
             r[0] for r in conn.execute(
                 "SELECT DISTINCT date FROM daily_picks WHERE date >= ?", (since,))
@@ -138,7 +175,7 @@ def _read_layer_counts(db_path: str, since: str):
             plans.setdefault(d, set()).add(pf)
     finally:
         conn.close()
-    return prices, picks, plans
+    return prices, bases, picks, plans
 
 
 def audit(
@@ -170,7 +207,7 @@ def audit(
     if not Path(db_path).exists():
         raise FileNotFoundError(f"数据库不存在: {db_path}")
 
-    prices, picks, plans = _read_layer_counts(db_path, start.isoformat())
+    prices, bases, picks, plans = _read_layer_counts(db_path, start.isoformat())
     report = Report(today=today.isoformat(), window_days=window_days,
                     expected_dates=expected)
 
@@ -178,8 +215,13 @@ def audit(
         # L1 行情
         codes = prices.get(d, 0)
         if codes < min_codes:
+            # 当天已有行用的口径集合。零行日 → 空列表（没有序列可污染）；
+            # 有行 → 该行们实际用的口径。`bases` 读不到时是 None（口径不可得），
+            # 修复脚本据此走保守口径，不擅自当成「一致」。
+            day_bases = bases.get(d, [])
             report.gaps.append(
-                Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）", codes=codes))
+                Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）",
+                    codes=codes, bases=day_bases))
             # L1 缺 → L2/L3 判定无意义，记 suppressed 备查，不报
             if d not in picks:
                 report.suppressed.append(Gap(d, "L2", "无选股（派生自 L1 缺失）"))

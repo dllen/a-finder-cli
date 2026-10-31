@@ -208,7 +208,7 @@ def _reason_lines(remaining: Sequence[Dict]) -> List[str]:
     lines: List[str] = []
     # 排序：先说「尝试过但失败」（最紧急、要立刻处理），再说只报警的。
     order = ["repair_failed", "missing_lineage", "partial_basis_risk",
-             "partial_unknown", "no_reason"]
+             "partial_uniform_out_of_window", "partial_unknown", "no_reason"]
 
     def _rank(k: str) -> int:
         return order.index(k) if k in order else len(order)
@@ -543,6 +543,8 @@ def _remaining_gaps(
     每个缺口会被标上 `reason_class`，用于把「原因」按类别归组（见 ISSUE D）：
       - `missing_lineage`     整天无行情且超宽窗 → 谱系断了，要重建缓存
       - `partial_basis_risk`  部分行情超窄窗 → 混复权口径风险，只报警
+      - `partial_uniform_out_of_window` 部分行情但已有行口径一致（补齐不会
+                              混口径），只是超了自动修复窗 → 人工补抓即可
       - `partial_unknown`     信息不全 → 保守按部分处理
       - `repair_failed`       尝试过但修复命令失败 → **不是**「超窗不修」，
                               这两者混成一句会让用户去查错的方向
