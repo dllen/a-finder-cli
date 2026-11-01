@@ -102,7 +102,14 @@ jobs:
           #   site_stale  ← 线上站点有没有当天的日期（决定**发布**要不要做）
           # 把两者混成一个 skip 是旧实现的错误：库新鲜但站点缺当天时，会没人发布。
           set +e
-          python3 scripts/db_freshness.py --db hs300.db --expect "$EXPECT" --github-output
+          # --min-history-bars 221：历史深度不够也算「陈旧谱系」（→ 冷启动）。
+          # 为什么（2026-11-01 查明）：`pick_history` 按**每只票的 K 线根数**
+          # 过滤（min_days=221）。CI 缓存库若只存了最近几十天，最新日可以是最新的，
+          # 但每只票都不够 221 根 → 0 只票 → 0 选股 → 计划无从生成 →
+          # 导出没有新日期 → **站点停在旧日期**（实测卡在 10-29，而行情已同步到 10-30）。
+          # 增量补缺口**不会**让历史变长 ⇒ 只能冷启动（400 天 ≈ 270 个交易日）。
+          python3 scripts/db_freshness.py --db hs300.db --expect "$EXPECT" \
+            --min-history-bars 221 --github-output
           rc=$?
           set -e
           echo "freshness_rc=$rc" >> "$GITHUB_OUTPUT"

@@ -603,3 +603,63 @@ early-return，**什么都不写、退出码却是 0**。
 - See Also: ERR-20261030-001, ERR-20261031-001
 
 ---
+
+## [ERR-20261101-001] 站点没有 10-30 的数据：历史深度不足，选股算不出来
+
+**Logged**: 2026-11-01T12:00:00+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: ci
+
+### Summary
+线上 `data/dates.json` 最新停在 2026-10-29，没有 10-30。CI 缓存库里
+10-30 的**行情其实已经同步到位**，但选股/计划是空的，导出因此没有新日期。
+
+### Error
+```
+线上 dates.json 最新: 2026-10-29（281 个日期），没有 2026-10-30
+```
+
+### Root cause
+**「库新不新」与「历史够不够深」是两个互相独立的判据，而前者看不见后者。**
+
+`pick_history` → `build_market_from_db(min_days=221)` 按**每只票的 K 线根数**
+过滤股票。一只票的根数 < 221 → 这只票被丢掉 → 全市场 0 只 → 选股 0 条 →
+计划无从生成 → `export_json.py` 的 dates.json 没有新日期 → 站点停在旧日期。
+
+而 `db_freshness` 看的是 `MAX(trade_date)` —— 与历史长度**完全无关**：
+一条只存了最近几十天的库，最新日可以是最新的。
+
+⇒ **增量补缺口不会让历史变长** ⇒ 死锁：
+- CI 缓存库实测只有 54 个交易日 → 每只票 36~54 根 → 0 只票 → 0 选股
+- `db_freshness` 说「落后 1 天，可增量补」（rc=1）→ 不冷启动
+- 增量同步只把 10-30 补上，历史仍是 54 根 → 依然 0 选股 → 站点永远没有 10-30
+
+实测 CI 缓存库：`daily_prices` 只有 2026-08-03~2026-10-23（54 个交易日）。
+
+### Fix
+`db_freshness` 新增 **历史深度** 判据（`--min-history-bars`，默认不检查、
+CI 两个 workflow 显式传 221）：
+- 每只票最多能提供的 K 线根数 < 阈值 → 判**陈旧谱系**（rc=3）→ 冷启动
+- 冷启动窗口 400 天 ≈ 270 个交易日 > 221 ⇒ 一次重建就把历史拉够
+
+实测：CI 谱系库冷启动后 → 262 个交易日、每只票 262 根 → `db_freshness` rc=0
+→ `daily_picks` 到 2026-10-30 → 导出 dates[0]=2026-10-30 → 单调性守卫通过。
+
+### 踩坑记录
+- 「新鲜度」不是单一维度。判一条库「能不能用」时，至少要同时看：
+  **最新日**（够不够新）+ **覆盖只数**（全不全）+ **历史深度**（够不够算）。
+  少一个维度，就会出现「看起来很新、实际算不出东西」的库。
+- `pick_history` 的 `min_days=221` 是**每只票**的 K 线根数，不是库的交易日数。
+  用只有几天的测试库跑它必然 0 条 —— 排查时别把这个当成 bug。
+- 测试 fixture 天然很短（1~28 天），所以历史深度检查**默认关闭**、
+  由 workflow 显式开启；否则会把一大票既有测试判成「陈旧谱系」。
+
+### Metadata
+- Reproducible: yes
+- Related Files: scripts/db_freshness.py, market_data.py, pick_history.py,
+  .github/workflows/deploy-site.yml, .github/workflows/daily-audit.yml
+- Tests: tests/test_db_freshness.py, tests/test_daily_audit_workflow.py
+- See Also: ERR-20261029-001（两谱系分叉）, ERR-20261030-001
+
+---

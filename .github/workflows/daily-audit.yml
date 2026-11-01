@@ -110,7 +110,8 @@ jobs:
           fi
           set +e
           python3 scripts/db_freshness.py --db hs300.db \
-            --expect "$EXPECT" --max-lag "$MAX_LAG" --github-output
+            --expect "$EXPECT" --max-lag "$MAX_LAG" \
+            --min-history-bars 221 --github-output
           rc=$?
           set -e
           echo "freshness_rc=$rc" >> "$GITHUB_OUTPUT"

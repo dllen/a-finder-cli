@@ -203,3 +203,65 @@ def test_min_codes_threshold_is_configurable(tmp_path):
     p = _make_db(tmp_path / "a.db", ["2026-10-29"], codes_per_day=100)
     assert db.assess(str(p), "2026-10-29", min_codes=280)["stale"] is True
     assert db.assess(str(p), "2026-10-29", min_codes=50)["stale"] is False
+
+
+# ---------------------------------------------------------------- 历史深度
+
+
+def test_short_history_is_treated_as_stale_lineage(tmp_path):
+    """历史深度不够 → 判**陈旧谱系**（rc=3 → 冷启动）。
+
+    2026-11-01 实测的根因：`pick_history` 按**每只票的 K 线根数**过滤
+    （min_days=221）。CI 缓存库只存了最近 54 个交易日 → 每只票最多 54 根
+    → 0 只票 → 0 选股 → 计划无从生成 → 导出没有新日期
+    → **站点停在 10-29，而行情其实已经同步到了 10-30**。
+
+    而「库新不新」看的是 MAX(trade_date)，与历史长度无关：一条只存了
+    最近几十天的库，最新日可以是最新的。⇒ 增量补缺口**不会**让历史变长
+    ⇒ 死锁 ⇒ 必须冷启动（400 天 ≈ 270 个交易日 > 221）。
+    """
+    p = _make_db(tmp_path / "short.db", ["2026-10-29"], codes_per_day=300)
+    # 只有 1 个交易日的库 → 每只票 1 根
+    r = db.assess(str(p), "2026-10-29", min_history_bars=221)
+    assert r["history_bars"] == 1
+    assert r["history_too_short"] is True
+    assert r["orphan_lineage"] is True
+    assert r["stale"] is True
+    assert "冷启动" in r["reason"]
+
+
+def test_sufficient_history_is_not_flagged(tmp_path):
+    """历史够深 → 不报「历史不足」，按正常的新鲜度判定。
+
+    用 221 个交易日造「够深」的库（阈值本身就是 221）。
+    """
+    dates = [f"2026-{m:02d}-{d:02d}"
+             for m in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+             for d in range(1, 29)][:221]
+    p = _make_db(tmp_path / "deep.db", dates, codes_per_day=300)
+    r = db.assess(str(p), dates[-1], min_history_bars=221)
+    assert r["history_bars"] == 221
+    assert r["history_too_short"] is False
+    assert r["orphan_lineage"] is False
+
+
+def test_history_check_is_opt_in(tmp_path):
+    """默认**不检查**历史深度（既有调用方行为不变）。
+
+    小 fixture 的测试库里历史天然很短；不显式传阈值就不该被判成陈旧谱系。
+    CI 的两个 workflow 都显式传 --min-history-bars 221。
+    """
+    p = _make_db(tmp_path / "tiny.db", ["2026-10-29"], codes_per_day=300)
+    r = db.assess(str(p), "2026-10-29")
+    assert r["history_too_short"] is False
+    assert r["orphan_lineage"] is False
+
+
+def test_history_check_does_not_hide_lag_reason(tmp_path):
+    """历史不足时 reason 要说清是**历史**问题，不是「落后」问题。"""
+    p = _make_db(tmp_path / "short2.db", ["2026-10-28"], codes_per_day=300)
+    r = db.assess(str(p), "2026-10-29", min_history_bars=221)
+    assert r["latest"] == "2026-10-28"
+    # 落后天数没算出来（提前返回），但 reason 必须指出真正的堵点
+    assert "历史深度" in r["reason"]
+    assert "221" in r["reason"]

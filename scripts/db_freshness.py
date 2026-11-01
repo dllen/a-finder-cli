@@ -54,6 +54,40 @@ DEFAULT_MAX_LAG = 3
 # 250（ci_check_data 旧默认）与 280（audit）曾经并存，现已统一到 280。
 MIN_CODES = 280
 
+# 选股/计划需要的历史深度：**每只票**至少这么多根 K 线。
+#
+# 为什么这是独立于「最新日」的判据（2026-11-01 查明）：
+#   `pick_history` → `build_market_from_db(min_days=221)` 按**每只票的 K 线根数**
+#   过滤股票。一只票的根数不够 221 根 → 这只票直接被丢掉 → 全市场 0 只 →
+#   选股 0 条 → 计划无从生成 → 导出没有新日期 → **站点永远停在旧日期**。
+#
+#   而「库是不是新鲜」看的是 MAX(trade_date) —— 与历史长度**完全无关**：
+#   一条只存了最近 54 天的库，最新日可以是最新的，但历史长度永远不够 221。
+#   ⇒ 增量同步只补「缺失的日期」，**历史长度不会增长** → 死锁。
+#
+# 实测（2026-11-01）：CI 缓存库只有 54 个交易日 → 每只票 36~54 根 → 0 只票
+#   → 0 选股 → 站点最新日卡在 10-29，而行情其实已经同步到了 10-30。
+MIN_HISTORY_BARS = 221
+
+
+def _history_bars(db_path: str) -> int:
+    """每只票能提供的 K 线根数的**最大值**（stock 最少需要这么多根）。
+
+    用 MAX 而不是 MIN/MEDIAN：一只票够深就够算了（MA/动量是按票算的），
+    只有**所有**票都不够时才算数不够。用 MAX 让判据宽松一些 ——
+    少数新票历史短是正常的（次新股），不该因此判定整条谱系不合格。
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)"
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
 
 def _latest_trade_date(db_path: str) -> Optional[str]:
     conn = sqlite3.connect(db_path)
@@ -82,6 +116,7 @@ def assess(
     *,
     max_lag: int = DEFAULT_MAX_LAG,
     min_codes: int = MIN_CODES,
+    min_history_bars: Optional[int] = None,
 ) -> Dict[str, object]:
     """算出库相对 expect 的新鲜度。返回可直接序列化成 JSON 的字典。"""
     expect_date = dt.date.fromisoformat(expect)
@@ -94,6 +129,8 @@ def assess(
         "orphan_lineage": False,
         "reason": "",
         "codes_on_expect": 0,
+        "history_bars": 0,
+        "history_too_short": False,
     }
 
     if not Path(db_path).exists():
@@ -113,6 +150,27 @@ def assess(
         return result
 
     result["latest"] = latest
+
+    # 历史深度够不够选股/计划用（2026-11-01 加）。
+    #
+    # 这个判据独立于「最新日」：一条只存了最近几十天的库，最新日可以是最新的，
+    # 但 `pick_history` 要求每只票 >= MIN_HISTORY_BARS 根 K 线 → 0 只票 →
+    # 0 选股 → 导出没有新日期 → **站点停在旧日期**，而行情其实已经同步到位了。
+    #
+    # 增量同步只补「缺失的日期」，**历史长度不会增长** ⇒ 死锁。
+    # 唯一的解法是冷启动（400 天窗口 ≈ 270 个交易日 > 221）。
+    bars = _history_bars(db_path)
+    result["history_bars"] = bars
+    if min_history_bars is not None and bars < min_history_bars:
+        result["history_too_short"] = True
+        result["orphan_lineage"] = True
+        result["stale"] = True
+        result["reason"] = (
+            f"历史深度只有 {bars} 根 K 线（需要 >= {min_history_bars}，"
+            f"否则 pick_history 算不出选股）—— 增量补缺口不会让历史变长，"
+            f"必须冷启动重建（400 天窗口）"
+        )
+        return result
 
     # 应该有的交易日：从库的最新日之后 到 expect（含）。
     # 用交易日历算，天然跨过周末与长假。
@@ -197,6 +255,10 @@ def main(argv=None) -> int:
     ap.add_argument("--min-codes", type=int, default=MIN_CODES,
                     help=f"期望交易日至少多少只才算行情完整（默认 {MIN_CODES}，"
                          "必须与 audit_coverage.MIN_CODES 一致）")
+    ap.add_argument("--min-history-bars", type=int, default=None,
+                    help=f"每只票至少多少根 K 线才算历史够用（默认不检查；"
+                         f"CI 应显式传 {MIN_HISTORY_BARS}，与 pick_history 的 "
+                         "min_days 一致；不够则判陈旧谱系→冷启动）")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--github-output", action="store_true",
                     help="把 fresh/lag/orphan 写进 $GITHUB_OUTPUT")
@@ -209,7 +271,8 @@ def main(argv=None) -> int:
         return 2
 
     result = assess(args.db, args.expect, max_lag=args.max_lag,
-                    min_codes=args.min_codes)
+                    min_codes=args.min_codes,
+                    min_history_bars=args.min_history_bars)
     code = _code_for(result, args.max_lag)
 
     if args.json:
@@ -219,6 +282,9 @@ def main(argv=None) -> int:
         print(f"最新行情日: {result['latest'] or '（无）'}")
         print(f"期望交易日: {result['expect']}")
         print(f"落后交易日: {result['lag_trading_days'] if result['lag_trading_days'] is not None else '（未知）'}")
+        if args.min_history_bars:
+            print(f"历史深度: {result['history_bars']} 根 K 线"
+                  f"（需 >= {args.min_history_bars}）")
         print(f"结论: {result['reason']}")
         if result["orphan_lineage"]:
             print("⚠ 判定为陈旧谱系：缓存很可能是不再推进的孤儿，应当冷启动重建")

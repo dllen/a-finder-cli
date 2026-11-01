@@ -251,3 +251,17 @@ def test_repair_step_passes_both_windows():
     block = _step_block(_workflow_text(), "自动修复")
     assert "--max-price-days" in block
     assert "--missing-days-cap" in block
+
+
+def test_lineage_check_passes_min_history_bars():
+    """谱系检测必须显式传 --min-history-bars 221。
+
+    为什么（2026-11-01 查明）：`pick_history` 按**每只票的 K 线根数**过滤
+    （min_days=221）。CI 缓存库若只存了最近几十天，最新日可以是最新的，
+    但每只票都不够 221 根 → 0 只票 → 0 选股 → 导出没有新日期
+    → 站点停在旧日期（实测卡在 10-29，行情却已同步到 10-30）。
+    增量补缺口**不会**让历史变长 ⇒ 必须冷启动 ⇒ 判据必须包含历史深度。
+    """
+    block = _step_block(_workflow_text(), "检测陈旧谱系（落后过多则弃库冷启动）")
+    assert "--min-history-bars" in block
+    assert "221" in block
