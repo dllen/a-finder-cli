@@ -69,7 +69,23 @@ jobs:
         run: |
           set -uo pipefail
           END="$(TZ=Asia/Shanghai date +%F)"
-          START="$(TZ=Asia/Shanghai date -d "${END} -90 days" +%F)"
+          # ⚠️ 历史深度不够 ⇒ 必须**冷启动**（400 天），不能只补 90 天（2026-11-01 修）。
+          # 为什么：gap-heal 只补「缺失的日期」，**历史长度不会增长**。而
+          # `pick_history` 按**每只票的 K 线根数**过滤（min_days=221）——
+          # 一条只存了最近几十天的库，最新日可以是最新的，但每只票都不够 221 根
+          # → 0 只票 → 0 选股 → 导出没有新日期 → **站点停在旧日期**。
+          # 实测（2026-11-01）：CI 缓存库只有 54 个交易日，站点卡在 10-29，
+          # 而行情其实已同步到 10-30。
+          #
+          # 90 天窗口补完后仍不到 221 根 ⇒ 说明这条谱系从来没冷启动过 ⇒ 用 400 天重建。
+          HISTORY_BARS=$(python3 -c "import sqlite3,pathlib,sys; p=pathlib.Path(sys.argv[1]); print((sqlite3.connect(p).execute('SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)').fetchone() or [0])[0] or 0 if p.exists() else 0)" hs300.db 2>/dev/null || echo 0)
+          echo "历史深度: ${HISTORY_BARS} 根 K 线（选股需要 >= 221）"
+          DAYS=90
+          if [ "$HISTORY_BARS" -lt 221 ]; then
+            echo "::warning::历史深度不足（${HISTORY_BARS} < 221）—— 90 天补抓不会让历史变长，改用 400 天冷启动重建"
+            DAYS=400
+          fi
+          START="$(TZ=Asia/Shanghai date -d "${END} -${DAYS} days" +%F)"
           echo "补抓区间: ${START} ~ ${END}"
           python3 stock_cli.py sync-hs300-range \
             --start "$START" --end "$END" --db hs300.db \
@@ -90,8 +106,22 @@ jobs:
           python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 \
             | tee /tmp/gaps_after.txt || rc=$?
           { echo "## 体检（补抓后）"; echo '```'; cat /tmp/gaps_after.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # ⚠️ 谱系根的资格还要看**历史深度**（2026-11-01 修）。
+          # 为什么：restore-keys 取**最新**的匹配条目，谁最后保存谁就是下一个 run
+          # 的起点。gap-heal 若把一条「30 天无缺口但历史只有 54 天」的库存成谱系根，
+          # 它就是最新条目 → 其它 workflow 下次 restore 命中它 → 短历史问题
+          # **原封不动地传下去**，冷启动刚做完的成果被覆盖。
+          # 历史不够 ⇒ 存 degraded- 前缀（隔离，不参与 restore-keys 命中）。
+          HISTORY_BARS=$(python3 -c "import sqlite3,pathlib,sys; p=pathlib.Path(sys.argv[1]); print((sqlite3.connect(p).execute('SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)').fetchone() or [0])[0] or 0 if p.exists() else 0)" hs300.db 2>/dev/null || echo 0)
+          echo "补抓后历史深度: ${HISTORY_BARS} 根 K 线（需 >= 221）"
           if [ "$rc" -ne 0 ]; then
             echo "::error::补抓后仍有缺口（rc=$rc，详见上文明细）；可能是数据源当日无数据或停牌集中"
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$HISTORY_BARS" -lt 221 ]; then
+            echo "::error::历史深度仍不足（${HISTORY_BARS} < 221）—— 这条谱系算不出选股，"
+            echo "::error::不能当谱系根（否则短历史会一直传递下去）。请让 deploy-site 走冷启动重建。"
             echo "clean=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi

@@ -68,6 +68,23 @@ jobs:
           if not latest:
               print("::error::daily_prices 为空，不保存缓存（空库当谱系根会清空后继 run）")
               sys.exit(1)
+          # 历史深度也要看（2026-11-01 加）：一条「最新日很新但历史只有几十天」的库
+          # 算不出选股（pick_history 按每只票的 K 线根数过滤，min_days=221），
+          # 站点会停在旧日期 —— 而它却是 restore-keys 命中「最新条目」的那一条，
+          # 会把短历史谱系传给所有后继 run。与「最新日」是独立的两个维度。
+          conn_bars = sqlite3.connect("hs300.db")
+          try:
+              bars_row = conn_bars.execute(
+                  "SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)"
+              ).fetchone()
+              bars = bars_row[0] if bars_row and bars_row[0] is not None else 0
+          finally:
+              conn_bars.close()
+          print(f"历史深度 {bars} 根 K 线")
+          if bars < 221:
+              print(f"::error::历史深度只有 {bars} 根（需 >= 221，否则算不出选股），"
+                    "不保存为谱系根")
+              sys.exit(1)
           today = dt.date.today()
           window = trading_days(today - dt.timedelta(days=14), today)
           lag = len([d for d in window if d > latest])
