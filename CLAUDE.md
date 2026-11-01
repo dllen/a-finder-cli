@@ -168,6 +168,17 @@ bash a-finder.sh cron                                  # launchd 入口（工作
     显式传 221）：历史深度不够 ⇒ 判**陈旧谱系**（rc=3）⇒ 冷启动。
   - **增量补缺口不会让历史变长** ⇒ 这类问题只能靠冷启动解开
     （400 天 ≈ 270 个交易日 > 221）。默认不检查，CI 显式开启。
+  - **⚠️ 共用这份缓存的工作流有四个，改缓存/谱系逻辑时必须四个一起看**：
+    | workflow | 何时写 | 谱系根守卫 |
+    |---|---|---|
+    | `deploy-site` | 交易日 15:30~17:30 北京 | `prices_ok` + 历史深度 |
+    | `daily-audit` | 每天 21:00 北京 | 体检/复检干净 + 历史深度 |
+    | `gap-heal` | 周日 10:00 北京 | 30 天无缺口 **+ 历史深度**（补抓前不够就扩到 400 天窗口） |
+    | `weekly-evolve` | 周五 | 最新日 lag==0 **+ 历史深度** |
+    只修其中两个等于没修：漏掉的那个会把短历史库存成**最新**条目，
+    而 `restore-keys` 取最新 ⇒ 别的 workflow 下次又捡回短历史库。
+    实测（2026-11-01）：gap-heal 跑完存的 artifact 与 10-29 的**逐字节同大小**，
+    证明 90 天补抓没增加任何历史长度。
 - **数据源能力边界**：**10-29 只存在于东财**（腾讯 qfqday / 新浪都只到 10-28）。
   东财被限流时备源链会静默少一天。审计的 L1 判据是 `>=280 只`，
   280~299 只的「半截天」**不会被拦**。补完要验 `COUNT(DISTINCT code)=300`，
@@ -343,6 +354,12 @@ Layered modules (top-level flat modules + a few packages):
 - Logs land in `logs/fetch_success.log` and `logs/fetch_failed.log` during sync; web log is `web.log`; daemonized CLI log is `a-finder.log` (via `a-finder.sh daemon`).
 - New strategies: drop a detector in `strategies/`, register in `strategies/__init__.STRATEGIES`. For factor strategies, extend `multi_factor_base.py`.
 - New schema columns: add a `db/migrations/<YYYY_MM_DD>_<name>.sql` file; do not edit `db_schema.py` for already-deployed DBs.
+- **改 workflow 的 `run:` 块后必须验 YAML**：`run: |` 是块标量，
+  **缩进 0 的行会直接截断它** ⇒ 整个 workflow 文件变非法 YAML、根本加载不了。
+  内联 Python 用**单行** `python3 -c "..."`，或 heredoc 但每行都缩进到与
+  run 块同级（YAML 会统一剥掉公共缩进）。校验：
+  `python3 -c "import yaml;yaml.safe_load(open('.github/workflows/x.yml'))"`
+  + 把每个 `run:` 块喂给 `bash -n`。（2026-11-01 实际踩过，已修回。）
 - **新增 Cloudflare 资源前先核对免费额度与 token 权限**：给 `wrangler.toml` 加资源绑定
   （R2 / routes / 新 D1 表）需要 token 具备对应权限，否则 `wrangler deploy` 直接失败，
   而 CI 只显示一条报错（2026-10-26 因 `routes` 缺 Zone 权限，部署连续失败数小时）。

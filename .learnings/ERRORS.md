@@ -663,3 +663,65 @@ CI 两个 workflow 显式传 221）：
 - See Also: ERR-20261029-001（两谱系分叉）, ERR-20261030-001
 
 ---
+
+## [ERR-20261101-002] 缓存谱系有四个写者，只修两个等于没修 + YAML 块标量踩坑
+
+**Logged**: 2026-11-01T18:20:00+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: ci
+
+### Summary
+`f460a84` 给 deploy-site / daily-audit 加了历史深度判据，但**共用同一份缓存
+的 workflow 有四个**，漏掉的 gap-heal 当天就把短历史库又存回了谱系根。
+
+### Evidence
+- gap-heal 2026-11-01 09:45 UTC 跑完，保存了新条目 `hs300-db-40863735186`
+- 它上传的 artifact `hs300-db-20261101` = **7,665,210 字节**
+- 10-29 的 artifact 也是 **7,665,210 字节**（逐字节同大小）
+  ⇒ 90 天补抓**没有增加任何历史长度**，缓存库仍只有 54 个交易日
+- 而 `restore-keys: hs300-db-` 取**最新**条目 ⇒ 其它 workflow 下次就命中它
+
+### 四个写者（改缓存逻辑时必须同时检查）
+| workflow | 何时写 | 原来的谱系根守卫 |
+|---|---|---|
+| deploy-site | 交易日 15:30~17:30 北京 | prices_ok（已加历史深度） |
+| daily-audit | 每天 21:00 北京 | audit/recheck 干净（已加历史深度） |
+| gap-heal | 周日 10:00 北京 | 30 天无缺口（**原来不看历史深度**） |
+| weekly-evolve | 周五 | 最新日 lag==0（**原来不看历史深度**） |
+
+### Fix
+1. `gap-heal` 补抓**前**看历史深度：不够 221 根就把窗口 90 天 → 400 天
+2. `gap-heal` 补抓**后**再判一次：仍不足则 `clean=false` + `exit 1`
+   ⇒ 缓存存进 `degraded-` 前缀（隔离，不参与 restore-keys 命中）
+3. `weekly-evolve` 的谱系根守卫加同样的历史深度检查
+
+### 踩坑记录（重要）
+**YAML 的 `run: |` 块标量里，缩进 0 的行会直接截断块标量。**
+我第一次把内联 python 写成：
+```yaml
+          HISTORY_BARS=$(python3 -c "
+import sqlite3          # ← 缩进 0
+try:
+    ...
+")
+```
+`import sqlite3` 缩进 0 ⇒ YAML 认为块标量到此结束 ⇒ 整个 workflow 文件
+变成**非法 YAML**（`could not find expected ':'`）⇒ workflow 根本加载不了。
+正确做法：内联 python 用**单行** `python3 -c "..."`，或者用 heredoc 但
+**每一行都缩进到与 run 块同级**（YAML 解析后会统一剥掉公共缩进）。
+
+验证手段（改完 workflow 必须跑）：
+```bash
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/x.yml'))"
+# 再把每个 run: 块喂给 bash -n
+```
+
+### Metadata
+- Reproducible: yes
+- Related Files: .github/workflows/gap-heal.yml,
+  .github/workflows/weekly-evolve.yml, .github/workflows/deploy-site.yml,
+  .github/workflows/daily-audit.yml
+- See Also: ERR-20261101-001, ERR-20261029-001
+
+---
