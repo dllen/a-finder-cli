@@ -1709,6 +1709,24 @@ git commit -m "docs: 刷新按钮链路说明（CLAUDE.md）"
 
 ---
 
+## 附：Task 1 实施期发现并已修的两个真问题（review 记录）
+
+代码质量审查发现 2 个 Important，都集中在 `POST /api/refresh`：
+
+1. **僵尸任务会永久卡死整个功能**：409 互斥只数 `pending`/`running`，但**没有任何地方会过期任务**。
+   agent 领完任务后崩掉 → 行永远停在 `running` → 之后每次刷新都 409；
+   agent 根本没起过也一样（job 停在 `pending`，按钮从此报废）。只能手工改 D1 恢复。
+   ⇒ **修法**：409 计数前先清理过期任务（pending > 10min、running > 60min → failed）。
+   `created_at`/`started_at` 与 `nowStamp()` 同为定宽 UTC 串，**字典序 == 时间序**，
+   所以能用 SQL 直接比较。
+2. **409 互斥是 TOCTOU，非原子**：`SELECT COUNT(*)` 与 `INSERT` 之间有窗口，
+   并发点击可能各插一条 pending —— 注释里声称要防的「连点」其实没防住。
+   ⇒ **修法**：合并成一条 `INSERT ... SELECT ... WHERE NOT EXISTS (...)`，
+   用 `meta.changes === 0` 判 409（changes 缺省值必须取 0 = fail-closed）。
+
+> 这两条**设计文档的「错误处理」表本来就承诺过**，是实施计划漏了。
+> 教训：把设计文档里的「错误处理」表逐行对到任务里，别只对「架构」章节。
+
 ## 附：新增 secret 清单
 
 | secret | 在哪用 | 怎么配 |
