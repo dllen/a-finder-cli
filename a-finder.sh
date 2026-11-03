@@ -387,6 +387,61 @@ cmd_web() {
   esac
 }
 
+# ============================ refresh-agent (刷新按钮的本机端) ============================
+
+cmd_refresh_agent() {
+  # 用法: a-finder.sh refresh-agent {start|stop|status}
+  #
+  # 本机常驻进程：轮询 Worker 的刷新任务队列，领到就跑 `site --push`。
+  # 仿 cmd_web 的模式（pid 文件 + nohup + 日志），别自创一套。
+  local pid_file="$ROOT_DIR/.refresh-agent.pid"
+  local log_file="$ROOT_DIR/logs/refresh-agent.log"
+  local py
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    py="$ROOT_DIR/.venv/bin/python"
+  else
+    py="python3"
+  fi
+  local cmd="${1:-start}"
+  case "$cmd" in
+    start)
+      local cur; cur="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ -n "$cur" ]] && kill -0 "$cur" 2>/dev/null; then
+        echo "already running (pid $cur)"; exit 0
+      fi
+      # 没有 secret 不给起：agent 起来也只会一直 401，还把日志刷满。
+      # 用 ${VAR:-} 而不是 $VAR —— set -u 下裸变量未定义会直接退出（bash 3.2 尤其）。
+      if [[ -z "${REFRESH_AGENT_SECRET:-}" ]]; then
+        echo "ERROR: 请先设置 REFRESH_AGENT_SECRET（要与 Worker 的同名 secret 一致）" >&2
+        echo "   例：export REFRESH_AGENT_SECRET=xxxx" >&2
+        exit 1
+      fi
+      mkdir -p "$ROOT_DIR/logs"
+      nohup "$py" "$ROOT_DIR/refresh_agent.py" >>"$log_file" 2>&1 &
+      echo $! >"$pid_file"
+      echo "started (pid $(cat "$pid_file"))  日志: $log_file"
+      ;;
+    stop)
+      local cur; cur="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ -n "$cur" ]] && kill -0 "$cur" 2>/dev/null; then
+        kill "$cur"; echo "stopped"
+      else
+        echo "not running"
+      fi
+      rm -f "$pid_file"
+      ;;
+    status)
+      local cur; cur="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ -n "$cur" ]] && kill -0 "$cur" 2>/dev/null; then
+        echo "running (pid $cur)"
+      else
+        echo "stopped"
+      fi
+      ;;
+    *) echo "usage: a-finder.sh refresh-agent {start|stop|status}"; exit 1 ;;
+  esac
+}
+
 # ============================ daemon (a-finder CLI 后台) ============================
 
 cmd_daemon() {
@@ -586,6 +641,10 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
       一键补齐 /data/portfolio 各档位数据（累计收益对比 + 当日计划 + 当前持仓）。
       先回补计划（plan build-all --backfill）再导出 portfolio JSON。
   web {start|stop|restart|status}    环境变量 DB / PORT / TOP。Flask app.py。
+  refresh-agent {start|stop|status}
+      刷新按钮的本机端：轮询 Worker 任务队列，领到就跑 site --push。
+      需环境变量 REFRESH_AGENT_SECRET（与 Worker 同名 secret 一致）。
+      日志 logs/refresh-agent.log（agent 自身）与 logs/refresh.log（流水线）。
   daemon {start|stop|restart|status} [cli-args]
       后台跑 a-finder 子命令（默认 overview），PID 文件管理。
   cron                          launchd 入口：工作日 15:30 跑 site --push。
@@ -626,6 +685,7 @@ case "${1:-help}" in
   refresh)         shift; cmd_refresh "$@" ;;
   portfolio)       shift; cmd_portfolio "$@" ;;
   web)             shift; cmd_web "$@" ;;
+  refresh-agent)   shift; cmd_refresh_agent "$@" ;;
   daemon)          shift; cmd_daemon "$@" ;;
   backtest)        shift; cmd_backtest "$@" ;;
   fallback)

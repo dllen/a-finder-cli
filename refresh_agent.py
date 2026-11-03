@@ -50,6 +50,11 @@ MSG_PUBLISH = "正在导出并发布到站点"
 # 又把「secret 配错了」这个真问题淹没在日志里）。
 AUTH_BACKOFF_SECONDS = 60.0
 
+# 自定义 User-Agent：**不能用 urllib 默认的 Python-urllib/3.11**。
+# 2026-11-03 实测：Cloudflare 直接 403 掉默认 UA，请求到不了 Worker
+# （表现是「secret 配对了却一直 403」，很难联想到 UA）。
+USER_AGENT = "a-finder-agent/1.0"
+
 
 class AgentAuthError(RuntimeError):
     """Worker 返回 401 —— REFRESH_AGENT_SECRET 没配或不匹配。
@@ -123,9 +128,16 @@ def _http(url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = 
 
     401 抛 AgentAuthError（配置错误，要显式退避）；
     其它 HTTP 错误与网络异常照常抛，由调用方兜。
+
+    ⚠️ **必须带自定义 User-Agent**（2026-11-03 实测）：Cloudflare 会直接
+    403 掉 urllib 默认的 `Python-urllib/3.11` —— 请求**到不了 Worker**。
+    表现是「secret 明明配对了却一直 403」，极难联想到 UA 上。
+    （用 curl 测同一个端点会正常返回，因为 curl 的 UA 不在屏蔽名单里。）
     """
     data = None
     hdrs = dict(headers or {})
+    # 别删这一行：默认 UA 会被 Cloudflare 403，agent 直接废掉。
+    hdrs.setdefault("User-Agent", USER_AGENT)
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
@@ -137,6 +149,13 @@ def _http(url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = 
         if exc.code == 401:
             raise AgentAuthError(
                 "Worker 认证失败（401）：REFRESH_AGENT_SECRET 与 Worker 的同名 secret 不一致"
+            ) from exc
+        if exc.code == 403:
+            # 403 通常不是 Worker 给的（Worker 认证失败走 401），而是 Cloudflare
+            # 挡在前面。最常见的两个原因：UA 被拦、或 WAF 规则命中。
+            raise AgentAuthError(
+                "被 Cloudflare 拦截（403）：不是 Worker 返回的。"
+                "请确认 User-Agent 不是默认的 Python-urllib（会被屏蔽）"
             ) from exc
         raise
     return json.loads(raw) if raw else {}

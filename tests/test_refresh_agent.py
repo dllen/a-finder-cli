@@ -76,3 +76,39 @@ def test_build_result_payload_shape():
         "latest_date": "2026-11-03",
         "message": "done",
     }
+
+
+def test_http_sends_custom_user_agent():
+    """请求必须带自定义 User-Agent。
+
+    2026-11-03 实测：Cloudflare 直接 403 掉 urllib 默认的 Python-urllib/3.11，
+    请求根本到不了 Worker。表现是「secret 配对了却一直 403」，极难排查。
+    """
+    import refresh_agent as ra
+
+    assert ra.USER_AGENT and not ra.USER_AGENT.lower().startswith("python-urllib")
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"job_id": null}'
+
+    def fake_urlopen(req, timeout=0):
+        captured["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    orig = ra.urllib.request.urlopen
+    ra.urllib.request.urlopen = fake_urlopen
+    try:
+        ra._http("https://example.invalid/api/refresh/next")
+    finally:
+        ra.urllib.request.urlopen = orig
+
+    assert captured.get("ua") == ra.USER_AGENT
