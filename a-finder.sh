@@ -223,15 +223,34 @@ except Exception:
   # 2026-10-29 事故：孤儿库导出的 dates.json 也能通过「有没有数据」的校验，
   # 于是把比线上旧 16 天的站点推上去 —— 页面看着正常、数据停在半个月前，
   # 比空站点更隐蔽。拿**线上最新日**当下限：宁可这次不发布，也不发布更旧的。
-  local live_latest
+  local live_latest live_src
   live_latest="$(curl -sf --max-time 20 "https://ycu.space/data/dates.json" \
     | run_pyc "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")"
+  live_src="线上 data/dates.json"
   if [[ -z "$live_latest" ]]; then
-    # 查不到线上日期时不敢用「无下限」放行：那正是空站点事故的同款漏洞。
-    echo "::error::查不到线上最新日，改用库里行情最新日 $plan_date 作为下限"
-    live_latest="$plan_date"
+    # 线上 HTTP 读不到时的兜底：读 gh-pages 分支上的 dates.json。
+    #
+    # ⚠️ 这里**绝不能**退回 plan_date —— 那是个真 bug（review 发现）：
+    # plan_date 是 MAX(daily_prices.trade_date)，而产物的 dates.json 正是从
+    # **同一个库**导出的 ⇒ 「产物 vs 自己」恒成立，守卫变成一句空话。
+    # 2026-10-29 那种孤儿库发布陈旧站点的场景，恰好会在「线上 HTTP 被
+    # Cloudflare 挡住 / 网络抖动」时完全失去保护。
+    #
+    # gh-pages 分支才是「已经真正发出去的东西」的记录，且本地 .git 里就有，
+    # 不必再发一次网络请求。
+    live_latest="$(git show origin/gh-pages:data/dates.json 2>/dev/null \
+      | run_pyc "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")"
+    live_src="origin/gh-pages:data/dates.json（线上 HTTP 不可达时的兜底）"
   fi
-  echo "线上最新日: ${live_latest}（产物的下限）"
+  if [[ -z "$live_latest" ]]; then
+    # 两个来源都拿不到 ⇒ 没有可信下限 ⇒ **拒绝发布**（fail closed）。
+    # 宁可这次不发（站点停在上一版），也不能在「不知道线上是什么」的情况下
+    # 用可能更旧的数据覆盖它 —— 那正是这道守卫存在的理由。
+    echo "ERROR: 无法确定线上最新日（线上 HTTP 与 origin/gh-pages 都读不到），拒绝发布" >&2
+    echo "       排查：① 网络 / Cloudflare 是否正常 ② 先 git fetch origin gh-pages 再重试" >&2
+    return 1
+  fi
+  echo "线上最新日: ${live_latest}（下限来源：${live_src}）"
   # 校验失败必须中止发布：守卫一旦形同虚设，旧数据就会被 force-push 上去 ——
   # 页面看着正常、数据却停在半个月前，比空站点更隐蔽。
   # verify_site_export.py 失败时自己会打印原因（缺文件 / 比线上旧），

@@ -61,3 +61,38 @@ def test_cmd_site_reads_live_latest_before_push():
     """单调性下限必须取自线上 dates.json，而不是硬编码。"""
     body = _bash_source()
     assert "ycu.space/data/dates.json" in body, body
+
+
+def test_fallback_floor_is_not_plan_date():
+    """线上读不到时，下限**不能**退回 plan_date —— 那是恒真的空守卫。
+
+    为什么这条必须存在（review 发现的真 bug）：
+      plan_date 是 MAX(daily_prices.trade_date)，而产物的 dates.json 正是从
+      **同一个库**导出的 ⇒ 「产物 vs 自己」比较恒成立，守卫等于没做。
+      2026-10-29 的孤儿库场景恰好发生在「线上 HTTP 不可达」时，
+      这时退回 plan_date 会让陈旧站点照样被推上去。
+    """
+    body = _bash_source()
+    assert 'live_latest="$plan_date"' not in body, (
+        "兜底退回了 plan_date —— 产物与它同源，比较恒真，守卫形同虚设"
+    )
+
+
+def test_fallback_floor_uses_gh_pages_ref():
+    """线上读不到时，下限应取自 origin/gh-pages（已真正发出去的东西）。"""
+    body = _bash_source()
+    assert "origin/gh-pages:data/dates.json" in body, (
+        "兜底没有读 gh-pages 分支上的 dates.json"
+    )
+
+
+def test_guard_fails_closed_when_no_floor_available():
+    """两个来源都读不到时，必须拒绝发布（fail closed），不能无下限放行。"""
+    body = _bash_source()
+    # 兜底之后必须还有一个「仍为空 ⇒ 中止」的判断
+    fallback_pos = body.index("origin/gh-pages:data/dates.json")
+    guard_pos = body.index("verify_site_export.py")
+    between = body[fallback_pos:guard_pos]
+    assert "return 1" in between, (
+        "两道下限来源都失效时没有中止 —— 会在「不知道线上是什么」的情况下发布"
+    )
