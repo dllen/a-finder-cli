@@ -35,6 +35,15 @@ run_py() {
   fi
 }
 
+# 跑一段内联 python（run_py 只接受脚本路径，不支持 -c）
+run_pyc() {
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    "$ROOT_DIR/.venv/bin/python" -c "$1"
+  else
+    python3 -c "$1"
+  fi
+}
+
 # ============================ sync ============================
 
 cmd_sync_meta() {
@@ -176,8 +185,25 @@ cmd_site() {
   echo "[1/5] 增量同步 + 选股..."
   cmd_sync_incremental "$db" "$top" pick-history
 
-  local plan_date; plan_date="$(date +%F)"
-  echo "[2/5] 生成 $plan_date 交易计划..."
+  # 计划日期对齐**库里真正的行情最新日**，而不是硬编码今天：
+  # 同步失败时（数据源限流 / 当天数据未出）选股会落在库里的最大交易日，
+  # 若此时按今天生成计划就查不到选股行 → 空计划（不报错，最难查的一类故障）。
+  # CI 的 deploy-site.yml 早已这么修过（DATA_DATE），这里对齐。
+  local plan_date
+  # 用只读 URI 连接：库文件不存在时不新建空库（open_db 会新建空库，
+  # 那样「有没有数据」永远查不出问题）。异常一律吞成空串，交给下面的
+  # 统一报错分支处理 —— 不能让 python 的 traceback 打断流水线。
+  plan_date="$(run_pyc "import sqlite3,sys;
+try:
+    c=sqlite3.connect('file:$db?mode=ro',uri=True);
+    print(c.execute('SELECT MAX(trade_date) FROM daily_prices').fetchone()[0] or '')
+except Exception:
+    print('')")"
+  if [[ -z "$plan_date" ]]; then
+    echo "ERROR: 库里没有行情数据（$db 无 daily_prices 表或 MAX(trade_date) 为空），中止" >&2
+    return 1
+  fi
+  echo "[2/5] 生成 $plan_date 交易计划（库里行情最新日）..."
   run_cmd plan build --db "$db" --date "$plan_date"
 
   echo "[3/5] 构建 10 个资金档位组合..."
@@ -192,6 +218,28 @@ cmd_site() {
   cp "$out/index.html" "$out/404.html"
   touch "$out/.nojekyll"
   echo "HTML: $(ls -1 "$out"/*.html 2>/dev/null | wc -l | tr -d ' ')  JSON: $(ls -1 "$out/data/"*.json 2>/dev/null | wc -l | tr -d ' ')"
+
+  # ---- 发布前的单调性守卫（不可省）----
+  # 2026-10-29 事故：孤儿库导出的 dates.json 也能通过「有没有数据」的校验，
+  # 于是把比线上旧 16 天的站点推上去 —— 页面看着正常、数据停在半个月前，
+  # 比空站点更隐蔽。拿**线上最新日**当下限：宁可这次不发布，也不发布更旧的。
+  local live_latest
+  live_latest="$(curl -sf --max-time 20 "https://ycu.space/data/dates.json" \
+    | run_pyc "import json,sys;d=json.load(sys.stdin).get('dates') or [''];print(d[0])" 2>/dev/null || echo "")"
+  if [[ -z "$live_latest" ]]; then
+    # 查不到线上日期时不敢用「无下限」放行：那正是空站点事故的同款漏洞。
+    echo "::error::查不到线上最新日，改用库里行情最新日 $plan_date 作为下限"
+    live_latest="$plan_date"
+  fi
+  echo "线上最新日: ${live_latest}（产物的下限）"
+  # 校验失败必须中止发布：守卫一旦形同虚设，旧数据就会被 force-push 上去 ——
+  # 页面看着正常、数据却停在半个月前，比空站点更隐蔽。
+  # verify_site_export.py 失败时自己会打印原因（缺文件 / 比线上旧），
+  # 这里只负责「拦住 push」这一件事。
+  if ! run_py "$ROOT_DIR/scripts/verify_site_export.py" --site "$out" --not-older-than "$live_latest"; then
+    echo "ERROR: 导出产物比线上旧或不完整，已阻止发布（避免用旧数据覆盖更新的线上站点）" >&2
+    return 1
+  fi
 
   if [[ "$push" == "1" ]]; then
     push_site_to_ghpages "$out"
