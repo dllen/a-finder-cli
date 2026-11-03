@@ -297,9 +297,12 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 # 行情数据路径（GH 直连，Cloudflare 不存行情）
 - **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。
   站点只发布它消费的 JSON（picks/plan/portfolio/decide），**原始行情不进 gh-pages**。
-- **Worker 只做两件事**：`/api/decide/*`（决策台持仓，D1 仅 `real_positions` /
-  `real_cb_positions` 两张表）与 07:35 / 08:35 UTC 兜底 dispatch cron。
-  不要再加第三个职责。
+- **Worker 只做三件事**（第三件 2026-11-03 加，见「刷新按钮」一节）：
+  1. `/api/decide/*`（决策台持仓，D1 仅 `real_positions` / `real_cb_positions` 两张表）
+  2. 07:35 / 08:35 UTC 兜底 dispatch cron
+  3. `/api/refresh*`（刷新任务队列，D1 仅 `refresh_jobs` 一张状态表）
+  **三个职责都不做计算**：行情/选股/计划全在本机 Python 里。
+  不要再加第四个职责。
 - **不要再把行情写进 D1**：免费版行写入仅 10 万/天，一次 650 天回填 19.5 万行就打爆，
   打爆后的表现是「数据写进去了但游标不推进」，极难排查（2026-10-26 折腾数小时）。
 - **已废弃的两条路线**（设计文档留在 `docs/superpowers/specs/`，需要时再查）：
@@ -313,6 +316,40 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   2. gap-fill 模式不能被 `sync_checkpoints` 短路，否则重试空转
   3. 纯周末缺口段要丢弃（部分数据源对纯非交易日区间返回 501）
 
+
+# 刷新按钮（本机唯一发布者，2026-11-03）
+- 决策台（`/decide`）登录后有「刷新数据」按钮 → Worker `POST /api/refresh`
+  → D1 `refresh_jobs` 排队 → 本机 `refresh_agent.py` 轮询领任务 →
+  `bash a-finder.sh site --push` → push gh-pages → Cloudflare 同步 Assets → 页面轮询看结果。
+- **触发方向是拉模式**：Worker 在边缘够不到本机 `127.0.0.1`，
+  由本机轮询 `/api/refresh/next` 领任务（`X-Agent-Secret` 头认证）。
+  agent **只做出站请求，不监听任何端口**。
+- **gh-pages 的唯一日常写者是本机**：`deploy-site.yml` 已删掉
+  `peaceiris/actions-gh-pages` 步骤（CI 仍同步+计算+维护缓存谱系，
+  但**不发布**）。`daily-audit.yml` / `gap-heal.yml` 仍保留发布权
+  （极低频，只在修复缺口时）。
+- **两套认证故意分开**：前端端点用登录 cookie（`decide_auth`），
+  agent 端点用独立的 `REFRESH_AGENT_SECRET` 头。共用会让一个泄露
+  同时丢掉登录态和 agent 通道。
+- **发布前有单调性守卫**：`cmd_site` 用 `verify_site_export.py --not-older-than`
+  比对线上最新日，比线上旧就**不发布**（2026-10-29 事故的直接教训）。
+  线上 HTTP 读不到时兜底读 `origin/gh-pages:data/dates.json`，
+  **两个来源都拿不到就 fail closed**（拒绝发布）。
+  ⚠️ 兜底**不能**退回 `plan_date` —— 它与产物同源，比较恒真，守卫形同虚设。
+- **`cmd_site` 的计划日期对齐 `MAX(daily_prices.trade_date)`**（不是今天）——
+  同步失败时按今天生成计划会产出**空计划**。CI 早已这么修，本机这次跟上。
+- **过期清理**：`refresh_jobs` 的 pending>10min / running>60min 自动置 `failed`。
+  建任务时先清理再用**一条原子 `INSERT ... WHERE NOT EXISTS`** 抢占。
+  少了过期清理，agent 崩一次就让刷新永远 409（整个功能报废）。
+- **agent 必须带自定义 User-Agent**：Cloudflare 会直接 403 掉 urllib
+  默认的 `Python-urllib/3.11`，请求**到不了 Worker**。
+  表现是「secret 配对了却一直 403」，极难联想（curl 测同一端点却正常）。
+- 运维：`bash a-finder.sh refresh-agent {start|stop|status}`，
+  日志 `logs/refresh.log`（流水线）与 `logs/refresh-agent.log`（agent 自身）。
+  耗时 15~35 分钟（行情同步 + 历史回补），按钮会轮询显示阶段。
+- 部署前必须配好的 secret：`REFRESH_AGENT_SECRET`
+  （`wrangler secret put` + 本机 `export` 同值；`deploy-worker.yml` 已接入同步）。
+  没配的话 agent 端点一律 401，前端会一直 pending。
 
 # CI 自动部署 Worker（deploy-worker.yml）
 - `.github/workflows/deploy-worker.yml`：`worker/**` 或 `wrangler.toml` 推送到 main 时自动部署
