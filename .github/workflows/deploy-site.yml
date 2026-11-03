@@ -267,15 +267,17 @@ jobs:
           # restore-keys 仍然命中它，等于没隔离（留作事后排查用）。
           key: ${{ steps.sync.outputs.prices_ok == 'true' && format('hs300-db-{0}', github.run_id) || format('degraded-hs300-db-{0}', github.run_id) }}
 
-      - name: 部署 gh-pages
-        # 只在导出校验通过时部署：宁可站点停留在上一版，也不要用空产物清空线上
-        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.export.outcome == 'success'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          force_orphan: true
-          commit_message: "site: 自动更新 ${{ steps.trade-day.outputs.today_bj }}"
+      # 本机（refresh_agent + a-finder.sh site --push）是 gh-pages 的**唯一日常写者**。
+      # 这里不再发布：
+      #   - 8 班/天的 CI 发布 + 手动发布 = 双写分叉（2026-10-29 事故的根因）
+      #   - 删掉发布后 CI 的缓存库仍在推进（同步 + 计算 + 缓存保存都保留），
+      #     只是不再对外发布；线上由本机负责
+      # 手动兜底：workflow_dispatch 本 workflow 仍会同步+计算，但**不发布**；
+      #   真的要发布请用本机：bash a-finder.sh site --push
+      - name: 汇总发布状态（本 workflow 不发布）
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true'
+        run: |
+          echo "::notice::本 workflow 不再推 gh-pages（避免与本机双写）；线上由本机发布"
 
       # 失败通知：门禁或任何前置步骤失败时推送。
       # 只依赖一个可选的 NTFY_TOPIC secret（ntfy.sh 无需注册，浏览器/App 订阅同名字即可）。

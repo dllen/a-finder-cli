@@ -279,19 +279,28 @@ def test_deploy_site_restore_precedes_freshness():
     )
 
 
-def test_deploy_site_splits_skip_sync_from_publishing():
-    """sync 与 publish 必须分开决策。
+def test_deploy_site_splits_skip_sync_from_running():
+    """skip_sync 与 site_stale 必须是**两个独立判据**，不能合并。
 
     把两者混成一个 skip 是旧实现的错误：库已新鲜但线上站点缺当天时，
-    所有人都会跳过 → 当天没人发布。
+    所有人都会跳过 → 当天没人跑下游。
+
+    2026-11-03 起 deploy-site **不再发布**（gh-pages 由本机的
+    refresh_agent + site --push 发布），但这两个判据仍然分开：
+    site_stale 仍然影响要不要跑下游（同步/计算/缓存）。
     """
     text = _text("deploy-site.yml")
     assert "skip_sync" in text, "应当有独立的 skip_sync 输出"
-    assert "site_stale" in text, "应当有独立的 site_stale 输出（决定要不要发布）"
-    # 发布条件不能只看 skip_sync：site_stale=true 时库新鲜也要发布
-    deploy_block = _step_block(text, "部署 gh-pages")
-    assert "run == 'true'" in deploy_block, (
-        "部署条件应当用汇总后的 run 输出（兼顾「刚同步」与「站点缺当天」两种情况）"
+    assert "site_stale" in text, "应当有独立的 site_stale 输出"
+    # 下游门控必须用汇总后的 run（兼顾「刚同步」与「站点缺当天」）
+    plan_block = _step_block(text, "汇总本班要做的事")
+    assert "skip_sync" in plan_block and "site_stale" in plan_block, (
+        "汇总步应同时读 skip_sync 与 site_stale 才能正确决定跑不跑下游"
+    )
+    assert "run=false" in plan_block and "run=true" in plan_block
+    # 而且 CI 不得再发布（否则与本机双写）
+    assert "peaceiris/actions-gh-pages" not in text, (
+        "deploy-site 已不应再发布（本机是唯一日常写者）"
     )
 
 

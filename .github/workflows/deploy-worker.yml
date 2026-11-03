@@ -90,6 +90,20 @@ jobs:
           printf '%s' "$GITHUB_DISPATCH_TOKEN" | npx --yes wrangler@latest secret put GITHUB_DISPATCH_TOKEN
           echo "已同步 GITHUB_DISPATCH_TOKEN"
 
+      - name: 同步 REFRESH_AGENT_SECRET（刷新按钮的 agent 通道）
+        env:
+          REFRESH_AGENT_SECRET: ${{ secrets.REFRESH_AGENT_SECRET }}
+        run: |
+          # 不配的后果：Worker 的 /api/refresh/next 与 /api/refresh/result
+          # 一律 401 ⇒ 本机 agent 永远领不到任务 ⇒ 刷新按钮永远停在 pending。
+          # 这个故障很难看出来（前端只是一直转圈），所以没配时要明确告警。
+          if [ -z "$REFRESH_AGENT_SECRET" ]; then
+            echo "::notice::未配置 REFRESH_AGENT_SECRET，刷新按钮的 agent 通道不通（前端会一直 pending）"
+            exit 0
+          fi
+          printf '%s' "$REFRESH_AGENT_SECRET" | npx --yes wrangler@latest secret put REFRESH_AGENT_SECRET
+          echo "已同步 REFRESH_AGENT_SECRET"
+
       - name: 同步 SYNC_TOKEN（可选）
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
