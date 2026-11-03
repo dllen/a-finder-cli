@@ -1465,13 +1465,27 @@ def test_deploy_site_keeps_sync_step():
     assert "sync-incremental" in src or "sync-hs300-range" in src
 
 
-def test_deploy_site_is_valid_yaml():
-    """改 workflow 后必须验 YAML（块标量缩进 0 会让整个文件非法）。"""
-    import yaml
+def test_deploy_site_run_blocks_pass_bash_syntax_check():
+    """每个 run 块都要过 `bash -n`（缩进 0 会让块标量截断整个文件）。
 
-    data = yaml.safe_load(_text())
-    assert isinstance(data, dict)
-    assert "jobs" in data
+    **不用 YAML 解析器** —— venv 里没有 PyYAML（`pyproject.toml` 里也没这个依赖）。
+    照 `tests/test_daily_audit_workflow.py` 的既有做法：按缩进切 step 文本块。
+    """
+    import subprocess
+
+    from test_daily_audit_workflow import _step_block, _step_names, _run_script
+
+    text = _text()
+    checked = 0
+    for name in _step_names(text):
+        script = _run_script(_step_block(text, name))
+        if not script.strip():
+            continue
+        checked += 1
+        proc = subprocess.run(["bash", "-n"], input=script,
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, (name, proc.stderr)
+    assert checked >= 5, "应该有不少于 5 个带脚本的步骤"
 
 
 def test_other_workflows_still_publish():
@@ -1515,22 +1529,26 @@ Expected: FAIL —— `test_deploy_site_does_not_publish_to_gh_pages` 失败（�
 Run: `uv run pytest tests/test_ci_no_publish.py -v`
 Expected: PASS（6 passed）
 
-- [ ] **Step 5: 独立验 YAML + bash 语法**
+- [ ] **Step 5: 独立验 bash 语法**
 
-Run: `python3 -c "import yaml;yaml.safe_load(open('.github/workflows/deploy-site.yml'));print('YAML OK')"`
-Expected: `YAML OK`
+**不要用 YAML 解析器** —— 本仓库的 venv 里没有 PyYAML（`pyproject.toml` 也没这个依赖），
+`import yaml` 会直接 `ModuleNotFoundError`。仓库既有做法是按缩进切 step 文本块
+（见 `tests/test_daily_audit_workflow.py`），Task 6 的测试已经照此写了。
 
-Run: `python3 - << 'EOF'`
-import yaml, subprocess
-d = yaml.safe_load(open('.github/workflows/deploy-site.yml'))
-for name, job in d['jobs'].items():
-    for step in job.get('steps', []):
-        if 'run' in step:
-            r = subprocess.run(['bash','-n'], input=step['run'], text=True, capture_output=True)
-            assert r.returncode == 0, f"{name}/{step.get('name')}: {r.stderr}"
-print('ALL run blocks OK')
-EOF
-Expected: `ALL run blocks OK`
+Run: `.venv/bin/python -m pytest tests/test_ci_no_publish.py -v`
+Expected: PASS（6 passed，含 bash -n 逐块检查）
+
+若确实想验 YAML 整体合法性（可选，CI 上会用 actionlint），本地可以：
+
+```bash
+npx --yes yaml-lint .github/workflows/deploy-site.yml
+```
+
+或用 node（若本地装了 js-yaml）：
+
+```bash
+node -e "require('js-yaml').load(require('fs').readFileSync('.github/workflows/deploy-site.yml','utf8')); console.log('YAML OK')"
+```
 
 - [ ] **Step 6: 提交**
 
@@ -1556,6 +1574,29 @@ Run: `uv run pytest tests/ -q 2>&1 | tail -20`
 Expected: 记录改动前的失败清单（仓库可能有已知的历史失败）。**这个基线是判断「新失败」的依据。**
 
 - [ ] **Step 2: 配置 secret 并部署 Worker**
+
+> ⚠️ **新增发现（Task 1 实施时确认）**：`.github/workflows/deploy-worker.yml` 目前只同步
+> `DECIDE_USER` / `DECIDE_PASSWORD` / `DECIDE_SECRET` / `GITHUB_DISPATCH_TOKEN`，
+> **没有同步 `REFRESH_AGENT_SECRET`** ⇒ 走 CI 部署的线上 Worker 拿不到这个 secret，
+> agent 端点会一律 401。**必须在本步补上 deploy-worker.yml 的同步步骤**（见下方）。
+
+先在 `.github/workflows/deploy-worker.yml` 里，紧跟「同步 GITHUB_DISPATCH_TOKEN（可选）」步骤之后，加入：
+
+```yaml
+      - name: 同步 REFRESH_AGENT_SECRET（刷新按钮的 agent 通道）
+        if: ${{ secrets.REFRESH_AGENT_SECRET != '' }}
+        env:
+          REFRESH_AGENT_SECRET: ${{ secrets.REFRESH_AGENT_SECRET }}
+        run: |
+          if [ -z "$REFRESH_AGENT_SECRET" ]; then
+            echo "::notice::未配置 REFRESH_AGENT_SECRET，刷新按钮的 agent 通道不通（前端按钮会一直 pending）"
+          else
+            printf '%s' "$REFRESH_AGENT_SECRET" | npx --yes wrangler@latest secret put REFRESH_AGENT_SECRET
+            echo "已同步 REFRESH_AGENT_SECRET"
+          fi
+```
+
+再配置并部署：
 
 ```bash
 # 1. 生成 secret（本机 agent 要用同一个值）
