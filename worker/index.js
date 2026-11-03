@@ -209,6 +209,122 @@ export default {
       );
     }
 
+    // =======================================================================
+    // 刷新数据：本机 agent 领任务 → 跑流水线 → 回报状态
+    //
+    // 触发方向是「拉模式」：Worker 在边缘够不到本机 127.0.0.1，
+    // 所以由本机 refresh_agent.py 轮询 /api/refresh/next 领任务。
+    //
+    // 认证分两套，**故意不共用密钥**：
+    //   - 前端端点用登录 cookie（decide_auth）
+    //   - agent 端点用独立的 REFRESH_AGENT_SECRET 头
+    // 共用会让一个泄露同时丢掉登录态和 agent 通道。
+    // =======================================================================
+
+    // ---- 刷新：建任务（需登录）----
+    if (path === '/api/refresh' && method === 'POST') {
+      const payload = await readAuth(request, env);
+      if (!payload) {
+        return json({ error: '未登录' }, 401, origin);
+      }
+      // 互斥：已有 pending/running 的任务 → 409（防连点排出多班流水线）
+      const busy = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM refresh_jobs WHERE status IN ('pending','running')`,
+      ).first();
+      if (busy && Number(busy.n || 0) > 0) {
+        return json({ error: '已有刷新任务进行中' }, 409, origin);
+      }
+      const jobId = crypto.randomUUID();
+      const now = nowStamp();
+      await env.DB.prepare(
+        `INSERT INTO refresh_jobs
+         (job_id, status, requested_by, created_at)
+         VALUES (?,?,?,?)`,
+      ).bind(jobId, 'pending', payload.user || null, now).run();
+      return json({ ok: true, job_id: jobId }, 200, origin);
+    }
+
+    // ---- 刷新：查状态（需登录）----
+    if (path === '/api/refresh/status' && method === 'GET') {
+      const payload = await readAuth(request, env);
+      if (!payload) {
+        return json({ error: '未登录' }, 401, origin);
+      }
+      const jobId = url.searchParams.get('job_id') || '';
+      if (!jobId) {
+        return json({ error: 'job_id 必填' }, 400, origin);
+      }
+      const row = await env.DB.prepare(
+        `SELECT * FROM refresh_jobs WHERE job_id = ?`,
+      ).bind(jobId).first();
+      if (!row) {
+        return json({ error: '任务不存在' }, 404, origin);
+      }
+      return json({
+        job_id: row.job_id,
+        status: row.status,
+        latest_date: row.latest_date || null,
+        message: row.message || null,
+        created_at: row.created_at || null,
+        started_at: row.started_at || null,
+        finished_at: row.finished_at || null,
+      }, 200, origin);
+    }
+
+    // ---- 刷新：agent 领任务（需 X-Agent-Secret）----
+    if (path === '/api/refresh/next' && method === 'GET') {
+      if (!env.REFRESH_AGENT_SECRET
+          || request.headers.get('X-Agent-Secret') !== env.REFRESH_AGENT_SECRET) {
+        return json({ error: 'unauthorized' }, 401, origin);
+      }
+      const row = await env.DB.prepare(
+        `SELECT * FROM refresh_jobs WHERE status = 'pending' ORDER BY created_at LIMIT 1`,
+      ).first();
+      if (!row) {
+        return json({ job_id: null }, 200, origin);
+      }
+      // 用带条件的 UPDATE 抢占：并发领任务时只有一个能成功改到 running
+      const upd = await env.DB.prepare(
+        `UPDATE refresh_jobs SET status = 'running', started_at = ? WHERE job_id = ? AND status = 'pending'`,
+      ).bind(nowStamp(), row.job_id).run();
+      const changes = upd && upd.meta && typeof upd.meta.changes === 'number'
+        ? upd.meta.changes
+        : 1;
+      if (!changes) {
+        // 别人抢先领走了
+        return json({ job_id: null }, 200, origin);
+      }
+      return json({
+        job_id: row.job_id,
+        requested_by: row.requested_by || null,
+        created_at: row.created_at || null,
+      }, 200, origin);
+    }
+
+    // ---- 刷新：agent 回报结果（需 X-Agent-Secret）----
+    if (path === '/api/refresh/result' && method === 'POST') {
+      if (!env.REFRESH_AGENT_SECRET
+          || request.headers.get('X-Agent-Secret') !== env.REFRESH_AGENT_SECRET) {
+        return json({ error: 'unauthorized' }, 401, origin);
+      }
+      const body = await request.json().catch(() => ({}));
+      const jobId = String(body.job_id || '').trim();
+      if (!jobId) {
+        return json({ error: 'job_id 必填' }, 400, origin);
+      }
+      const st = body.status === 'success' ? 'success' : 'failed';
+      await env.DB.prepare(
+        `UPDATE refresh_jobs SET status = ?, latest_date = ?, message = ?, finished_at = ? WHERE job_id = ?`,
+      ).bind(
+        st,
+        body.latest_date || null,
+        String(body.message || '').slice(0, 500) || null,
+        nowStamp(),
+        jobId,
+      ).run();
+      return json({ ok: true }, 200, origin);
+    }
+
     return json({ error: 'not found' }, 404, origin);
   },
 

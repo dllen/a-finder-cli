@@ -24,3 +24,16 @@ CREATE TABLE IF NOT EXISTS real_cb_positions (
     note          TEXT,
     updated_at    TEXT
 );
+
+-- 刷新任务状态表：只存状态，不存行情。
+-- 每天个位数到几十行，相对免费版 10 万行/天配额可忽略。
+CREATE TABLE IF NOT EXISTS refresh_jobs (
+    job_id       TEXT PRIMARY KEY,
+    status       TEXT NOT NULL,          -- pending | running | success | failed
+    requested_by TEXT,                   -- 登录用户名
+    created_at   TEXT,
+    started_at   TEXT,
+    finished_at  TEXT,
+    latest_date  TEXT,                   -- 刷新后站点的最新数据日期
+    message      TEXT                    -- 摘要 / 错误原因
+);
