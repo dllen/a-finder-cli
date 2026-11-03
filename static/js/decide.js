@@ -4,6 +4,7 @@ import {
   fetchDecidePlan, fetchDecideConfig,
   fetchDecidePositionsRemote, postDecidePosition, deleteDecidePosition,
   loginDecide, logoutDecide, fetchDecideAuthState, isStatic,
+  fetchRefresh, fetchRefreshStatus,
 } from './api.js';
 import { $, fmt, esc, setStatus } from './dom.js';
 import { computeComparison } from './decide_compare.js';
@@ -35,9 +36,109 @@ let WORKER_OK = true;            // Worker 可用性（决定建仓按钮是否�
 let PENDING_PLAN_ROW = null;     // 未登录时记住待建仓的 plan 行
 let LAST_PLAN_ROWS = [];         // 最近一次渲染的 plan 行（供行内建仓取数）
 
+// ---------------------------------------------------------------------------
+// 刷新数据：登录后点按钮 → Worker 排队 → 本机 agent 跑流水线 → 轮询状态
+//
+// 为什么是轮询：流水线要 15~35 分钟（同步行情 + 回补历史），不可能同步等待。
+// 为什么用递归 setTimeout 而不是 setInterval：慢网下 setInterval 会让请求
+// 堆积（上一次还没回来就发下一次），setTimeout 是「上一次回来了才排下一次」。
+// ---------------------------------------------------------------------------
+
+const REFRESH_POLL_MS = 4000;   // 轮询间隔
+let REFRESH_TIMER = null;       // 当前轮询定时器
+let REFRESH_JOB_ID = null;      // 正在跟踪的任务 id
+
+/** 渲染刷新状态条。kind: 'running' | 'ok' | 'err' */
+function renderRefreshState(kind, text) {
+  const el = $('refresh-status');
+  if (!el) return;
+  const cls = kind === 'ok' ? 'alert-success'
+    : kind === 'err' ? 'alert-danger'
+    : 'alert-info';
+  el.innerHTML = '<div class="alert ' + cls + ' py-2 mb-0 small">' + esc(text) + '</div>';
+}
+
+/** 清定时器（不改 job id，轮询中间态用）。 */
+function clearRefreshTimer() {
+  if (REFRESH_TIMER) {
+    clearTimeout(REFRESH_TIMER);
+    REFRESH_TIMER = null;
+  }
+}
+
+/** 彻底停止轮询（登出/完成后用）。 */
+function stopRefreshPolling() {
+  clearRefreshTimer();
+  REFRESH_JOB_ID = null;
+}
+
+function setRefreshButtonEnabled(on) {
+  const btn = $('btn-refresh-data');
+  if (!btn) return;
+  btn.disabled = !on;
+  btn.textContent = on ? '刷新数据' : '刷新中…';
+}
+
+/** 登录态变化时显示/隐藏刷新按钮（未登录不该有它可点）。 */
+function renderRefreshButton() {
+  const btn = $('btn-refresh-data');
+  if (!btn) return;
+  if (AUTHED && !isStatic()) {
+    btn.classList.remove('d-none');
+  } else {
+    btn.classList.add('d-none');
+  }
+}
+
+/** 轮询一次任务状态；未终态则排下一次。 */
+function pollRefreshStatus(jobId) {
+  fetchRefreshStatus(jobId).then(st => {
+    if (st.status === 'success') {
+      renderRefreshState('ok', '刷新完成：' + (st.message || ('最新数据 ' + st.latest_date)));
+      setRefreshButtonEnabled(true);
+      stopRefreshPolling();
+      return;
+    }
+    if (st.status === 'failed') {
+      renderRefreshState('err', '刷新失败：' + (st.message || '未知原因'));
+      setRefreshButtonEnabled(true);
+      stopRefreshPolling();
+      return;
+    }
+    // pending / running：继续等
+    renderRefreshState('running', st.message || '刷新进行中…（通常 10~30 分钟）');
+    clearRefreshTimer();
+    REFRESH_TIMER = setTimeout(() => pollRefreshStatus(jobId), REFRESH_POLL_MS);
+  }).catch(err => {
+    renderRefreshState('err', '无法查询刷新状态：' + (err && err.message ? err.message : err));
+    setRefreshButtonEnabled(true);
+    stopRefreshPolling();
+  });
+}
+
+/** 点按钮：建任务 → 开始轮询。 */
+function startRefresh() {
+  if (REFRESH_JOB_ID) return;              // 已有任务在跟踪
+  setRefreshButtonEnabled(false);
+  renderRefreshState('running', '正在提交刷新任务…');
+  fetchRefresh().then(res => {
+    REFRESH_JOB_ID = res.job_id;
+    renderRefreshState('running', '任务已提交，等待本机开始（通常 10~30 分钟）…');
+    clearRefreshTimer();
+    REFRESH_TIMER = setTimeout(() => pollRefreshStatus(REFRESH_JOB_ID), 1500);
+  }).catch(err => {
+    setRefreshButtonEnabled(true);
+    const msg = (err && err.status === 409)
+      ? '已有刷新任务进行中，请等它完成'
+      : (err && err.message ? err.message : '未知错误');
+    renderRefreshState('err', '无法启动刷新：' + msg);
+  });
+}
+
 function renderAuthBar() {
   const el = $('decide-auth');
   if (!el) return;
+  renderRefreshButton();
   if (AUTHED) {
     el.innerHTML = `<div class="d-flex align-items-center gap-2 small">
       <span class="text-success">👤 <strong>${esc(CURRENT_USER || '已登录')}</strong></span>
@@ -702,6 +803,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const btn = $('decide-refresh');
   if (btn) btn.addEventListener('click', loadAll);
 
+  const btnRefreshData = $('btn-refresh-data');
+  if (btnRefreshData) btnRefreshData.addEventListener('click', startRefresh);
+
+  // 页面隐藏时暂停轮询、回来再续：避免标签页在后台时白打几十次请求。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearRefreshTimer();
+    } else if (REFRESH_JOB_ID) {
+      clearRefreshTimer();
+      REFRESH_TIMER = setTimeout(() => pollRefreshStatus(REFRESH_JOB_ID), 500);
+    }
+  });
+
   const form = $('login-form');
   if (form) form.addEventListener('submit', submitLogin);
 
@@ -711,6 +825,12 @@ document.addEventListener('DOMContentLoaded', () => {
       await logoutDecide().catch(() => {});
       AUTHED = false;
       CURRENT_USER = '';
+      // 登出必须停轮询：否则继续每 4s 打一次 /api/refresh/status，
+      // 拿一堆 401 把日志刷满，而且 UI 还显示着别人的任务进度。
+      stopRefreshPolling();
+      const st = $('refresh-status');
+      if (st) st.innerHTML = '';
+      setRefreshButtonEnabled(true);
       renderAuthBar();
       loadAll();
       return;

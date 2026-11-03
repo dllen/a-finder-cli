@@ -11,10 +11,19 @@
     <div class="ms-auto d-flex align-items-center gap-2">
       {{ date_filter('decide-date', '日期', compact=true) }}
       <button id="decide-refresh" class="btn btn-sm btn-outline-primary write-control">刷新</button>
+      {# 服务端守卫：静态站没有 /api/refresh（那是 Cloudflare Worker 的脚本路由，
+         不在 gh-pages 里），所以按钮根本不该进静态产物 —— 靠 JS 隐藏是假隐藏。 #}
+      {% if show_write_controls|default(true) %}
+      <button id="btn-refresh-data" class="btn btn-sm btn-outline-primary d-none"
+              title="触发一次完整的数据刷新（同步行情 → 选股 → 计划 → 发布），通常需要 10~30 分钟">
+        刷新数据
+      </button>
+      {% endif %}
     </div>
   </div>
 
   <div id="decide-auth" class="mb-3"></div>
+  <div id="refresh-status" class="mb-3"></div>
   <div id="decide-status" class="mb-3"></div>
 
   <div class="row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 mb-3" id="decide-summary"></div>

@@ -251,3 +251,18 @@ export function fetchDecideConfig() {
     ? getJSON(dsPath('data/decide-config.json'))
     : getJSON('/api/decide/config');
 }
+
+// ---------------------------------------------------------------------------
+// 刷新数据（本机 agent 跑流水线，Worker 只做排队与状态）
+//
+// 两个端点都在 Worker 上（`/api/*` 走脚本路由），静态站没有它们 ——
+// 所以调用方必须先用 isStatic() 判断，静态站根本不该走到这里。
+// ---------------------------------------------------------------------------
+
+export function fetchRefresh() {
+  return reqJSON(API_BASE + '/api/refresh', { method: 'POST' });
+}
+
+export function fetchRefreshStatus(jobId) {
+  return reqJSON(API_BASE + '/api/refresh/status?job_id=' + encodeURIComponent(jobId));
+}
