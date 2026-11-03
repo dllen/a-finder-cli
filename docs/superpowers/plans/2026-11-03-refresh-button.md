@@ -1709,6 +1709,26 @@ git commit -m "docs: 刷新按钮链路说明（CLAUDE.md）"
 
 ---
 
+## 附：Task 2 实施期发现并已修的两个真问题（bash 3.2 与 sqlite 建空库）
+
+Task 2 的实施过程中实测复现了两个**会让线上功能直接挂掉**的坑，
+实施计划给的原文代码在这台 Mac 上是跑不通的：
+
+1. **macOS bash 3.2 的「中文括号吞进变量名」**：
+   `echo "线上最新日: $live_latest（产物的下限）"` 在 bash 3.2.57 下报
+   `live_latest?: unbound variable` —— 因为紧跟的**中文全角括号**被当成变量名的一部分。
+   本仓库 `a-finder.sh` 自己的注释（85-86 行）就警告过这个坑，但实施计划给的原文还是踩了。
+   ⇒ 修法：写成 `${live_latest}（...）`（**加花括号**）。
+   > 这台机器的 bash 就是 3.2.57，而 refresh_agent 就跑在这台 Mac 上 —— 不修则线上必挂。
+2. **`sqlite3.connect(path)` 会新建 0 字节空库**：
+   库文件不存在时，普通 connect 会**创建**这个文件（实测 `file created by plain connect? True`），
+   随后查询因表不存在抛 raw traceback，`set -e` 直接中断，连友好报错都打不出来。
+   ⇒ 修法：用只读 URI `file:$db?mode=ro`（实测不创建文件）+ try/except 吞成空串，
+   走同一条「库里没行情 → 中止」分支。
+
+> 教训：涉及 **shell 方言** 与 **副作用型 API** 的代码，不能只看「语法对不对」，
+> 要在**目标机器的 shell 版本**上实跑。CI 用 bash 5，本机是 bash 3.2 —— 差异就在这。
+
 ## 附：Task 1 实施期发现并已修的两个真问题（review 记录）
 
 代码质量审查发现 2 个 Important，都集中在 `POST /api/refresh`：
