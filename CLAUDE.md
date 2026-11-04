@@ -102,8 +102,8 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 - **失败通知**：deploy-site 末尾有 `if: failure()` 步骤，配置仓库 secret `NTFY_TOPIC`
   （ntfy.sh 主题名，浏览器/App 订阅即可）后失败会推送；未配置时写 Step Summary 并保持
   run 变红。也可用 GitHub 自带「Notifications → Actions → 仅失败时发邮件」。
-- `hs300.db` 缓存 key 按 `run_id` 唯一（固定 key 会冻结缓存 —— actions/cache 不允许
-  覆盖已存在的 key）。
+- ~~`hs300.db` 缓存 key 按 `run_id` 唯一~~ —— 2026-11-04 起谱系改走 Release 资产，
+  不再有 key/restore-keys 语义，所以这条**只对历史方案有效**，别再照着改。
 - **每周体检 + 自愈 + 备份**（`gap-heal.yml`，周日 10:00 北京）：`scripts/check_gaps.py`
   扫最近 30 个交易日覆盖度 → `sync-hs300-range --gap-fill` 补抓 → 再扫一次（仍有缺口则红）
   → 顺手把 `hs300.db` 压成 artifact（90 天），缓存丢失时可秒恢复不必重抓 400 天。
@@ -146,33 +146,37 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 3. **`skip_sync` 与「要不要发布」分开决策**。混成一个 skip 会导致：
    库已新鲜但线上缺当天 → 所有人都跳过 → 当天没人发布。
    所以另有 `site_stale`（线上缺当天就仍要发布）。
-4. **没同步就不重复存缓存**。8 班/天 × 200MB × 7 天保留 ≈ 11GB，会打爆
-   `actions/cache` 的 10GB 配额，淘汰掉别的重要条目。
-   **⚠️ 光「没同步就不存」还不够 —— 必须先瘦身（2026-11-04 查明）**：
-   `trade_plan`（含索引）占全库 **94%**（实测 469 MB / 499 MB），而且只增不减。
-   单条目就 499 MB ⇒ 几班就打爆 10 GB 配额 ⇒ **`actions/cache` 存不下但不报错**
-   （save 步骤报 `success`、`Post Save` 报 `skipped`、日志无红字）⇒ 谱系停在
-   最后一次成功保存的那天。实测停在 **2026-10-29**，此后每班都是坏的，
-   而缓存里只剩 10-27/10-29 两个 **5.2 MB** 的残库（正常库 ~500 MB）。
-   - 四个写缓存的工作流**都**加了「瘦身库」步骤（`scripts/slim_db_for_cache.py`），
-     在 save 之前跑：删掉 60 天窗口外的 `trade_plan` 行 + `VACUUM`，499 MB → 94 MB。
-   - 凭什么能删：`trade_plan` 是**派生表**（`daily_picks` + `daily_prices` 可重算，
-     CI 每次都跑 `plan build-all --backfill`）。**`daily_prices` / `daily_picks` 一行都不动**
-     —— 行情必须全留在缓存里，`pick_history` 按每只票 221 根 K 线过滤。
-   - 窗口 ≥ 45 天（审计窗口 30 天 + 余量），给小了 L3 会误报「计划缺口」。
-   - **⚠️ 必须原地瘦身（文件名仍是 `hs300.db`）**：`actions/cache` 按归档里的路径还原，
-     存 `hs300.db.slim` 而 restore 写 `path: hs300.db` ⇒ 还原出 `hs300.db.slim`，
-     下游找 `hs300.db` 全部找不到 ⇒ **每班冷启动**，缓存等于没用。
-     所以四个工作流的 restore/save `path:` 都必须是 `hs300.db`。
+4. **谱系存储已换成 GitHub Release 资产，不再用 `actions/cache`（2026-11-04）**。
+   原因：`actions/cache` 在本仓库**双向都不工作** —— `Post Save` 与 `Post Restore`
+   一直 `skipped`，条目永久停在 10-27/10-29 两条 **5.2 MB** 的残库；
+   实测缓存总用量才 **~200 MB / 10 GB**，所以**不是配额问题**。后果是
+   gap-heal 拿到**空库**：体检 30 天全 0 只、补抓后历史深度 0 根，
+   而步骤只显示一个 `failure`，根因完全不可见。
+   - 存储：**Release tag `db-lineage`** 上的两个资产 —— `hs300.db.gz`（gzip）+
+     `lineage-meta.json`（最新行情日 / 历史深度 / 交易日数 / `lineage_ok`）。
+     单一名义资产 + **覆盖**语义，不再有「哪个 run 的 key 最新」这种隐式规则。
+   - 读写：`scripts/db_lineage.py {restore,save,show}`（纯 stdlib + REST API，
+     需要 `contents: write`，四个 workflow 都已改）。`restore` 无资产时返回 **rc=2**
+     （= 正常冷启动，不要判红）。
+   - **单调性守卫**：`decide_save()` 在写入前比对线上 meta —— 本地最新日比线上旧、
+     或历史更浅，就**拒绝覆盖**。`actions/cache` 是无条件 last-writer-wins，
+     谱系回退正是这么来的。
+   - **不合格的库绝不覆盖谱系根**（等价于原来的 `degraded-` 前缀隔离）：
+     各 workflow 把「体检干净 / `prices_ok` / `clean` / lag==0」作为 `--lineage-ok`。
+   - 存之前仍要**瘦身**（`scripts/slim_db_for_cache.py`，四个 workflow 都有）：
+     `trade_plan`（含索引）占全库 **94%**，而它是**派生表**（`daily_picks` +
+     `daily_prices` 可重算，CI 每次跑 `plan build-all --backfill`）。
+     **`daily_prices` / `daily_picks` 一行都不动** —— 行情必须全留，
+     `pick_history` 按每只票 221 根 K 线过滤。窗口 ≥ 45 天（审计窗口 30 天 + 余量）。
+   - ⚠️ 瘦身**必须原地**（文件名仍是 `hs300.db`）：下游与 `db_lineage save`
+     都按固定文件名找库，换名字早晚漏一处 ⇒ 表现为「库里没数据」。
 5. **本地兜底只在「CI 已经放弃」时动手**：过了 deadline（默认 17:00 北京）
    线上仍落后才算数。本地抢跑本身就在制造分叉。
-- **缓存 key 必须永远带 run_id**：`actions/cache` 不允许覆盖已存在的 key，固定 key
-  会让缓存**永久冻结**（2026-10-26 的 `hs300-db` 就是这样）。改 key 后还要确认
-  旧条目是否仍能被 `restore-keys` 命中 —— `'hs300-db'.startswith('hs300-db-')` 是
-  **False**，所以 10-26 17:49 改 key 的那一刻旧条目直接变成不可达的孤儿，
-  CI 行情谱系断在 2026-10-13（详见 `.learnings/ERRORS.md`）。
-  恢复缓存后要加**新鲜度校验**：`MAX(daily_prices.trade_date)` 落后太多就判定
-  谱系孤儿、走冷启动重建，别指望增量补。
+- **（历史）缓存 key 必须带 run_id**：这条只适用于已经弃用的 `actions/cache` 方案
+  （固定 key 会让缓存永久冻结，2026-10-26 的 `hs300-db` 就是这样）。
+  2026-11-04 起谱系改走 Release 资产，**key 语义不复存在**；
+  但仍保留「谱系孤儿 → 冷启动」的判据：`db_freshness` 的 rc=3 与
+  `--min-history-bars 221`，落在新方案里就是「restore 后先体检再决定要不要重建」。
 - **⚠️「一条库能不能用」要看三个维度，缺一不可**（2026-11-01 查明）：
   **最新日**（够不够新）+ **覆盖只数**（全不全）+ **历史深度**（够不够算）。
   少一个维度就会出现「看起来很新、实际算不出东西」的库 ——
@@ -236,8 +240,9 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 
 # 每日巡检与自动补齐（daily-audit.yml）
 - 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检。与 deploy-site 是各自独立的
-  workflow，**失败互不影响**（一边红了不拖累另一边），但**共用 hs300.db 缓存**
-  （`hs300-db-*` 前缀，restore-keys 互相兜底）——「解耦」指失败隔离，不是数据隔离。
+  workflow，**失败互不影响**（一边红了不拖累另一边），但**共用同一份 hs300.db 谱系**
+  （Release `db-lineage` 的 `hs300.db.gz`）——「解耦」指失败隔离，不是数据隔离。
+  ⚠️ 写者仍是四个，改谱系逻辑必须四个一起看（见「两谱系分叉」里的那张表）。
 - **体检基准**：`market_calendar.trading_days` 算出的真实交易日（近 30 天），
   **完全独立于库内数据**。这是关键 —— 缺口判定若以「库的最后一天」为基准，
   整天漏抓的那天在基准里不可见，永远查不出来（2026-10-26 实际踩过）。
@@ -330,7 +335,8 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   `[L1] 今天 行情只有 0 只` 这种假缺口。workflow 里已显式传 `--today`，不受影响。
 
 # 行情数据路径（GH 直连，Cloudflare 不存行情）
-- **唯一存储**：GitHub Actions 的 SQLite 缓存（`hs300.db`，actions/cache，10 GB 免费）。
+- **唯一存储**：GitHub Release `db-lineage` 里的 `hs300.db.gz`（2026-11-04 起；
+  之前是 `actions/cache`，因双向失效已弃用，见上面「谱系存储」一节）。
   站点只发布它消费的 JSON（picks/plan/portfolio/decide），**原始行情不进 gh-pages**。
 - **Worker 只做三件事**（第三件 2026-11-03 加，见「刷新按钮」一节）：
   1. `/api/decide/*`（决策台持仓，D1 仅 `real_positions` / `real_cb_positions` 两张表）

@@ -88,15 +88,11 @@ def _code_only(block: str) -> str:
 
 
 def _save_steps(text: str):
-    """找出所有**保存缓存**的步骤块。
+    """找出所有**保存谱系**的步骤块。
 
-    判据是步骤体内出现 `key:` 且值含 `hs300-db`（actions/cache@v4 的保存写法），
-    而不是步骤名里有没有「缓存」两个字 —— deploy-site / weekly-evolve 的步骤名
-    是英文的，靠名字匹配会漏。
-
-    区分 restore 与 save：restore 步骤带 `restore-keys`（读缓存），save 步骤没有。
-    **必须忽略注释行** —— 步骤里常有「否则 restore-keys 仍然会命中它」这类说明性
-    注释，按整块做子串匹配会被注释里的字样误判成 restore 步骤。
+    2026-11-04 起谱系存储从 actions/cache 换成 GitHub Release 资产，
+    保存动作统一是 `python3 scripts/db_lineage.py save ...`。
+    判据用**这条命令**而不是步骤名：步骤名会改，命令不会。
     """
     blocks = []
     for line in text.splitlines():
@@ -105,10 +101,21 @@ def _save_steps(text: str):
         block = _step_block(text, line.strip()[len("- name:"):].strip())
         if not block:
             continue
-        code_lines = [ln for ln in block.splitlines()
-                      if not ln.strip().startswith("#")]
-        code = "\n".join(code_lines)
-        if re.search(r"^\s*key:\s*.*hs300-db", code, re.M) and "restore-keys" not in code:
+        if "db_lineage.py save" in _code_only(block):
+            blocks.append(block)
+    return blocks
+
+
+def _restore_steps(text: str):
+    """找出所有**恢复谱系**的步骤块（`db_lineage.py restore`）。"""
+    blocks = []
+    for line in text.splitlines():
+        if not line.strip().startswith("- name:"):
+            continue
+        block = _step_block(text, line.strip()[len("- name:"):].strip())
+        if not block:
+            continue
+        if "db_lineage.py restore" in _code_only(block):
             blocks.append(block)
     return blocks
 
@@ -116,75 +123,73 @@ def _save_steps(text: str):
 # ---------------------------------------------------------------- 不变量 1
 
 
-def test_no_workflow_uses_a_fixed_cache_key():
-    """缓存 key 必须每次唯一（带 run_id）。
+def test_no_workflow_still_uses_actions_cache():
+    """谱系已迁到 Release 资产：四个 workflow 不该再有 actions/cache 的**步骤**。
 
-    固定 key 的后果是永久冻结：actions/cache 不允许覆盖已存在的 key，
-    之后每天从同一份旧库增量同步，数据逐渐落后（2026-10-26 的真实事故）。
+    2026-11-04 查明 actions/cache 在本仓库**双向都不工作**：Post Save / Post Restore
+    一直 skipped，条目永久停在 10-27/10-29 两条 5.2 MB 残库，而缓存用量才 ~200 MB
+    （不是配额问题）。后果是 gap-heal 拿到空库 → 体检 30 天全 0 只。
+    旧方案的 key / restore-keys / degraded- 前缀语义全部作废，
+    改用 scripts/db_lineage.py（单一名义资产 + 覆盖 + 单调性守卫）。
     """
     for name in SHARING_WORKFLOWS:
-        text = _text(name)
-        for block in _save_steps(text):
-            keys = re.findall(r"^\s*key:\s*(.+)$", block, re.M)
-            assert keys, f"{name}: 缓存保存步骤必须显式给 key"
-            for key in keys:
-                assert "github.run_id" in key, (
-                    f"{name}: 缓存 key 必须是每次唯一的（含 github.run_id），实际 {key!r}"
-                )
+        code = _code_only(_text(name))
+        assert "uses: actions/cache" not in code, (
+            f"{name}: 谱系已改走 Release 资产，不该再使用 actions/cache 步骤"
+        )
+        assert _restore_steps(_text(name)), (
+            f"{name}: 必须有 db_lineage.py restore 步骤"
+        )
+        assert _save_steps(_text(name)), (
+            f"{name}: 必须有 db_lineage.py save 步骤"
+        )
 
 
 # ---------------------------------------------------------------- 不变量 2
 
 
-def test_restore_keys_use_the_run_id_prefix_with_trailing_dash():
-    """restore 前缀必须是 `hs300-db-`（带尾横线）。
+def test_restore_treats_rc2_as_cold_start_not_failure():
+    """restore 的 rc=2 表示「没有谱系」，必须当正常冷启动，不能判红。
 
-    `'hs300-db'.startswith('hs300-db-')` 是 False —— 少了尾横线就够不到旧条目，
-    谱系会**断**而不是**接上**（2026-10-29 查明的关键细节）。
+    旧方案里「没有缓存」是 cache miss（步骤仍然 success），新方案是显式退出码，
+    所以调用方必须区分：rc=2 = 首次/被删（正常），其余非 0 = 真出错（告警）。
+    判错的后果是全新仓库第一次跑就红，而红的原因只是「还没有库」。
     """
     for name in SHARING_WORKFLOWS:
-        text = _text(name)
-        prefixes = re.findall(r"^\s*hs300-db-?\s*$", text, re.M)
-        for p in prefixes:
-            assert p.strip() == "hs300-db-", (
-                f"{name}: restore-keys 前缀必须是 'hs300-db-'（带尾横线），实际 {p.strip()!r}"
-            )
+        blocks = _restore_steps(_text(name))
+        assert blocks, f"{name}: 应当有 db_lineage.py restore 步骤"
+        code = _code_only(blocks[0])
+        assert "rc" in code, f"{name}: restore 步骤应当读取退出码区分冷启动"
+        assert "= \"2\"" in code or "= '2'" in code, (
+            f"{name}: restore 步骤必须显式处理 rc=2（没有谱系 = 正常冷启动）"
+        )
 
 
 # ---------------------------------------------------------------- 不变量 3
 
 
-def test_degraded_cache_key_does_not_match_restore_prefix():
-    """隔离用的 `degraded-` 前缀**不能**以 `hs300-db` 开头。
+def test_unqualified_db_never_overwrites_lineage_root():
+    """不合格的库**绝不能覆盖**谱系根 —— 这是隔离语义的新实现。
 
-    否则 restore-keys 仍然会命中被隔离的坏库 —— 隔离形同虚设。
-    实际 key 形如：
-      ${{ cond && format('hs300-db-{0}', run_id) || format('degraded-hs300-db-{0}', run_id) }}
-    两条分支的键名前缀分别是 `hs300-db-`（合格）与 `degraded-hs300-db-`（隔离）。
-    隔离分支整串以 `degraded-` 开头 → restore-keys 的 `hs300-db-` 匹配不到它。
+    旧方案把坏库存到 `degraded-` 前缀，让它不被 restore-keys 命中。
+    新方案在写入前判定（scripts/db_lineage.py 的 decide_save）：不合格直接跳过，
+    线上谱系根保持不动。效果一样，但不需要再维护前缀命名规则。
+
+    因此这里守两件事：
+      1. 每个 workflow 的保存步骤都显式传 --lineage-ok（不是无条件写）；
+      2. 传的值来自上一步的真实判定，**不能硬编码 true**。
     """
     for name in SHARING_WORKFLOWS:
-        text = _text(name)
-        keys = re.findall(r"^\s*key:\s*(.+)$", text, re.M)
-        degraded_keys = [k for k in keys if "degraded-" in k]
-        assert degraded_keys, f"{name}: 应当有 degraded- 前缀的隔离缓存 key"
-        for key in degraded_keys:
-            # 取出所有 format('...') 的键名模板
-            prefixes = re.findall(r"format\('([^']+)'", key)
-            assert prefixes, f"{name}: 隔离缓存 key 应当用 format() 给出键名：{key!r}"
-            isolated = [p for p in prefixes if p.startswith("degraded-")]
-            assert isolated, f"{name}: 应当有以 'degraded-' 开头的隔离分支：{key!r}"
-            for prefix in isolated:
-                # 判据是 restore-keys 的真实匹配语义：
-                #   缓存键 K 会被 `restore-keys: hs300-db-` 命中 ⟺ K.startswith("hs300-db-")
-                # 隔离键以 "degraded-" 开头 → 必然不命中。
-                assert not prefix.startswith("hs300-db-"), (
-                    f"{name}: 隔离分支的键名不能以 'hs300-db-' 开头，"
-                    f"否则 restore-keys 仍会命中：{prefix!r}"
-                )
-                assert prefix.startswith("degraded-"), (
-                    f"{name}: 隔离分支的键名必须以 'degraded-' 开头：{prefix!r}"
-                )
+        blocks = _save_steps(_text(name))
+        assert blocks, f"{name}: 应当有 db_lineage.py save 步骤"
+        for block in blocks:
+            code = _code_only(block)
+            assert "--lineage-ok" in code, (
+                f"{name}: 保存谱系必须显式传 --lineage-ok（否则坏库会覆盖谱系根）"
+            )
+            assert '--lineage-ok "true"' not in code, (
+                f"{name}: --lineage-ok 不能硬编码 true，必须来自上一步的真实判定"
+            )
 
 
 def test_cache_save_is_conditional_in_every_workflow():
@@ -193,26 +198,30 @@ def test_cache_save_is_conditional_in_every_workflow():
     `if: always()` 让一次失败的 run 也成为谱系根 → 缺口被固化并逐日传递。
     """
     for name in SHARING_WORKFLOWS:
-        text = _text(name)
-        blocks = _save_steps(text)
-        assert blocks, f"{name}: 应当有保存缓存的步骤"
+        blocks = _save_steps(_text(name))
+        assert blocks, f"{name}: 应当有 db_lineage.py save 步骤"
         for block in blocks:
-            assert "if:" in block or "steps." in block, (
-                f"{name}: 缓存保存步骤必须带条件（不能无条件成为谱系根）"
+            code = _code_only(block)
+            # 资格必须以「真实判定结果」的形式传进去：要么引用上一步的 output，
+            # 要么是本地先算出来的变量（如 daily-audit 的 OK）。
+            assert "steps." in code or "OK=" in code or "lineage-ok" in code, (
+                f"{name}: 保存谱系必须带资格判定（不能无条件成为谱系根）"
             )
 
 
-def test_weekly_evolve_has_a_lineage_qualification_step():
-    """weekly-evolve 原本保存缓存**完全没有 if 守卫** —— 不受控的谱系根写入者。
+def test_weekly_evolve_qualification_comes_from_verify_step():
+    """weekly-evolve 原本保存缓存**完全没有守卫** —— 不受控的谱系根写入者。
 
-    它只跑 `stock_cli.py evolve`，不跑体检/补抓，所以必须自带「库是否合格」的判定。
+    它只跑 `stock_cli.py evolve`，不跑体检/补抓，所以谱系资格必须来自它自带的
+    「检查库是否仍是合格的谱系根」那一步（strictly-latest + 历史深度）。
     """
     text = _text("weekly-evolve.yml")
     blocks = _save_steps(text)
     assert blocks
-    has_guard = any("daily_prices" in b or "谱系" in b for b in blocks)
-    assert has_guard, \
-        "weekly-evolve 必须自带谱系资格判定（检查 daily_prices 最新日）"
+    code = _code_only(blocks[0])
+    assert "steps.verify.outcome" in code, (
+        "weekly-evolve 的谱系资格必须取自「检查库是否仍是合格的谱系根」那一步"
+    )
 
 
 # ---------------------------------------------------------------- 不变量 4
@@ -271,7 +280,7 @@ def test_deploy_site_freshness_queries_its_own_db_not_the_site():
 def test_deploy_site_restore_precedes_freshness():
     """Restore 必须在 freshness 之前 —— 否则要查自己的库时库还没拿回来。"""
     text = _text("deploy-site.yml")
-    restore_at = text.find("- name: Restore hs300.db from cache")
+    restore_at = text.find("scripts/db_lineage.py restore")
     freshness_at = text.find("- name: 检查是否需要跑")
     assert restore_at != -1 and freshness_at != -1
     assert restore_at < freshness_at, (
@@ -304,17 +313,17 @@ def test_deploy_site_splits_skip_sync_from_running():
     )
 
 
-def test_deploy_site_does_not_resave_unchanged_db():
-    """没同步时不该再存一份缓存。
+def test_deploy_site_does_not_reupload_unchanged_db():
+    """没同步时不该再上传一份谱系。
 
-    密集排班 8 班/天 × 200MB × 7 天保留 ≈ 11GB，会打爆 actions/cache 的 10GB
-    配额（超额会淘汰别的条目，包括早班的正常缓存）。
+    密集排班 8 班/天，而库（瘦身后）也有近百 MB —— 没同步时再传一次只是
+    白耗时间与带宽，而且会让谱系根频繁变动，增大并发覆盖的风险。
     """
     text = _text("deploy-site.yml")
-    blocks = [b for b in _save_steps(text) if "actions/cache" in b]
+    blocks = _save_steps(text)
     assert blocks
     assert any("skip_sync" in b for b in blocks), (
-        "缓存保存条件里必须有 skip_sync != 'true'（没同步就不要重复存）"
+        "谱系保存条件里必须有 skip_sync != 'true'（没同步就不要重复上传）"
     )
 
 
@@ -327,34 +336,33 @@ def test_daily_audit_treats_gap_free_db_as_clean_lineage_root():
     这是本仓库改这行时真实踩过的反向 bug，用测试钉住。
     """
     text = _text("daily-audit.yml")
-    blocks = [b for b in _save_steps(text)]
-    assert blocks, "daily-audit 应当有缓存保存步骤"
+    blocks = _save_steps(text)
+    assert blocks, "daily-audit 应当有 db_lineage.py save 步骤"
     save = _code_only(blocks[0])
-    assert "audit_rc == '0'" in save, (
-        "缓存 key 的「干净」判据必须包含 audit_rc == '0'（体检无缺口时复检不跑）"
+    assert "audit_rc" in save, (
+        "谱系资格必须看 audit_rc（体检无缺口时复检没跑，只看 recheck 会错判）"
     )
-    assert "recheck_rc == '0'" in save, (
-        "缓存 key 的「干净」判据必须包含 recheck_rc == '0'（修复后复检干净）"
+    assert "recheck_rc" in save, (
+        "谱系资格也必须看 recheck_rc（修复后复检干净也算合格）"
     )
-    # 两个条件是「或」：任一为真即干净
-    assert "||" in save, "两个干净条件之间应当是 ||（任一满足即可）"
+    # 两个条件是「或」：任一为 '0' 即合格
+    assert "||" in save, "两个合格条件之间应当是 ||（任一满足即可）"
 
 
 def test_daily_audit_quarantines_when_audit_could_not_judge():
-    """体检 rc=2（无法判定）时不得当成干净 —— 三元表达式必须落到 degraded 分支。
+    """体检 rc=2（无法判定）时不得当成合格 —— OK 必须默认 false。
 
-    这条靠「上面那条判据只认 '0'」来保证：audit_rc='2' 与 recheck_rc='' 都不等于
-    '0'，所以表达式为假 → degraded。这里显式写下语义，防止将来有人把 `== '0'`
-    放宽成「非空即干净」。
+    判据只认 '0'：audit_rc='2' 与 recheck_rc='' 都不等于 '0' → OK 保持 false
+    → db_lineage save 跳过，线上谱系根不被覆盖。
+    这里显式写下语义，防止将来有人把 `= "0"` 放宽成「非空即合格」。
     """
     text = _text("daily-audit.yml")
-    save = _code_only([b for b in _save_steps(text)][0])
-    key_lines = [ln for ln in save.splitlines() if ln.strip().startswith("key:")]
-    assert key_lines
-    key = key_lines[0]
-    # 不能出现「只要非空就算干净」这类宽松判据
-    assert "!= ''" not in key, "不得用「非空即干净」的判据：audit_rc=2 会被误判为干净"
-    assert "degraded-hs300-db-" in key
+    save = _code_only(_save_steps(text)[0])
+    assert 'OK="false"' in save, "合格标志必须默认 false（rc 缺失/异常时不得判合格）"
+    assert "!= ''" not in save, (
+        "不得用「非空即合格」的判据：audit_rc=2 会被误判为合格"
+    )
+    assert '= "0"' in save, "判据只认 rc == 0"
 
 
 # ---------------------------------------------------------------- 不变量 6

@@ -28,11 +28,15 @@ def test_deploy_site_does_not_publish_to_gh_pages():
     )
 
 
-def test_deploy_site_still_saves_cache():
-    """缓存保存必须保留 —— 删了会让 CI 行情谱系冻结。"""
+def test_deploy_site_still_saves_lineage():
+    """谱系保存必须保留 —— 删了会让 CI 行情谱系冻结。
+
+    2026-11-04 起存储从 actions/cache 换成 GitHub Release 资产
+    （cache 在本仓库双向都失效），保存动作是 scripts/db_lineage.py save。
+    """
     src = _text("deploy-site.yml")
-    assert "actions/cache@v4" in src, "缓存保存被误删"
-    assert "hs300-db-" in src, "缓存 key 规则被误改"
+    assert "db_lineage.py save" in src, "谱系保存被误删"
+    assert "db_lineage.py restore" in src, "谱系恢复被误删"
 
 
 def test_deploy_site_keeps_freshness_gate():

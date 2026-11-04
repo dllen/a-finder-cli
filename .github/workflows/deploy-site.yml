@@ -72,16 +72,27 @@ jobs:
 
       # Restore 必须在 freshness **之前**：判据要读 CI 自己的库，就必须先把库拿回来。
       # 顺序反了就只能读线上站点 —— 而那正是两谱系事故的根因。
-      - name: Restore hs300.db from cache
+      #
+      # ⚠️ 2026-11-04 起不再用 actions/cache：它在本仓库**双向都不工作**
+      # （Post Save / Post Restore 一直 skipped，条目停在 10-27/10-29 两条 5.2MB 残库，
+      # 而缓存用量才 ~200MB，不是配额问题）。改成 GitHub Release 资产：
+      # 单一名义资产 + 覆盖语义 + 单调性守卫，见 scripts/db_lineage.py。
+      - name: Restore hs300.db from 谱系 release（不用 actions/cache）
         if: steps.trade-day.outputs.is_trade_day == 'true'
-        uses: actions/cache@v4
-        with:
-          path: hs300.db
-          # key 必须每次唯一：固定 key 会导致首次保存后缓存永远不再更新
-          # （actions/cache 不允许覆盖已存在的 key），每天从同一份旧 DB 增量同步。
-          key: hs300-db-${{ github.run_id }}
-          restore-keys: |
-            hs300-db-
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # rc=2 = 没有谱系（首次/被删），属于正常冷启动，不要变红。
+          python3 scripts/db_lineage.py restore --db hs300.db || {
+            rc=$?
+            if [ "$rc" = "2" ]; then
+              echo "::notice::没有可用谱系，按冷启动处理"
+            else
+              echo "::warning::谱系恢复出错（rc=$rc），按冷启动处理"
+            fi
+            rm -f hs300.db
+          }
 
       - name: 检查是否需要跑（判据 = CI 自己的库，不是线上站点）
         id: freshness
@@ -249,31 +260,25 @@ jobs:
             python3 scripts/verify_site_export.py --site site --expect-latest "$EXPECT"
           fi
 
-      # 存缓存**之前**先把库瘦身（2026-11-04 加）。
+      # 存**谱系之前**先把库瘦身（2026-11-04 加）。
       #
-      # 为什么必须瘦身：actions/cache 的配额是 10 GB，而 trade_plan 只增不减 ——
-      # 实测 trade_plan（含索引）469 MB / 全库 499 MB，占 94%。
-      # 一天 8 班 × 499MB × 7 天保留 ≈ 28GB ⇒ 必然打爆配额 ⇒
-      # **actions/cache 存不下但不报错**（save 步骤报 success，post 步骤 skipped）
-      # ⇒ 谱系停在最后一次成功保存的那天（实测停在 2026-10-29，之后每班都是坏的）。
-      #
-      # 凭什么能瘦身：trade_plan 是**派生表**，可由 daily_picks + daily_prices
-      # 重算出来（就是下一行 build-all --backfill 干的事，CI 每次都会重跑）。
-      # 真正必须留在缓存里的是**行情**：pick_history 按每只票 221 根 K 线过滤，
+      # 为什么必须瘦身：trade_plan 只增不减 —— 实测它（含索引）占全库 94%
+      # （469 MB / 499 MB），而谱系资产每天要被上传/下载多次。
+      # 凭什么能删：trade_plan 是**派生表**，可由 daily_picks + daily_prices
+      # 重算（就是下面 build-all --backfill 干的事，CI 每次都会重跑）。
+      # 真正必须留在谱系里的是**行情**：pick_history 按每只票 221 根 K 线过滤，
       # 少一天都不行 ⇒ 瘦身脚本只删 trade_plan，绝不碰 daily_prices。
       # 窗口留 60 天（审计窗口 30 天 + 余量），否则 L3 会误报「计划缺口」。
-      - name: 瘦身库（缓存配额有限，trade_plan 是派生表可重算）
+      - name: 瘦身库（trade_plan 是派生表，可重算）
         id: slim
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.freshness.outputs.skip_sync != 'true'
         run: |
           set -uo pipefail
-          # ⚠️ **必须原地瘦身**（不加 --out），保持文件名仍是 hs300.db。
-          # 为什么不能用另一个文件名：actions/cache 是**按归档里的路径还原**的。
-          # 存 hs300.db.slim、restore 写 path: hs300.db ⇒ 还原出来的是
-          # hs300.db.slim，而下游所有步骤（db_freshness / 同步 / 导出）找的是
-          # hs300.db ⇒ 每次都「无库」⇒ 每班都冷启动，缓存等于没用。
-          # 原地瘦身则 save/restore 的 path 都是 hs300.db，新旧缓存都能还原。
-          # 此时导出步骤已经跑完，后续步骤只查当日数据，删旧 trade_plan 无影响。
+          # ⚠️ **必须原地瘦身**（不加 --out），文件名保持 hs300.db。
+          # 为什么：下游所有步骤（db_freshness / 导出 / db_lineage save）
+          # 都按固定文件名 hs300.db 找库；换成 hs300.db.slim 就得每处跟着改，
+          # 早晚漏一处 ⇒ 表现为「库里没数据」。原地瘦身没有这个问题。
+          # 此时导出步骤已经跑完，后续只查当日数据，删旧 trade_plan 无影响。
           if python3 scripts/slim_db_for_cache.py --db hs300.db; then
             echo "slim_ok=true" >> "$GITHUB_OUTPUT"
             ls -l hs300.db
@@ -282,29 +287,22 @@ jobs:
             echo "::warning::瘦身失败 —— 仍存原库（可能撑爆缓存配额）"
           fi
 
-      - name: Save hs300.db to cache（只让「行情已落地」的库当谱系根）
-        # 条件里必须有 skip_sync != 'true'：本班**没同步**时库没变化，再存一份只是
-        # 用新 key 复制同一个 200MB 文件。密集排班 8 班/天 × 200MB × 7 天保留
-        # ≈ 11GB，会打爆 actions/cache 的 10GB 配额（超额会淘汰别的条目，
-        # 包括早班的正常缓存）。
+      - name: 保存谱系到 release（只让「行情已落地」的库当谱系根）
+        # 条件里必须有 skip_sync != 'true'：本班**没同步**时库没变化，
+        # 再传一份只是白耗时间与带宽。
         #
-        # 瘦身后 ~95MB；8 班/天 × 95MB × 7 天 ≈ 5.3GB，配额够用。
-        # 瘦身失败时存的是原库（499MB，可能撑爆配额）—— 已在上一步打 warning。
+        # 谱系根的资格 = 本班同步后行情门禁通过（prices_ok）。语义与原来 cache
+        # 方案的 degraded- 前缀一致：**不合格的库绝不覆盖已有谱系根** ——
+        # 一个「同步没推进」的库成为起点，缺口就会被固化并逐日传递
+        # （2026-10-29 查明 CI 行情谱系断在 2026-10-13 就是这么来的）。
+        # 判定逻辑在 scripts/db_lineage.py 的 decide_save（有单测）。
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.freshness.outputs.skip_sync != 'true'
-        uses: actions/cache@v4
-        with:
-          # 必须是 hs300.db：restore 步骤也是这个 path，
-          # 两边不一致会导致还原出来的是 hs300.db.slim ⇒ 下游找不到库 ⇒ 每班冷启动。
-          # 瘦身在上一歩**原地**完成（文件名不变），这里不用再分支。
-          path: hs300.db
-          # 谱系根的资格：本班同步后行情门禁通过（prices_ok=true）。
-          # 为什么：actions/cache 的 restore-keys 取**最新**的匹配条目，谁最后保存谁
-          # 就是下一个 run 的起点。原来的无条件保存让一个「同步没推进」的库也成为
-          # 谱系根 → 缺口被固化并逐日传递（2026-10-29 查明 CI 行情谱系断在
-          # 2026-10-13 就是这么来的）。
-          # 门禁没过时存到 degraded- 前缀：**必须不以 hs300-db- 开头**，否则
-          # restore-keys 仍然命中它，等于没隔离（留作事后排查用）。
-          key: ${{ steps.sync.outputs.prices_ok == 'true' && format('hs300-db-{0}', github.run_id) || format('degraded-hs300-db-{0}', github.run_id) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          python3 scripts/db_lineage.py save --db hs300.db \
+            --lineage-ok "${{ steps.sync.outputs.prices_ok }}"
 
       # 本机（refresh_agent + a-finder.sh site --push）是 gh-pages 的**唯一日常写者**。
       # 这里不再发布：
