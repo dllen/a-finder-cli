@@ -81,15 +81,48 @@ jobs:
           HISTORY_BARS=$(python3 -c "import sqlite3,pathlib,sys; p=pathlib.Path(sys.argv[1]); print((sqlite3.connect(p).execute('SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)').fetchone() or [0])[0] or 0 if p.exists() else 0)" hs300.db 2>/dev/null || echo 0)
           echo "历史深度: ${HISTORY_BARS} 根 K 线（选股需要 >= 221）"
           DAYS=90
+          COLD=0
           if [ "$HISTORY_BARS" -lt 221 ]; then
             echo "::warning::历史深度不足（${HISTORY_BARS} < 221）—— 90 天补抓不会让历史变长，改用 400 天冷启动重建"
             DAYS=400
+            COLD=1
+          fi
+          # ⚠️「某几天整天是 0 只」= 谱系断在半路，不是「漏了几天」（2026-11-04 加）。
+          # 为什么必须区分：gap-fill 只按「库里已有日期之外的缺口」分段补抓，
+          # 而谱系断在半路的库（最新日停在 10-23、之后整段没有）补起来会原地打转 ——
+          # 实测 2026-11-04 那班：补抓写了几万行历史，但 10-26~11-04 仍是 0 只，
+          # 体检后照样红，缓存也永远上不去。这时在烂谱系上打补丁没有意义，
+          # 与 daily-audit.yml 的判据保持一致：弃库、冷启动重建。
+          ZERO_DAYS=$(grep -c ': 0 只' /tmp/gaps_before.txt 2>/dev/null || true)
+          ZERO_DAYS=${ZERO_DAYS:-0}
+          echo "体检（补抓前）报告里「整天 0 只」的天数: ${ZERO_DAYS}"
+          if [ "$ZERO_DAYS" -gt 0 ]; then
+            echo "::warning::有 ${ZERO_DAYS} 天整天没有行情 —— 判定谱系断裂，弃库冷启动重建"
+            COLD=1
+            DAYS=400
+          fi
+          if [ "$COLD" = "1" ] && [ -f hs300.db ]; then
+            rm -f hs300.db
+            echo "已删除 hs300.db，走冷启动重建"
           fi
           START="$(TZ=Asia/Shanghai date -d "${END} -${DAYS} days" +%F)"
-          echo "补抓区间: ${START} ~ ${END}"
+          echo "补抓区间: ${START} ~ ${END}（DAYS=${DAYS} COLD=${COLD}）"
+          # 把 sync 的完整输出留下来再打印尾部：下面要靠它把「写入行数」写进
+          # Step Summary —— 只 `|| true` + tail 的话，失败时日志里什么都看不到。
+          SYNC_OUT="$(mktemp)"
           python3 stock_cli.py sync-hs300-range \
             --start "$START" --end "$END" --db hs300.db \
-            --gap-fill --concurrency 6 --rate 6 --retries 3 --backoff 0.8 2>&1 | tail -20 || true
+            --gap-fill --concurrency 6 --rate 6 --retries 3 --backoff 0.8 2>&1 | tee "$SYNC_OUT" | tail -20 || true
+          {
+            echo "### 补抓摘要（DAYS=${DAYS} COLD=${COLD}）"
+            echo '```'
+            grep -E '区间同步|写入行|成分股' "$SYNC_OUT" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 补抓后立刻打印最近 10 个交易日的覆盖情况。
+          # 为什么需要：sync 被 `|| true` 兜住，失败不会让步骤变红；只有把实际落地
+          # 写进日志，排查「补抓跑完了但那天还是 0 只」才有第一手数据。
+          python3 -c "import sqlite3;c=sqlite3.connect('hs300.db');rows=c.execute('SELECT trade_date,COUNT(DISTINCT code) FROM daily_prices GROUP BY trade_date ORDER BY trade_date DESC LIMIT 10').fetchall();print('最近10个交易日覆盖:');[print('  %s %d' % (d,n)) for d,n in rows]" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: 体检（补抓后，仍有缺口则失败）
         id: check_after
