@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import os
 import threading
 import time
@@ -259,6 +260,43 @@ def _drop_unsettled_today(
     return kept
 
 
+#: 内置成分股名单（JSON）。结构：{"snapshot_date": str, "codes": [str, ...]}
+BUNDLED_CONSTITUENTS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "hs300_constituents.json"
+)
+
+
+def _load_bundled_constituents() -> Dict[str, object]:
+    """读仓库内置的沪深300成分股名单；读不到返回 ``{}``（调用方自行降级）。
+
+    这是**最后一层**兜底（2026-11-04 加），只在前两层都失败时才会用到：
+
+    1. 东财成分股接口（唯一源，没有备源）
+    2. 本地库已有的代码列表（下次冷启动时库是空的，这层也会失效）
+
+    **为什么必须有第 3 层**：CI 的缓存 restore 失败时库里没有任何表，
+    而第 1 层若同时不可达就会 raise FetchError —— 一行行情都抓不到，
+    冷启动永远起不来。实测表现是「补抓 2 秒结束」「补抓后历史深度 0 根」。
+
+    名单是快照、会过时（成分股每年调整），但「用略过时的名单抓到行情」
+    远好于「一行都抓不到，然后把 run 变红」。使用时记警告日志。
+    """
+    try:
+        with open(BUNDLED_CONSTITUENTS_PATH, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    codes = payload.get("codes")
+    if not isinstance(codes, list) or not codes:
+        return {}
+    clean = [str(c).strip() for c in codes if str(c).strip()]
+    if not clean:
+        return {}
+    return {"codes": clean, "snapshot_date": str(payload.get("snapshot_date") or "")}
+
+
 def _resolve_constituents(db_path: str) -> Dict[str, str]:
     """取沪深300成分股；接口取不到时回退到**本地库已有的代码列表**。
 
@@ -287,7 +325,25 @@ def _resolve_constituents(db_path: str) -> Dict[str, str]:
     finally:
         conn.close()
     if not codes:
-        raise FetchError("无法获取沪深300成分股列表，且本地数据库为空（无法回退）")
+        # 最后一层兜底：仓库内置的名单（2026-11-04 加）。
+        #
+        # 为什么必须有（2026-11-04 实测）：CI 的缓存 restore 失败时库里没有表，
+        # 而 Eastmoney 成分股接口又是**唯一源、没有备源** —— 两者同时不可用就
+        # raise FetchError，一行行情都抓不到，冷启动永远起不来
+        # （表现为「补抓 2 秒结束」「补抓后历史深度 0 根」）。
+        # 仓库里带一份快照，冷启动就不再依赖那个接口。
+        # 名单会过时，但「用稍微过时的名单抓到行情」远好于「一行都抓不到」。
+        bundled = _load_bundled_constituents()
+        if bundled:
+            get_logger().warning(
+                "沪深300成分股接口失败且本地库为空，改用内置兜底名单（%d 只，快照 %s）",
+                len(bundled["codes"]),
+                bundled.get("snapshot_date", "unknown"),
+            )
+            return {code: "" for code in bundled["codes"]}
+        raise FetchError(
+            "无法获取沪深300成分股列表，且本地数据库为空、内置兜底名单也不可用（无法回退）"
+        )
     get_logger().warning(
         "沪深300成分股获取失败，改用本地数据库代码列表（%d 只）", len(codes)
     )
