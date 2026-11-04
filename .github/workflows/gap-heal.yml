@@ -132,6 +132,16 @@ jobs:
           SYNC_RC=${PIPESTATUS[0]}
           set -e
           echo "补抓退出码: ${SYNC_RC}（非 0 = 同步本身报错，不是「数据源没数据」）"
+          # 非 0 时把**第一行错误**打成 GitHub annotation（2026-11-04 加）。
+          # 为什么：annotation 直接显示在 run 首页，不必展开步骤日志就能看到 ——
+          # 这次排查就卡在「同步 2 秒就退出，但错误被 tail 冲掉、没人看得到」。
+          if [ "${SYNC_RC}" != "0" ]; then
+            ERR_LINE=$(grep -m1 -E 'Error|error:|Traceback|FetchError|Exception' "$SYNC_OUT" || true)
+            echo "::error::补抓同步失败 rc=${SYNC_RC}：${ERR_LINE:-（输出里没有明显的错误行，见下方完整输出）}"
+            echo "---- sync 输出（最后 60 行）----"
+            tail -60 "$SYNC_OUT" || true
+            echo "--------------------------------"
+          fi
           {
             echo "### 补抓摘要（DAYS=${DAYS} COLD=${COLD} rc=${SYNC_RC}）"
             echo '```'
