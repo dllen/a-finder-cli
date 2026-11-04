@@ -148,6 +148,22 @@ bash a-finder.sh cron                                  # launchd 入口（工作
    所以另有 `site_stale`（线上缺当天就仍要发布）。
 4. **没同步就不重复存缓存**。8 班/天 × 200MB × 7 天保留 ≈ 11GB，会打爆
    `actions/cache` 的 10GB 配额，淘汰掉别的重要条目。
+   **⚠️ 光「没同步就不存」还不够 —— 必须先瘦身（2026-11-04 查明）**：
+   `trade_plan`（含索引）占全库 **94%**（实测 469 MB / 499 MB），而且只增不减。
+   单条目就 499 MB ⇒ 几班就打爆 10 GB 配额 ⇒ **`actions/cache` 存不下但不报错**
+   （save 步骤报 `success`、`Post Save` 报 `skipped`、日志无红字）⇒ 谱系停在
+   最后一次成功保存的那天。实测停在 **2026-10-29**，此后每班都是坏的，
+   而缓存里只剩 10-27/10-29 两个 **5.2 MB** 的残库（正常库 ~500 MB）。
+   - 四个写缓存的工作流**都**加了「瘦身库」步骤（`scripts/slim_db_for_cache.py`），
+     在 save 之前跑：删掉 60 天窗口外的 `trade_plan` 行 + `VACUUM`，499 MB → 94 MB。
+   - 凭什么能删：`trade_plan` 是**派生表**（`daily_picks` + `daily_prices` 可重算，
+     CI 每次都跑 `plan build-all --backfill`）。**`daily_prices` / `daily_picks` 一行都不动**
+     —— 行情必须全留在缓存里，`pick_history` 按每只票 221 根 K 线过滤。
+   - 窗口 ≥ 45 天（审计窗口 30 天 + 余量），给小了 L3 会误报「计划缺口」。
+   - **⚠️ 必须原地瘦身（文件名仍是 `hs300.db`）**：`actions/cache` 按归档里的路径还原，
+     存 `hs300.db.slim` 而 restore 写 `path: hs300.db` ⇒ 还原出 `hs300.db.slim`，
+     下游找 `hs300.db` 全部找不到 ⇒ **每班冷启动**，缓存等于没用。
+     所以四个工作流的 restore/save `path:` 都必须是 `hs300.db`。
 5. **本地兜底只在「CI 已经放弃」时动手**：过了 deadline（默认 17:00 北京）
    线上仍落后才算数。本地抢跑本身就在制造分叉。
 - **缓存 key 必须永远带 run_id**：`actions/cache` 不允许覆盖已存在的 key，固定 key

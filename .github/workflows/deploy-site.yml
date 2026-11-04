@@ -249,14 +249,53 @@ jobs:
             python3 scripts/verify_site_export.py --site site --expect-latest "$EXPECT"
           fi
 
+      # 存缓存**之前**先把库瘦身（2026-11-04 加）。
+      #
+      # 为什么必须瘦身：actions/cache 的配额是 10 GB，而 trade_plan 只增不减 ——
+      # 实测 trade_plan（含索引）469 MB / 全库 499 MB，占 94%。
+      # 一天 8 班 × 499MB × 7 天保留 ≈ 28GB ⇒ 必然打爆配额 ⇒
+      # **actions/cache 存不下但不报错**（save 步骤报 success，post 步骤 skipped）
+      # ⇒ 谱系停在最后一次成功保存的那天（实测停在 2026-10-29，之后每班都是坏的）。
+      #
+      # 凭什么能瘦身：trade_plan 是**派生表**，可由 daily_picks + daily_prices
+      # 重算出来（就是下一行 build-all --backfill 干的事，CI 每次都会重跑）。
+      # 真正必须留在缓存里的是**行情**：pick_history 按每只票 221 根 K 线过滤，
+      # 少一天都不行 ⇒ 瘦身脚本只删 trade_plan，绝不碰 daily_prices。
+      # 窗口留 60 天（审计窗口 30 天 + 余量），否则 L3 会误报「计划缺口」。
+      - name: 瘦身库（缓存配额有限，trade_plan 是派生表可重算）
+        id: slim
+        if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.freshness.outputs.skip_sync != 'true'
+        run: |
+          set -uo pipefail
+          # ⚠️ **必须原地瘦身**（不加 --out），保持文件名仍是 hs300.db。
+          # 为什么不能用另一个文件名：actions/cache 是**按归档里的路径还原**的。
+          # 存 hs300.db.slim、restore 写 path: hs300.db ⇒ 还原出来的是
+          # hs300.db.slim，而下游所有步骤（db_freshness / 同步 / 导出）找的是
+          # hs300.db ⇒ 每次都「无库」⇒ 每班都冷启动，缓存等于没用。
+          # 原地瘦身则 save/restore 的 path 都是 hs300.db，新旧缓存都能还原。
+          # 此时导出步骤已经跑完，后续步骤只查当日数据，删旧 trade_plan 无影响。
+          if python3 scripts/slim_db_for_cache.py --db hs300.db; then
+            echo "slim_ok=true" >> "$GITHUB_OUTPUT"
+            ls -l hs300.db
+          else
+            echo "slim_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::瘦身失败 —— 仍存原库（可能撑爆缓存配额）"
+          fi
+
       - name: Save hs300.db to cache（只让「行情已落地」的库当谱系根）
         # 条件里必须有 skip_sync != 'true'：本班**没同步**时库没变化，再存一份只是
         # 用新 key 复制同一个 200MB 文件。密集排班 8 班/天 × 200MB × 7 天保留
         # ≈ 11GB，会打爆 actions/cache 的 10GB 配额（超额会淘汰别的条目，
         # 包括早班的正常缓存）。
+        #
+        # 存的是**瘦身产物**（瘦身失败时退回原库）。瘦身后 ~95MB，
+        # 8 班/天 × 95MB × 7 天 ≈ 5.3GB，配额够用。
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.freshness.outputs.skip_sync != 'true'
         uses: actions/cache@v4
         with:
+          # 必须是 hs300.db：restore 步骤也是这个 path，
+          # 两边不一致会导致还原出来的是 hs300.db.slim ⇒ 下游找不到库 ⇒ 每班冷启动。
+          # 瘦身在上一歩**原地**完成（文件名不变），这里不用再分支。
           path: hs300.db
           # 谱系根的资格：本班同步后行情门禁通过（prices_ok=true）。
           # 为什么：actions/cache 的 restore-keys 取**最新**的匹配条目，谁最后保存谁

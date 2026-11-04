@@ -147,10 +147,31 @@ jobs:
           path: /tmp/hs300-*.db.gz
           retention-days: 90
 
+      # 存缓存**之前**先把库瘦身（2026-11-04 加）。
+      # 理由见 deploy-site.yml 的同名步骤：trade_plan（含索引）469 MB / 全库 499 MB，
+      # 一天 8 班 × 全量库会打爆 actions/cache 的 10 GB 配额，
+      # 而 actions/cache **存不下但不报错** ⇒ 谱系停在最后一次成功保存的那天。
+      # trade_plan 是派生表（daily_picks + daily_prices 可重算），只删它、不碰行情。
+      - name: 瘦身库（缓存配额有限，trade_plan 是派生表可重算）
+        id: slim
+        if: always()
+        run: |
+          set -uo pipefail
+          # ⚠️ **必须原地瘦身**（不加 --out），保持文件名仍是 hs300.db。
+          # actions/cache 按归档里的路径还原：存 hs300.db.slim 而 restore 写
+          # path: hs300.db ⇒ 还原出 hs300.db.slim，下游找 hs300.db 找不到 ⇒ 每班冷启动。
+          if python3 scripts/slim_db_for_cache.py --db hs300.db; then
+            echo "slim_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "slim_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::瘦身失败 —— 仍存原库（可能撑爆缓存配额）"
+          fi
+
       - name: Save hs300.db to cache（只让「补抓后无缺口」的库当谱系根）
         if: always()
         uses: actions/cache@v4
         with:
+          # 必须与 restore 的 path 一致（都是 hs300.db）；瘦身已在上一歩原地完成。
           path: hs300.db
           # 谱系根的资格：补抓后体检必须干净。
           # 为什么：restore-keys 取**最新**的匹配条目，谁最后保存谁就是下一个 run
