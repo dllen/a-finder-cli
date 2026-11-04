@@ -288,8 +288,8 @@ jobs:
         # ≈ 11GB，会打爆 actions/cache 的 10GB 配额（超额会淘汰别的条目，
         # 包括早班的正常缓存）。
         #
-        # 存的是**瘦身产物**（瘦身失败时退回原库）。瘦身后 ~95MB，
-        # 8 班/天 × 95MB × 7 天 ≈ 5.3GB，配额够用。
+        # 瘦身后 ~95MB；8 班/天 × 95MB × 7 天 ≈ 5.3GB，配额够用。
+        # 瘦身失败时存的是原库（499MB，可能撑爆配额）—— 已在上一步打 warning。
         if: always() && steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true' && steps.freshness.outputs.skip_sync != 'true'
         uses: actions/cache@v4
         with:
