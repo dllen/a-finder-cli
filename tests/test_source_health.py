@@ -18,30 +18,38 @@ class TestProbe:
         tracker = _make_tracker()
         with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
+             patch("data_providers.fetch_daily_kline_tencent_bfq") as mock_bfq, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.side_effect = ConnectionError("RemoteDisconnected")
             mock_sina.return_value = ([MagicMock()], "茅台")
+            mock_bfq.return_value = ([MagicMock()], "茅台")
             mock_tx.return_value = ([MagicMock()], "茅台")
             tracker.probe()
 
         assert tracker.is_available("eastmoney") is False
         assert tracker.is_available("sina") is True
         ordered = tracker.get_ordered_sources()
-        assert ordered[0] == "sina"
+        # 腾讯 bfq 是不复权且 amount/turnover/pct_change 齐全的源，
+        # 与新浪同口径但字段更全 ⇒ 同口径下排在新浪之前
+        assert ordered[0] == "tencent_bfq"
         assert ordered[-1] == "eastmoney"
 
     def test_probe_all_available_keeps_default_order(self):
-        """全部可用 → 保持默认顺序（eastmoney 优先）。"""
+        """全部可用 → 保持默认顺序（东财 > 腾讯 bfq > 新浪 > 腾讯 qfq）。"""
         tracker = _make_tracker()
         with patch("data_providers.fetch_daily_kline_eastmoney") as mock_em, \
              patch("data_providers.fetch_daily_kline_sina") as mock_sina, \
+             patch("data_providers.fetch_daily_kline_tencent_bfq") as mock_bfq, \
              patch("data_providers.fetch_daily_kline_tencent") as mock_tx:
             mock_em.return_value = ([MagicMock()], "茅台")
             mock_sina.return_value = ([MagicMock()], "茅台")
+            mock_bfq.return_value = ([MagicMock()], "茅台")
             mock_tx.return_value = ([MagicMock()], "茅台")
             tracker.probe()
 
-        assert tracker.get_ordered_sources() == ["eastmoney", "sina", "tencent"]
+        assert tracker.get_ordered_sources() == [
+            "eastmoney", "tencent_bfq", "sina", "tencent"
+        ]
 
     def test_probe_empty_rows_counts_as_failure(self):
         """源返回空列表 → 视为失败。"""

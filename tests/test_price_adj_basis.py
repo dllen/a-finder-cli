@@ -103,14 +103,30 @@ class TestBasisRegistry:
         """source_basis() 查已知源；未登记的源返回 None（必须被当成非首选口径）。"""
         assert source_basis("eastmoney") == "none"
         assert source_basis("sina") == "none"
+        assert source_basis("tencent_bfq") == "none"
         assert source_basis("tencent") == "qfq"
         assert source_basis("akshare") is None
 
-    def test_only_tencent_is_non_preferred(self):
-        """首选口径组 = {东财, 新浪}；腾讯是唯一的非首选源。"""
+    def test_only_qfq_tencent_is_non_preferred(self):
+        """首选口径组 = {东财, 新浪, 腾讯 bfq}；腾讯 qfq 是唯一的非首选源。
+
+        腾讯有**两个**源，口径不同，必须分别登记：
+
+        - ``tencent_bfq``（newfqkline + bfq）= 不复权，且 amount/turnover/pct_change
+          **齐全** ⇒ 与东财同口径，可当不复权主源；
+        - ``tencent``（fqkline + qfq）= 前复权 ⇒ 非首选，只在前复权组里兜底。
+
+        把 bfq 漏登记成 qfq（或不登记）⇒ 它会被降级到非首选组，
+        东财不可达时就会拿不到不复权数据；反之登记错了口径则更糟
+        （前复权价格被写进不复权表 = 2026-10-29 事故）。
+        """
         preferred = {s for s, b in SOURCE_BASIS.items() if b == PREFERRED_BASIS}
-        assert preferred == {"eastmoney", "sina"}
+        assert preferred == {"eastmoney", "sina", "tencent_bfq"}
         assert SOURCE_BASIS["tencent"] != PREFERRED_BASIS
+
+    def test_tencent_bfq_is_registered_as_none(self):
+        """tencent_bfq 必须是「不复权」——它替代的是东财 fqt=0 的位置。"""
+        assert SOURCE_BASIS["tencent_bfq"] == BASIS_NONE
 
 
 # ---------------------------------------------------------------------------

@@ -198,6 +198,25 @@ bash a-finder.sh cron                                  # launchd 入口（工作
   - ⚠️ `akshare_data_provider.fetch_daily_kline_akshare` 用 `adjust="qfq"`
     （**也是前复权**），目前**没有调用方**。哪天接进链路，**必须**显式标
     `adj_basis="qfq"`，否则默认的 `"none"` 会错标。
+  - **同口径 ≠ 同字段（2026-11-04 新增 `tencent_bfq` 源）**：东财 `push2his`
+    不可达时备源链退到新浪，而新浪 `getKLineData` **只给 OHLC + 成交量**，
+    `amount`/`turnover`/`pct_change` 全缺 ⇒ 落库全是 `0.0` ⇒
+    「量价齐升」策略的 `pct_change` 判据与回测的成交额口径**静默失效**
+    （不报错，算出来全错）。腾讯 `newfqkline` 的 `bfq` 口径与东财 `fqt=0`
+    **完全一致**（实测 300 只 × 2 日逐字段对得上）且字段齐全 ⇒ 单列为
+    `tencent_bfq`，排在新浪**之前**（同口径下优先选字段全的）。
+    ⚠️ **两个腾讯源口径不同，别互相顶替**：`tencent`(fqkline+qfq)=前复权 /
+    `tencent_bfq`(newfqkline+bfq)=不复权。
+    ⚠️ `tencent_bfq` 的**成交量单位按板块不同**：主板是「手」、科创板 688xxx
+    是「股」（688008 给 46199662 = 461997 手）。库里统一存「手」⇒ **688 要 /100**。
+    ⚠️ `newfqkline` 的 `count` 是「从 end_date **往回**取 N 根」，不是往后取 ——
+    窗口给小了会**静默少一天**。
+    ⚠️ 腾讯不给涨跌幅，`pct_change` 由**前收盘价**自算；`field[7]` 是**换手率**
+    不是涨跌幅（000001 11-04 换手 0.74% 但跌 0.2549%）—— 搞混则动量选股全错。
+    测试：`tests/test_tencent_bfq_source.py`。
+  - **腾讯 `newfqkline` 在本机可用（2026-11-04）**：东财 `push2his`（K 线）被墙
+    （`RemoteDisconnected`），但 `push2`（实时报价）通 ⇒ 用 `f47`/`f48`/`f168`/`f170`
+    可交叉校验落库的 volume/amount/turnover/pct_change。
 
 # 每日巡检与自动补齐（daily-audit.yml）
 - 每晚 21:00 北京（13:00 UTC，周一到周五）独立跑一次体检。与 deploy-site 是各自独立的

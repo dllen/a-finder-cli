@@ -2,15 +2,16 @@
 
 **复权口径（adjustment basis）为什么必须显式记录**
 ------------------------------------------------
-本模块接入的三个日 K 源，**口径并不一致**：
+本模块接入的四个日 K 源，**口径并不一致**：
 
 ===========  ==========================  ==================
-源            接口参数                    口径
-===========  ==========================  ==================
-eastmoney    ``push2his`` ``fqt=0``     不复权（none）
-sina         ``getKLineData``           不复权（none）
-tencent      ``fqkline`` ``qfq``        前复权（qfq）
-===========  ==========================  ==================
+源              接口参数                       口径
+=============  =============================  ==================
+eastmoney      ``push2his`` ``fqt=0``         不复权（none）
+tencent_bfq    ``newfqkline`` ``bfq``         不复权（none）
+sina           ``getKLineData``               不复权（none）
+tencent        ``fqkline`` ``qfq``            前复权（qfq）
+=============  =============================  ==================
 
 2026-10-29/30 事故（复盘见 ``docs/reports/ci-cache-fix-plan.md`` 的 F2/F3 与 A5）：
 东财被限流时，备源链**静默**退到腾讯 qfq，把**前复权**价格写进一张
@@ -29,6 +30,16 @@ tencent      ``fqkline`` ``qfq``        前复权（qfq）
 .. note::
    另有一个事实必须记住：**2026-10-29 只有东财有**（腾讯 qfqday 与新浪当时都只到
    10-28）。「退到腾讯」并不是对最近交易日的补救，它只会**静默少一天**。
+
+.. note::
+   **同口径不等于同字段**（2026-11-04 实测）：东财 ``push2his`` 不可达时备源链退到
+   新浪，而新浪的 ``getKLineData`` **不返回 amount/turnover/pct_change** ⇒
+   落库的这三个字段全是 ``0.0`` ⇒ 「量价齐升」策略的 ``pct_change`` 判据与回测的
+   成交额口径**静默失效**（不报错，算出来全错）。
+   腾讯 ``newfqkline`` 的 ``bfq`` 口径与东财 ``fqt=0`` 完全一致且字段齐全，
+   因此单列为 ``tencent_bfq`` 并排在新浪之前。
+   ⚠️ 注意它的**成交量单位按板块不同**：主板是「手」、科创板 688xxx 是「股」，
+   落库统一成「手」⇒ 688 要 /100。
 
 **公开名字（供 ``sync_service.py`` 与测试引用）**
 ------------------------------------------------
@@ -80,6 +91,15 @@ SOURCE_BASIS: Dict[str, str] = {
     "eastmoney": BASIS_NONE,   # push2his fqt=0
     "sina": BASIS_NONE,        # getKLineData
     "tencent": BASIS_QFQ,      # fqkline qfq
+    # 腾讯 newfqkline 的 **不复权** 日 K（bfq 参数）。
+    #
+    # 为什么要单列一个源：新浪的 getKLineData **不返回 amount/turnover/pct_change**
+    # （只有 OHLC + 成交量），东财 push2his 被墙时备源链只能退到新浪，落库的
+    # amount/turnover 全是 0.0、pct_change 全是 0.0，
+    # 于是「量价齐升」策略的 pct_change 判据和回测的成交额口径静默失效。
+    # newfqkline 的 bfq 口径与东财 fqt=0 **完全一致**（实测 OHLC/volume/amount/turnover
+    # 逐字段对得上），且额外提供 turnover 与 amount，可以当不复权主源用。
+    "tencent_bfq": BASIS_NONE,  # newfqkline bfq
 }
 
 
@@ -206,6 +226,132 @@ def fetch_daily_kline_tencent(code: str, start_date: str, end_date: str) -> tupl
                 turnover=0.0,
             )
         )
+    return rows, name
+
+
+def fetch_daily_kline_tencent_bfq(code: str, start_date: str, end_date: str) -> tuple[List[PriceRow], str]:
+    """腾讯 ``newfqkline`` 的**不复权**日 K（``bfq`` 参数）。
+
+    与 :func:`fetch_daily_kline_tencent`（``fqkline`` + ``qfq``，前复权）**不是同一个源**：
+    接口不同、复权口径不同、字段也不同。两者必须分别登记在
+    :data:`SOURCE_BASIS` 里，否则口径会被错标。
+
+    **为什么要有这个源**：新浪的 ``getKLineData`` 只给 OHLC + 成交量，
+    ``amount`` / ``turnover`` / ``pct_change`` 全缺。东财 ``push2his`` 不可达时
+    备源链退到新浪，落库的这三个字段全是 0.0，于是
+    「量价齐升」策略的 ``pct_change`` 判据与回测的成交额口径**静默失效**
+    （不是报错，是算出来全错）。本接口把这三个字段都补上了。
+
+    **口径**：``bfq`` = 不复权，与东财 ``fqt=0`` **完全一致**
+    （实测同日 OHLC/volume/amount/turnover 逐字段对得上），因此它是
+    不复权组里的首选备源，排在新浪之前。
+
+    **单位换算**（与 :func:`fetch_daily_kline_eastmoney` 对齐，务必别搞错）：
+
+    ==========  ==================  ================
+    字段         腾讯返回              落库口径
+    ==========  ==================  ================
+    volume       手（688 是股）        手（688 要 /100）
+    amount       万元                  元（x10000）
+    turnover     %                     %（x1）
+    ==========  ==================  ================
+
+    ⚠️ **成交量单位按板块不同**：主板/创业板是「手」，科创板（688xxx）是「股」。
+    这是腾讯 newfqkline 独有的坑 —— 同一个字段在不同板块差 100 倍。
+    库里统一存「手」，所以 688 要 /100。
+
+    ⚠️ ``newfqkline`` 的 ``count`` 参数是「从 ``end_date`` 往回取 N 根」，
+    **不是**「从 ``start_date`` 往后取 N 根」。取数要留够窗口（>= 区间跨度
+    + 20 根缓冲），否则早于窗口的交易日会整段缺失。
+    """
+    import datetime as dt
+    symbol = code_to_tencent_symbol(code)
+    url = "https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get"
+
+    def _dash(date_str: str) -> str:
+        # 腾讯要求 YYYY-MM-DD，内部调用传入的是 YYYYMMDD
+        if len(date_str) == 8 and date_str.isdigit():
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        return date_str
+
+    def _parse(date_str: str) -> dt.date:
+        if len(date_str) == 8 and date_str.isdigit():
+            return dt.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+        return dt.date.fromisoformat(date_str[:10])
+
+    # count 必须覆盖整个区间，否则腾讯只回 end_date 往前的 N 根
+    try:
+        span = (_parse(end_date) - _parse(start_date)).days
+    except Exception:
+        span = 60
+    count = max(30, min(800, span + 20))
+
+    params = {"param": f"{symbol},day,{_dash(start_date)},{_dash(end_date)},{count},bfq"}
+    data = fetch_url_json(url, params)
+    payload = (data.get("data") or {}).get(symbol) if isinstance(data.get("data"), dict) else None
+    if not isinstance(payload, dict):
+        return [], ""
+    qt = payload.get("qt", {}).get(symbol) or []
+    name = str(qt[1]).strip() if isinstance(qt, list) and len(qt) > 1 else ""
+    kline_data = payload.get("day") or payload.get("qfqday") or []
+
+    start_d = _parse(start_date)
+    end_d = _parse(end_date)
+    rows: List[PriceRow] = []
+    prev_close: Optional[float] = None
+    for entry in kline_data:
+        # [日期, 开, 收, 高, 低, 量(手), {}, 换手率%, 成交额(万元), ?, ?]
+        if len(entry) < 9:
+            continue
+        try:
+            day = _parse(str(entry[0]))
+        except Exception:
+            continue
+        if not (start_d <= day <= end_d):
+            # 仍然要推进 prev_close，否则窗口外的上一根收盘价会丢，
+            # 导致窗口第一根算不出 pct_change。
+            try:
+                prev_close = float(entry[2])
+            except Exception:
+                pass
+            continue
+        try:
+            close = float(entry[2])
+            volume = float(entry[5])          # 手（科创板 688xxx 是股，见下方换算）
+            turnover = float(entry[7])        # %
+            amount = float(entry[8]) * 10000.0  # 万元 -> 元
+        except (TypeError, ValueError):
+            continue
+        # ⚠️ 腾讯 newfqkline 的成交量单位**按板块不同**：
+        # 主板/创业板（000/002/300/60）是「手」，科创板（688）是「股」。
+        # 实测 688008 的 46199662 = 461997 手 × 100，与东财 f47 一致。
+        # 库里统一存「手」（688008 10-28 存 329501.0 = 32950108 股 / 100）。
+        if code.startswith("688"):
+            volume = volume / 100.0
+        # 腾讯不给涨跌幅，用前收盘价自己算（与东财 f59「涨跌幅」同口径）
+        if prev_close and prev_close > 0:
+            pct_change = (close - prev_close) / prev_close * 100.0
+            change = close - prev_close
+        else:
+            pct_change = 0.0
+            change = 0.0
+        rows.append(
+            PriceRow(
+                code=code,
+                trade_date=str(entry[0])[:10],
+                open_price=float(entry[1]),
+                close_price=close,
+                high_price=float(entry[3]),
+                low_price=float(entry[4]),
+                volume=volume,
+                amount=amount,
+                amplitude=0.0,
+                pct_change=pct_change,
+                change=change,
+                turnover=turnover,
+            )
+        )
+        prev_close = close
     return rows, name
 
 
@@ -462,7 +608,15 @@ class SourceHealthTracker:
     失败次数（record_failure），超过阈值自动降级到列表末尾。
     """
 
-    SOURCES = ["eastmoney", "sina", "tencent"]
+    # 顺序即默认优先级（探针结果会把不可用的挪到末尾）。
+    #
+    # ``tencent_bfq`` 排在 ``sina`` **前面**：两者口径都是不复权，
+    # 但新浪不给 amount/turnover/pct_change，腾讯 bfq 给全 ——
+    # 同口径下优先选字段全的那个。
+    #
+    # ⚠️ ``tencent``（fqkline + qfq，前复权）**必须留在最后**：
+    # 它是「非首选口径」组，只有前面所有不复权源都拿不到数据时才会被用到。
+    SOURCES = ["eastmoney", "tencent_bfq", "sina", "tencent"]
     PROBE_CODES = ["600519"]  # 贵州茅台：流动性好、不会退市
     MAX_CONSECUTIVE_FAILURES = 3
 
@@ -556,6 +710,8 @@ class SourceHealthTracker:
         """
         if source == "eastmoney":
             rows, _ = fetch_daily_kline_eastmoney(code, start, end)
+        elif source == "tencent_bfq":
+            rows, _ = fetch_daily_kline_tencent_bfq(code, start, end)
         elif source == "sina":
             rows, _ = fetch_daily_kline_sina(code, start, end)
         elif source == "tencent":
@@ -610,6 +766,8 @@ def fetch_daily_kline_smart(
             try:
                 if source == "eastmoney":
                     rows, name = fetch_daily_kline_eastmoney(code, start_date, end_date)
+                elif source == "tencent_bfq":
+                    rows, name = fetch_daily_kline_tencent_bfq(code, start_date, end_date)
                 elif source == "sina":
                     rows, name = fetch_daily_kline_sina(code, start_date, end_date)
                 elif source == "tencent":
