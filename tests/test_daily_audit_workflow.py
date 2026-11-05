@@ -221,12 +221,16 @@ def test_lineage_check_uses_db_freshness_orphan_signal():
 def test_cold_start_sync_runs_before_audit():
     """冷启动同步必须在体检**之前**。
 
-    体检的基准是「应有交易日」，谱系缺了 400 天就会报出 400 天的 L1 缺口 ——
+    体检的基准是「应有交易日」，谱系缺了 450 天就会报出 450 天的 L1 缺口 ——
     逐日补抓要几百次请求，必然被限流打断。一次大窗口同步快得多。
+
+    窗口是 **450 天**而不是 400：2026-11-05 实测 400 天（2025-11-05 起）
+    只拿到 **216 根** K 线 < 221 门槛 ⇒ db_freshness 永远判它「陈旧谱系」
+    ⇒ 这条谱系永远推不动。2025-10-26 起（374 天）实测 **222 根** ✓。
     """
     names = _step_names(_workflow_text())
-    assert "冷启动同步（陈旧谱系重建，400 天）" in names
-    assert names.index("冷启动同步（陈旧谱系重建，400 天）") < \
+    assert "冷启动同步（陈旧谱系重建，450 天）" in names
+    assert names.index("冷启动同步（陈旧谱系重建，450 天）") < \
         names.index("三层体检")
 
 
@@ -235,7 +239,7 @@ def test_cold_start_sync_retries_and_fails_loudly():
 
     静默失败 = 冷启动没发生却当成发生过 → 后面拿一个半截库当好库用。
     """
-    block = _step_block(_workflow_text(), "冷启动同步（陈旧谱系重建，400 天）")
+    block = _step_block(_workflow_text(), "冷启动同步（陈旧谱系重建，450 天）")
     assert "ci_check_data.py" in block
     assert "sleep 120" in block
     assert "exit 1" in block

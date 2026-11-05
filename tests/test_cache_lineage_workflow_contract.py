@@ -399,3 +399,67 @@ def test_weekly_evolve_requires_strictly_latest_db():
         "谱系根资格必须是 lag == 0（严格最新）；放宽成 lag > 3 会让根倒退"
     )
     assert "lag > 3" not in code, "不得再容忍落后 3 天"
+
+
+# ---------------------------------------------------------------- 冷启动窗口
+
+
+def test_cold_start_window_is_large_enough_for_221_bars():
+    """冷启动窗口必须够 221 根 K 线 —— 400 天**不够**（实测只有 216 根）。
+
+    为什么这是硬门槛：`db_freshness --min-history-bars 221` 按**每只票**的
+    K 线根数判定「陈旧谱系」，而 `pick_history` 的 `build_market_from_db(min_days=221)`
+    用同一个阈值过滤票池 ⇒ 少于 221 根 ⇒ 0 只票 ⇒ 0 选股 ⇒ 站点停在旧日期。
+
+    实测（2026-11-05，本机真实同步）：
+      2025-11-05 ~ 2026-11-04（400 天）⇒ **216 根** < 221 ⇒ 谱系永远推不动；
+      2025-10-26 ~ 2026-11-04（374 天）⇒ **222 根** ✓。
+    所以窗口取 450 天留余量。**别再退回 400 天** —— 它不会报错，只是永远不合格。
+    """
+    for name in ("deploy-site.yml", "daily-audit.yml", "gap-heal.yml"):
+        code = _code_only(_text(name))
+        assert "400 天" not in code, (
+            f"{name}: 冷启动窗口不能用 400 天（实测只有 216 根 K 线 < 221 门槛）"
+        )
+        assert "450" in code, (
+            f"{name}: 冷启动窗口必须是 450 天（2025-10-26 起实测 222 根）"
+        )
+
+
+def test_sync_failures_are_not_swallowed():
+    """同步失败必须**看得见** —— 不能再用 `| tail -40 || true`。
+
+    2026-11-05 实测：`bash a-finder.sh sync-incremental ... 2>&1 | tail -40 || true`
+    把同步失败整个吞掉，于是下游只看到「库里连表都没有」，
+    红在**错误的步骤**上（实测 `选股 + 计划` 瞬间失败 0.00 min），
+    真正的错误信息一个字都看不到。
+
+    现在要求：输出落盘、rc 记下来、失败时把输出原样打出来。
+    """
+    for name in ("deploy-site.yml", "daily-audit.yml"):
+        code = _code_only(_text(name))
+        assert "| tail -40 || true" not in code, (
+            f"{name}: 不要用 `| tail -40 || true` 吞掉同步失败"
+        )
+        assert "sync_rc=$?" in code, (
+            f"{name}: 必须记录同步命令自己的退出码（不是 tail 的）"
+        )
+
+
+def test_plan_step_handles_missing_prices_table_gracefully():
+    """取「行情最新日」必须用 robust 版脚本，不能用一行裸 sqlite 查询。
+
+    冷启动时库里没有 daily_prices 表，裸查询会抛 OperationalError 并退出 1；
+    而那一步是 set -e ⇒ **整步瞬间失败**（实测 0.00 min），
+    而真正的错误早在上一步被吞掉了。
+
+    现在用 scripts/db_latest_date.py：rc=3 = 库里没有行情（明确报出来）。
+    """
+    text = _text("deploy-site.yml")
+    code = _code_only(text)
+    assert "db_latest_date.py" in code, (
+        "取行情最新日必须用 scripts/db_latest_date.py（裸 sqlite 查询在空库上会崩）"
+    )
+    assert "SELECT MAX(trade_date) FROM daily_prices" not in code, (
+        "deploy-site 里不该再有裸的 MAX(trade_date) 一行查询"
+    )

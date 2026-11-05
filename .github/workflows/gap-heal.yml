@@ -81,7 +81,7 @@ jobs:
         run: |
           set -uo pipefail
           END="$(TZ=Asia/Shanghai date +%F)"
-          # ⚠️ 历史深度不够 ⇒ 必须**冷启动**（400 天），不能只补 90 天（2026-11-01 修）。
+          # ⚠️ 历史深度不够 ⇒ 必须**冷启动**（450 天），不能只补 90 天（2026-11-01 修）。
           # 为什么：gap-heal 只补「缺失的日期」，**历史长度不会增长**。而
           # `pick_history` 按**每只票的 K 线根数**过滤（min_days=221）——
           # 一条只存了最近几十天的库，最新日可以是最新的，但每只票都不够 221 根
@@ -89,14 +89,17 @@ jobs:
           # 实测（2026-11-01）：CI 缓存库只有 54 个交易日，站点卡在 10-29，
           # 而行情其实已同步到 10-30。
           #
-          # 90 天窗口补完后仍不到 221 根 ⇒ 说明这条谱系从来没冷启动过 ⇒ 用 400 天重建。
+          # 90 天窗口补完后仍不到 221 根 ⇒ 说明这条谱系从来没冷启动过 ⇒ 用 450 天重建。
+          # ⚠️ 450 而不是 400：2026-11-05 实测 400 天（2025-11-05 起）只拿到
+          # **216 根** < 221 门槛 ⇒ 永远判「陈旧谱系」⇒ 谱系永远推不动。
+          # 从 2025-10-26 起（374 天）实测 **222 根** ✓。
           HISTORY_BARS=$(python3 -c "import sqlite3,pathlib,sys; p=pathlib.Path(sys.argv[1]); print((sqlite3.connect(p).execute('SELECT MAX(n) FROM (SELECT COUNT(*) n FROM daily_prices GROUP BY code)').fetchone() or [0])[0] or 0 if p.exists() else 0)" hs300.db 2>/dev/null || echo 0)
           echo "历史深度: ${HISTORY_BARS} 根 K 线（选股需要 >= 221）"
           DAYS=90
           COLD=0
           if [ "$HISTORY_BARS" -lt 221 ]; then
-            echo "::warning::历史深度不足（${HISTORY_BARS} < 221）—— 90 天补抓不会让历史变长，改用 400 天冷启动重建"
-            DAYS=400
+            echo "::warning::历史深度不足（${HISTORY_BARS} < 221）—— 90 天补抓不会让历史变长，改用 450 天冷启动重建"
+            DAYS=450
             COLD=1
           fi
           # ⚠️「某几天整天是 0 只」= 谱系断在半路，不是「漏了几天」（2026-11-04 加）。
@@ -106,9 +109,9 @@ jobs:
           ZERO_DAYS=${ZERO_DAYS:-0}
           echo "体检（补抓前）报告里「整天 0 只」的天数: ${ZERO_DAYS}"
           if [ "$ZERO_DAYS" -gt 0 ]; then
-            echo "::warning::有 ${ZERO_DAYS} 天整天没有行情 —— 判定谱系断裂，改 400 天重建"
+            echo "::warning::有 ${ZERO_DAYS} 天整天没有行情 —— 判定谱系断裂，改 450 天重建"
             COLD=1
-            DAYS=400
+            DAYS=450
           fi
           # ⚠️ 这里**故意不删库**（2026-11-04 决定，改这块前先读完）。
           #
@@ -129,7 +132,7 @@ jobs:
           # 兜底，冷启动不会再卡在第一步（原来会 raise FetchError，表现为
           # 「补抓 2 秒结束、补抓后历史深度 0 根」）。
           if [ "$COLD" = "1" ]; then
-            echo "::notice::判定谱系需重建，已把窗口放宽到 400 天（不删库：删库会让空库 FetchError 且丢掉可用历史）"
+            echo "::notice::判定谱系需重建，已把窗口放宽到 450 天（不删库：删库会让空库 FetchError 且丢掉可用历史）"
           fi
           START="$(TZ=Asia/Shanghai date -d "${END} -${DAYS} days" +%F)"
           echo "补抓区间: ${START} ~ ${END}（DAYS=${DAYS} COLD=${COLD}）"

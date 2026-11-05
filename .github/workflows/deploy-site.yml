@@ -187,18 +187,33 @@ jobs:
           SYNC_RETRIES: "2"
           SYNC_CONCURRENCY: "6"
           SYNC_RATE: "6"
+          # 冷启动窗口：**450 天**，不是 400 天。
+          # 为什么：2026-11-05 实测 400 天（2025-11-05~2026-11-04）只拿到
+          # **216 根** K 线 < 221 的门槛 ⇒ db_freshness --min-history-bars 221
+          # 永远判它「陈旧谱系」⇒ 这条谱系永远当不了谱系根。
+          # 从 2025-10-26 起（374 天）实测 **222 根** ✓；450 天留足余量。
+          COLD_DAYS: "450"
         run: |
           set -uo pipefail
-          # 冷启动的两种来源：① 缓存里根本没库 ② 库在但落后过多（陈旧谱系）
+          # 冷启动的两种来源：① 谱系里根本没库 ② 库在但落后过多（陈旧谱系）
           if [ ! -f hs300.db ] || [ "${COLD:-}" = "true" ]; then
-            echo "::notice::冷启动口径：窗口扩到 400 天，并发/限流上调"
-            export SYNC_DAYS=400 SYNC_CONCURRENCY=8 SYNC_RATE=8 SYNC_RETRIES=3
+            echo "::notice::冷启动口径：窗口扩到 ${COLD_DAYS} 天，并发/限流上调"
+            export SYNC_DAYS="$COLD_DAYS" SYNC_CONCURRENCY=8 SYNC_RATE=8 SYNC_RETRIES=3
           fi
           ok=0
           for attempt in 1 2 3; do
             echo "── 第 $attempt 次同步 ──"
+            # ⚠️ 不要用 `| tail -40 || true`：它把同步失败整个吞掉，
+            # 下游只看到「表都没有」，红在哪一步根本看不出来（2026-11-05 实测）。
+            # 改成：输出落盘、rc 记下来、失败时把最后 40 行原样打出来。
+            SYNC_OUT="/tmp/sync-attempt-${attempt}.log"
             SYNC_END_DATE="$EXPECT" \
-              bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
+              bash a-finder.sh sync-incremental hs300.db 20 pick-history > "$SYNC_OUT" 2>&1
+            sync_rc=$?
+            tail -40 "$SYNC_OUT"
+            if [ "$sync_rc" -ne 0 ]; then
+              echo "::warning::第 $attempt 次同步返回 rc=$sync_rc（见下方输出）"
+            fi
             if python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" --prices-only --source direct; then
               ok=1; break
             fi
@@ -211,7 +226,9 @@ jobs:
             echo "prices_ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "prices_ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::三次同步后期望交易日 $EXPECT 的行情仍不完整"
+            echo "::error::三次同步后期望交易日 $EXPECT 的行情仍不完整"
+            # 把「库现在到底有什么」写清楚，别让下游靠猜。
+            python3 scripts/db_latest_date.py --db hs300.db || true
           fi
 
 
@@ -223,7 +240,16 @@ jobs:
           set -e
           # 计划日期对齐「库里真正的行情最新日」，而不是硬编码今天：
           # 同步失败时不会为一个没有行情的日期生成空计划，也不会让后续步骤中断。
-          DATA_DATE=$(python3 -c "import sqlite3;print(sqlite3.connect('hs300.db').execute('SELECT MAX(trade_date) FROM daily_prices').fetchone()[0])")
+          # ⚠️ 不要用一行裸 sqlite 查询：库里没有 daily_prices 表时它会
+          # 抛异常并退出 1，而本步是 set -e ⇒ **整步瞬间失败**，
+          # 真正的错误（同步没抓到数据）早在上一步被吞掉了（2026-11-05 实测）。
+          # 用 robust 版：rc=3 = 库里没有行情（明确报出来），0 = 有。
+          DATA_DATE=$(python3 scripts/db_latest_date.py --db hs300.db) || DATE_RC=$?
+          DATE_RC=${DATE_RC:-0}
+          if [ "$DATE_RC" != "0" ] || [ -z "$DATA_DATE" ]; then
+            echo "::error::库里没有行情（rc=$DATE_RC）—— 同步没成功，本步不生成计划"
+            exit 1
+          fi
           echo "行情最新日: $DATA_DATE（期望交易日 ${{ steps.trade-day.outputs.today_bj }}）"
           echo "## 数据日期 $DATA_DATE" >> "$GITHUB_STEP_SUMMARY"
           python stock_cli.py plan build --db hs300.db --date "$DATA_DATE"
@@ -326,7 +352,9 @@ jobs:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          DATA_DATE=$(python3 -c "import sqlite3;r=sqlite3.connect('hs300.db').execute('SELECT MAX(trade_date) FROM daily_prices').fetchone();print(r[0] if r else '?')" 2>/dev/null || echo "?")
+          # 用 robust 版脚本取最新日：空库时裸查询会抛异常（rc=1）把整步带崩，
+          # 而这正是「失败通知」步 —— 它崩了就等于没有通知。rc=3 = 库里没行情。
+          DATA_DATE=$(python3 scripts/db_latest_date.py --db hs300.db 2>/dev/null || echo "?")
           MSG="a-finder 数据流水线失败
           期望交易日: ${EXPECT}
           库里最新: ${DATA_DATE}

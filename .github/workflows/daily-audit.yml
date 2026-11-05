@@ -139,23 +139,36 @@ jobs:
             echo "cold_start=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 冷启动同步：把 400 天的行情一次性拉回来（陈旧谱系重建）。
+      # 冷启动同步：把 COLD_DAYS 天的行情一次性拉回来（陈旧谱系重建）。
       #
-      # 为什么必须放在体检**之前**：体检的基准是「应有交易日」，谱系缺了 400 天
-      # 就会报出 400 天的 L1 缺口 —— 逐日补抓要几百次请求，必然被限流打断。
+      # 为什么必须放在体检**之前**：体检的基准是「应有交易日」，谱系缺了几百天
+      # 就会报出几百天的 L1 缺口 —— 逐日补抓要几百次请求，必然被限流打断。
       # 一次大窗口同步快得多，也更容易一次成功。
-      - name: 冷启动同步（陈旧谱系重建，400 天）
+      #
+      # ⚠️ 窗口是 **450 天**而不是 400：2026-11-05 实测 400 天（2025-11-05 起）
+      # 只拿到 **216 根** K 线 < 221 门槛 ⇒ db_freshness --min-history-bars 221
+      # 永远判它「陈旧谱系」⇒ 谱系永远推不动。从 2025-10-26 起实测 **222 根** ✓。
+      - name: 冷启动同步（陈旧谱系重建，450 天）
         if: steps.lineage.outputs.cold_start == 'true'
         env:
           EXPECT: ${{ steps.trade-day.outputs.today_bj }}
+          COLD_DAYS: "450"
         run: |
           set -uo pipefail
-          echo "::notice::冷启动：窗口扩到 400 天，并发/限流上调"
+          echo "::notice::冷启动：窗口扩到 ${COLD_DAYS} 天，并发/限流上调"
           ok=0
           for attempt in 1 2 3; do
             echo "── 第 $attempt 次冷启动同步 ──"
-            SYNC_END_DATE="$EXPECT" \
-              bash a-finder.sh sync-incremental hs300.db 20 pick-history 2>&1 | tail -40 || true
+            # ⚠️ 不要用 `| tail -40 || true`：它把同步失败整个吞掉，
+            # 下游只看到「表都没有」，红在哪一步根本看不出来（2026-11-05 实测）。
+            SYNC_OUT="/tmp/cold-sync-attempt-${attempt}.log"
+            SYNC_END_DATE="$EXPECT" SYNC_DAYS="$COLD_DAYS" \
+              bash a-finder.sh sync-incremental hs300.db 20 pick-history > "$SYNC_OUT" 2>&1
+            sync_rc=$?
+            tail -40 "$SYNC_OUT"
+            if [ "$sync_rc" -ne 0 ]; then
+              echo "::warning::第 $attempt 次冷启动同步返回 rc=$sync_rc（见下方输出）"
+            fi
             # 数据源 15:30 后才出数/被限流时会失败，等 120s 再试（最多 3 轮）。
             if python3 scripts/ci_check_data.py --db hs300.db --expect "$EXPECT" \
               --prices-only --source direct; then
@@ -168,6 +181,7 @@ jobs:
           done
           if [ "$ok" != "1" ]; then
             echo "::error::冷启动同步 3 轮后仍未拿到期望交易日的完整行情"
+            python3 scripts/db_latest_date.py --db hs300.db || true
             echo "cold_sync_failed=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
