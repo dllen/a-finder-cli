@@ -40,7 +40,7 @@
 /* ---- shell: bar ---- */
 .app-nav{background:var(--color-paper);border-bottom:1px solid var(--color-rule)}
 .app-nav__inner{display:flex;align-items:center;gap:var(--space-lg);min-height:64px}
-.wordmark{display:inline-flex;align-items:center;gap:var(--space-xs);color:var(--color-ink);font-weight:500;font-size:var(--text-md);letter-spacing:-0.01em;text-decoration:none}
+.wordmark{display:inline-flex;align-items:center;gap:var(--space-xs);color:var(--color-ink);font-weight:500;font-size:var(--text-md);letter-spacing:-0.01em;text-decoration:none;white-space:nowrap}
 .wordmark__mark{width:20px;height:20px;flex:none}
 .wordmark__mark .spine{stroke:var(--color-accent);stroke-width:1.8;stroke-linecap:round}
 .wordmark__mark .axis{stroke:var(--color-ink-2);stroke-width:1.4;stroke-linecap:round}
@@ -55,7 +55,6 @@
 .app-footer__inner{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-xs) var(--space-lg);padding-block:var(--space-lg)}
 .app-footer__brand{font-size:var(--text-sm);font-weight:500}
 .app-footer__note{font-size:var(--text-sm);color:var(--color-muted)}
-.app-footer .btn-tip{margin-left:auto}
 
 /* ---- the sheet: head ---- */
 .page{padding-block:var(--space-xl) var(--space-3xl)}
@@ -211,8 +210,13 @@ th[data-dir="desc"] .sort-mark{transform:translateY(-2px) rotate(180deg)}
 .chip--ok{background:var(--color-ok-soft);border-color:var(--color-ok);color:var(--color-ok)}
 
 /* ---- tip ---- */
-.btn-tip{background:transparent;border:1px solid var(--color-rule);color:var(--color-muted);font-size:var(--text-xs);min-height:32px;padding:0 var(--space-sm)}
-.btn-tip:hover{color:var(--color-accent);border-color:var(--color-accent);background:var(--color-accent-soft)}
+.tip-button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;background:transparent;border:1px solid transparent;border-radius:var(--radius-pill);color:var(--color-muted);cursor:pointer;transition:color var(--dur-micro) var(--ease-out),background-color var(--dur-micro) var(--ease-out),transform var(--dur-micro) var(--ease-out)}
+.tip-button::before{content:"";position:absolute;inset:-6px}
+.tip-button:hover{color:var(--color-accent);background:var(--color-paper-2)}
+.tip-button:active{transform:translateY(1px)}
+.tip-button:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
+.tip-button:disabled{opacity:.55;cursor:not-allowed;transform:none}
+.tip-button__icon{width:18px;height:18px;flex:none}
 .tip-qr{display:block;width:100%;max-width:300px;height:auto;margin-inline:auto;border:1px solid var(--color-rule);border-radius:var(--radius-card);background:var(--color-ink)}
 .tip-lede{margin-bottom:var(--space-md);font-size:var(--text-sm);color:var(--color-ink-2)}
 .tip-qr-link{display:block;cursor:zoom-in}
@@ -233,6 +237,11 @@ th[data-dir="desc"] .sort-mark{transform:translateY(-2px) rotate(180deg)}
 }
 @media (min-width:48.0625rem){
   .tip-switch__input{display:none}
+  .tip-button{margin-left:var(--space-sm)}
+}
+@media (max-width:24rem){
+  .app-nav__inner{gap:var(--space-xs)}
+  .nav-link{padding:0 var(--space-xs)}
 }
 .modal-body .row{margin-top:var(--space-xs)}
 .tip-label{margin-top:var(--space-sm);margin-bottom:0;font-size:var(--text-sm);font-weight:500;color:var(--color-ink)}
@@ -259,7 +268,6 @@ th[data-dir="desc"] .sort-mark{transform:translateY(-2px) rotate(180deg)}
 @media (max-width:48rem){
   .app-nav__inner{min-height:56px;gap:var(--space-sm)}
   .app-footer__inner{gap:var(--space-2xs) var(--space-md)}
-  .app-footer .btn-tip{margin-left:0}
   .table-wrap{display:none}
   .ledger-list{display:block}
   .sheet-date{font-size:var(--text-2xl)}

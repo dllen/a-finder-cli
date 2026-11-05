@@ -21,11 +21,14 @@ IMAGES = ("alipay-qr.jpeg", "wechat-qr.jpeg")
 class TestTemplate:
 
     def test_base_includes_tip_modal(self):
-        """入口在页脚，弹窗由 base.html include —— 两个页面共用。"""
+        """入口在顶栏右上角（图标按钮），弹窗由 base.html include，两页共用。"""
         html = (TEMPLATES / "base.html").read_text(encoding="utf-8")
         assert "components/tip_modal.html" in html, "base.html 没有引入赞赏弹窗"
-        assert "btn-tip" in html, "页脚没有赞赏按钮"
-        assert 'data-bs-target="#tipModal"' in html, "按钮没指向弹窗"
+        nav = (TEMPLATES / "components" / "nav.html").read_text(encoding="utf-8")
+        assert 'data-bs-target="#tipModal"' in nav, "顶栏按钮没指向弹窗"
+        assert 'aria-label="赞赏支持"' in nav, "图标按钮缺少可读名称"
+        assert "☕" not in nav, "不能用 emoji 当图标"
+        assert "btn-tip" not in nav, "残留旧的文字按钮"
 
     def test_modal_has_both_qr_codes(self):
         html = (TEMPLATES / "components" / "tip_modal.html").read_text(encoding="utf-8")
