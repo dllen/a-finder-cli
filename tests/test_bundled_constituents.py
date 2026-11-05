@@ -137,3 +137,47 @@ class TestResolveConstituentsFallback:
         )
         with pytest.raises(Exception):
             _resolve_constituents(self._empty_db())
+
+    def test_bundled_used_when_api_raises(self, monkeypatch):
+        """接口**抛异常**时也必须走内置名单（2026-11-05 修的正是这条）。
+
+        区别很重要：
+        - 接口「返回空」→ 本来就会走到兜底（2026-11-04 修的）；
+        - 接口「抛异常」→ 异常会**穿过** _resolve_constituents，兜底**根本没机会跑**。
+
+        实测（CI 里 Eastmoney 不可达）：补抓 3 秒就结束、历史深度 0 根、
+        artifact 只有 4,496 字节（空库）。把接口换成抛 ConnectionError 即可复现。
+        """
+        def boom():
+            raise ConnectionError("Eastmoney unreachable (simulated)")
+
+        monkeypatch.setattr(sync_service, "fetch_hs300_constituents", boom)
+        out = _resolve_constituents(self._empty_db())
+        assert len(out) == 300, "接口抛异常时必须降级到内置名单，而不是让异常穿出去"
+
+
+class TestConstituentsApiDegrades:
+    """data_providers 这一层也必须降级（不能把异常抛给调用方）。
+
+    为什么：`fetch_hs300_constituents_from_api` 是**唯一源、没有备源**，
+    而两个调用方（`_resolve_constituents` 与 `sync_hs300_metadata`）
+    都把「拿不到名单」当成**可回退**的情况处理 ——
+    所以这里必须返回空 dict，而不是抛异常。
+    """
+
+    def test_network_error_becomes_empty_mapping(self, monkeypatch):
+        import data_providers
+
+        def boom(*args, **kwargs):
+            raise ConnectionError("simulated")
+
+        monkeypatch.setattr(data_providers, "fetch_url_json", boom)
+        assert data_providers.fetch_hs300_constituents() == {}
+
+    def test_invalid_json_becomes_empty_mapping(self, monkeypatch):
+        import data_providers
+
+        monkeypatch.setattr(
+            data_providers, "fetch_url_json", lambda *a, **k: {"result": None}
+        )
+        assert data_providers.fetch_hs300_constituents() == {}

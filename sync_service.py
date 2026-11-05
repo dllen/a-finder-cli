@@ -315,7 +315,19 @@ def _resolve_constituents(db_path: str) -> Dict[str, str]:
     语义与元数据同步保持一致，不要把「拿不到成分股名单」升级成「没法抓行情」——
     库里有 300 个代码，抓这些代码的 K 线完全不需要重新拉名单。
     """
-    mapping = fetch_hs300_constituents()
+    # ⚠️ 必须 try/except（2026-11-05 实测修）：成分股接口**抛异常**时，
+    # 异常会直接穿过本函数 ⇒ 下面那三层兜底（库里代码 / 内置名单）**全被跳过**。
+    # 实测（把接口换成抛 ConnectionError）：
+    #     ConnectionError Eastmoney unreachable (simulated)
+    # ⇒ 一行行情都抓不到，CI 里表现为「补抓 3 秒就结束」「历史深度 0 根」。
+    # 区别于「接口返回空」：那条路本来就会走到兜底。
+    # 这里把异常一律降级成「没有名单」，让兜底链正常工作。
+    try:
+        mapping = fetch_hs300_constituents()
+    except Exception as exc:  # noqa: BLE001 —— 任何网络/解析异常都降级
+        get_logger().warning("沪深300成分股接口异常（%s: %s），改走兜底链",
+                             type(exc).__name__, exc)
+        mapping = {}
     if mapping:
         return mapping
     conn = open_db(db_path)

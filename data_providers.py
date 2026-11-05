@@ -149,7 +149,17 @@ def fetch_hs300_constituents_from_api() -> Dict[str, str]:
         "pageNumber": "1",
         "pageSize": "500",
     }
-    data = fetch_url_json(url, params)
+    # ⚠️ 网络/解析异常一律降级成「没有名单」（2026-11-05 修）。
+    # 为什么：这个接口是**唯一源、没有备源**，而调用方（sync_service._resolve_constituents
+    # 与 sync_hs300_metadata）都把「拿不到名单」当成可回退的情况处理 ——
+    # 但如果这里直接抛异常，异常会**穿过**那条回退链，一行行情都抓不到。
+    # 实测（把接口换成抛 ConnectionError）：异常直接冒出 _resolve_constituents，
+    # 内置名单兜底根本没机会跑 ⇒ CI 里「补抓 3 秒结束」「历史深度 0 根」。
+    # 降级成空 dict 后，调用方会依次尝试：库里的代码 → 内置名单快照。
+    try:
+        data = fetch_url_json(url, params)
+    except Exception:  # noqa: BLE001
+        return {}
     result = data.get("result") if isinstance(data, dict) else None
     pages = result.get("pages") if isinstance(result, dict) else 0
     rows = result.get("data") if isinstance(result, dict) else None
