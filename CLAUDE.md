@@ -194,6 +194,31 @@ bash a-finder.sh cron                                  # launchd 入口（工作
     只是永远不合格）。从 `2025-10-26` 起（374 天）实测 **222 根** ✓。
     ⇒ 三个 workflow 的冷启动窗口都设 450 天（deploy-site / daily-audit /
     gap-heal）。**别再退回 400 天**。
+  - **⚠️⚠️ 迁移用了新 SQLite 语法 ⇒ CI 冷启动直接崩（2026-11-05，本轮最难的坑）**：
+    `db/migrations/2026_10_24_convertible_bond_constraints.sql` 用了
+    `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL`（SQLite >= 3.53）。
+    本机 sqlite 3.53.1 正常，但 **GitHub runner 的 python3.11 链接的 SQLite 更老** ⇒
+    全新库上 `open_db()` 抛 `sqlite3.OperationalError: near ALTER: syntax error`
+    ⇒ 同步 **3 秒**就退出 ⇒ 行情一行没抓 ⇒ 谱系永远建不起来。
+    - **为什么本机永远复现不出来**：本地库的 `_applied_migrations` 早记过这个文件，
+      **直接跳过** —— 只有「**全新空库**」才会踩到。排查这类问题时，
+      **必须用 `rm -f x.db` 之后的全新库复现**，不能拿现有库当证据。
+    - 修法：迁移文件可声明 `-- requires-sqlite: 3.53`；`_run_migrations` 解析它，
+      版本不够时**跳过并记 warning**（照样记账），而不是让整条流水线崩。
+      跳过是安全的：该迁移只为**存量库**补约束，全新库在 base 迁移里就带着约束建表。
+    - 测试：`tests/test_migration_sqlite_gate.py`（含「模拟老 SQLite 不崩」）。
+    - **推论**：以后任何新迁移若用到较新语法（`ALTER COLUMN` / `DROP COLUMN` /
+      `RENAME COLUMN`），**必须**加 `-- requires-sqlite:` 声明，否则 CI 冷启动会静默失败。
+    - 排查手段备忘：job 日志要 admin 权限（未认证 403），`artifact` 下载要认证，
+      但 **run 页面的 Step Summary 与 annotation 不需要认证**（网页可读）——
+      所以「把关键信息写进 `$GITHUB_STEP_SUMMARY` / `::error::`」是唯一可靠的观测通道。
+      ⚠️ annotation 只显示**一行**，而 traceback 首行永远是 Traceback (most recent call last):
+      ⇒ 必须打**最后几行**（异常类型与消息在末尾）。
+  - **release 谱系已在 CI 真正跑通（2026-11-05 04:48 UTC 实证）**：
+    `db-lineage` release 上有 `hs300.db.gz`（3.69 MB）+ `lineage-meta.json`，
+    meta 为 `max_trade_date=2026-11-04 / codes=300 / min_bars_per_code=222 /
+    lineage_ok=true`；下载解压后 `integrity_check=ok`、300 只、88,909 行、222 根。
+    这就是「不再依赖 actions/cache」的实证。
   - **冷启动本身很快**（2026-11-05 实测，全新空库）：
     `sync-hs300-range --gap-fill` 450 天窗口 **41 秒**、80,262 行、300 只。
     腾讯 `newfqkline` 的 `count` 是「从 end_date 往回取 N 根」，
