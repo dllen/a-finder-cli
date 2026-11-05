@@ -152,20 +152,33 @@ jobs:
           SYNC_RC=${PIPESTATUS[0]}
           set -e
           echo "补抓退出码: ${SYNC_RC}（非 0 = 同步本身报错，不是「数据源没数据」）"
-          # 非 0 时把**第一行错误**打成 GitHub annotation（2026-11-04 加）。
-          # 为什么：annotation 直接显示在 run 首页，不必展开步骤日志就能看到 ——
-          # 这次排查就卡在「同步 2 秒就退出，但错误被 tail 冲掉、没人看得到」。
+          # 非 0 时把错误打成 GitHub annotation（2026-11-04 加，2026-11-05 改进）。
+          #
+          # ⚠️ 2026-11-05 教训：原来只取 `grep -m1 Traceback` 那一行 ——
+          # 而 traceback 的**第一行永远是**「Traceback (most recent call last):」，
+          # annotation 就只有这一句废话，真正的异常（最后一行）完全看不到。
+          # 实测在 run 首页只看到「补抓同步失败 rc=1：Traceback (most recent call last):」，
+          # 于是一整轮排查都卡在「到底是哪个异常」。
+          # 现在取**最后几行**（异常类型+消息在末尾），并且逐行打 annotation。
           if [ "${SYNC_RC}" != "0" ]; then
-            ERR_LINE=$(grep -m1 -E 'Error|error:|Traceback|FetchError|Exception' "$SYNC_OUT" || true)
-            echo "::error::补抓同步失败 rc=${SYNC_RC}：${ERR_LINE:-（输出里没有明显的错误行，见下方完整输出）}"
             echo "---- sync 输出（最后 60 行）----"
             tail -60 "$SYNC_OUT" || true
             echo "--------------------------------"
+            # 取最后 6 行非空输出：traceback 的异常类型与消息就在末尾。
+            ERRS=$(grep -v '^[[:space:]]*$' "$SYNC_OUT" | tail -6 || true)
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::补抓 rc=${SYNC_RC}：${line}"
+            done <<< "$ERRS"
           fi
           {
             echo "### 补抓摘要（DAYS=${DAYS} COLD=${COLD} rc=${SYNC_RC}）"
+            echo '**区间与统计**'
             echo '```'
-            grep -E '区间同步|写入行|成分股|Error|Traceback|FetchError' "$SYNC_OUT" || tail -25 "$SYNC_OUT"
+            grep -E '区间同步|写入行|成分股' "$SYNC_OUT" || echo '(没有区间同步输出 —— 说明同步在更早的地方就退出了)'
+            echo '```'
+            echo '**最后 30 行（异常就在这里）**'
+            echo '```'
+            tail -30 "$SYNC_OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # 补抓后立刻打印最近 10 个交易日的覆盖情况，让「跑完了但那天还是 0 只」当场可见。
