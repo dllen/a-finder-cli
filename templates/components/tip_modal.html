@@ -1,9 +1,14 @@
 {# 赞赏（打赏）弹窗 —— 2026-11-05 加。
 
    两张收款码由站点主自己提供：
-     static/images/alipay-qr.jpeg  ← 支付宝
-     static/images/wechat-qr.jpeg  ← 微信支付
-   是原始海报（含官方品牌与「扫一扫」说明），不要压缩到二维码扫不出来。
+     static/images/alipay-qr.jpeg  ← 支付宝（1156×1156）
+     static/images/wechat-qr.jpeg  ← 微信支付（387×387）
+
+   已从原始海报**裁成「只有二维码 + 白边」的正方形**：
+     - 裁掉收款人昵称（「王二小(**鹏)」/「Faker(**鹏)」）—— 用户要求不露昵称；
+     - 裁掉海报的品牌区与「扫一扫」文案（弹窗里已有平台标签 + 说明）；
+     - 裁切边界落在二维码**之外的白边**里 ⇒ 二维码一个模块都没丢。
+   详见 `tests/test_tip_feature.py`（校验二维码完整、留白无字）。
 
    入口在 base.html 的页脚（「赞赏支持」按钮），data-bs-toggle 打开本弹窗。
    静态站与 Flask 站共用：base.html 两个模式都会 include 它。
@@ -11,10 +16,10 @@
    ⚠️ 图片用 loading=lazy + decoding=async：这两张约 450 KB，
    不该拖慢首屏（选股页真正要紧的是榜单数据）。
 
-   ⚠️ 尺寸别按「卡片高度」压：这两张是**带大片品牌留白的长海报**，
-   按 max-height 限高时真正的二维码只剩 ~85px，手机根本扫不出来。
-   现在按**宽度**放大（modal-lg + 每张最多 300px 宽），二维码约 165px，
-   够扫；小屏两列自动叠成整宽，且每张都包了 target=_blank 可点开原图。
+   ⚠️ 尺寸按**宽度**控制（modal-lg + 每张 max-width:300px）。
+   这批图已裁成正方形，300px 宽时二维码约 267px —— 很好扫；
+   小屏两列自动叠成整宽，且每张都包了 target=_blank 可点开原图。
+   （历史教训：原始长海报若按 max-height 限高，二维码只剩 ~85px 扫不出来。）
 #}
 <div class="modal fade" id="tipModal" tabindex="-1" aria-labelledby="tipModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered">

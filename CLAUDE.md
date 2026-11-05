@@ -65,11 +65,32 @@ bash a-finder.sh cron                                  # launchd 入口（工作
 
 站点页脚有「☕ 赞赏支持」按钮 → 打开 Bootstrap 弹窗展示两张收款码：
 
-    static/images/alipay-qr.jpeg   ← 支付宝（用户提供的海报原图）
-    static/images/wechat-qr.jpeg   ← 微信支付
+    static/images/alipay-qr.jpeg   ← 支付宝  1156×1156
+    static/images/wechat-qr.jpeg   ← 微信支付 387×387
 
 组件：`templates/components/tip_modal.html`（`base.html` include，两页共用）
 + `static/css/app.css` 的 `.btn-tip` / `.tip-qr` / `.tip-badge-*`。
+
+## ⚠️ 图片是**裁过的**，不是原海报（2026-11-05，用户要求不露昵称）
+
+用户提供的是两张**竖版海报**（支付宝 1708×2560 / 微信 828×1124），底部印着
+收款人昵称（「王二小(**鹏)」/「Faker(**鹏)」）。用户要求**不露昵称** ⇒
+已裁成「**只有二维码 + 白边**」的正方形。
+
+裁切方法与可验证性（没有 PIL，用 `sips` + numpy）：
+
+    1. sips 转 BMP → 纯 numpy 解析（stdlib + numpy，不依赖 PIL）
+    2. 用「某行/列的黑像素数 > 阈值」定位二维码边界框
+       ⚠️ 阈值要收紧到**纯黑**（<60）：支付宝海报是深蓝背景（灰度≈106），
+       用 110 会把整个蓝底当成二维码，检测出 1036×1813 的非方形框。
+    3. 裁到「二维码 ± 白边」（支付宝 60px / 微信 25px），
+       **边界落在二维码之外的白边里 ⇒ 二维码一个模块都没丢**。
+    4. 回读校验：二维码边长与原始**完全一致**（1036 / 337），
+       且留白区**深色像素数 = 0**（证明昵称确实被裁掉）。
+
+`tests/test_tip_feature.py::TestQrImagesAreCropped` 锁死这条：
+图片必须是正方形、边长 ≥300、且**不是**原海报尺寸（原尺寸是已知的白名单）。
+占位测试已验证能抓到「把原海报塞回来」的回归。
 
 ## 两个坑（改这块前先读）
 
@@ -77,15 +98,16 @@ bash a-finder.sh cron                                  # launchd 入口（工作
    图片永远正常；静态站用的是导出时**拷贝**出来的 `site/static/`，漏拷就 404 ——
    **只在线上复现，本机测不出来**。所以 `tests/test_tip_feature.py` 里
    **真的跑一次 export** 校验图片落地 + 页面 `img src`（去掉 `?v=`）能解析。
-2. **收款码按「宽度」放大，不能按高度限。** 这两张是带大片品牌留白的**长海报**
-   （支付宝 1673×2507），用 `max-height` 限高会把真正的二维码压到 **~85px**，
-   手机根本扫不出来。现在 `.tip-qr{width:100%;max-width:300px;height:auto}`
-   + 弹窗 `modal-lg` + 小屏 `col-12 col-sm-6` 叠一列，二维码约 165px；
+2. **收款码按「宽度」控制，不要按高度限。**
+   历史教训：**最初直接用原始长海报**（支付宝 1673×2507）配 `max-height:230px`，
+   算下来真正的二维码只剩 **~85px**，手机根本扫不出来。
+   现在图片已裁成正方形，`.tip-qr{width:100%;max-width:300px;height:auto}`
+   + 弹窗 `modal-lg` + 小屏 `col-12 col-sm-6` 叠一列 ⇒ 二维码约 **267px**；
    每张还包了 `target="_blank"` 可点开原图。测试锁死「不许回退 max-height」。
 
 ## 图片别压缩
 
-两张是原始海报（339 KB / 120 KB，合计约 460 KB），**不要再压** —— 
+裁切后是 107 KB / 39 KB（合计约 146 KB），**不要再压** ——
 二维码压糊就扫不出来。用 `loading="lazy" decoding="async"` 避免拖慢首屏
 （弹窗默认隐藏，浏览器不会立刻加载）。
 

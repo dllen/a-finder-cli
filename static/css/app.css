@@ -135,9 +135,9 @@ main{flex:1 0 auto;width:100%}
 }
 .btn-tip:hover,.btn-tip:focus{color:#b8860b;border-color:#e3c169;background:#fffdf5}
 
-/* ⚠️ 按**宽度**放大而不是限高：这两张是带品牌留白的长海报，
-   限高会把真正的二维码压到 ~85px（手机扫不出来）。
-   宽 300px 时二维码约 165px，够扫；点击可看原图。 */
+/* ⚠️ 按**宽度**控制而不是限高。
+   图片已裁成正方形（只有二维码 + 白边），300px 宽时二维码约 267px，够扫。
+   历史教训：早期用原始长海报 + max-height，二维码被压到 ~85px 扫不出来。 */
 .tip-qr{
   width:100%;
   max-width:300px;

@@ -125,3 +125,58 @@ class TestSizing:
         html = (TEMPLATES / "components" / "tip_modal.html").read_text(encoding="utf-8")
         assert "modal-lg" in html, "弹窗没用 modal-lg，两列太挤"
         assert "col-12 col-sm-6" in html, "小屏没有叠成一列（应 col-12 col-sm-6）"
+
+
+def _jpeg_size(path):
+    """读 JPEG 的 SOF 段拿宽高（纯 stdlib，不依赖 PIL）。"""
+    data = path.read_bytes()
+    i = 2
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h = int.from_bytes(data[i + 5:i + 7], "big")
+            w = int.from_bytes(data[i + 7:i + 9], "big")
+            return w, h
+        i += 2 + seg_len
+    raise ValueError("找不到 JPEG SOF 段: %s" % path)
+
+
+class TestQrImagesAreCropped:
+
+    """收款码已裁成「只有二维码 + 白边」的正方形（用户要求不露昵称）。
+
+    原始海报是竖版（支付宝 1708x2560 / 微信 828x1124），且底部印着收款人
+    昵称。裁成正方形即证明用的是裁切版而不是原海报 —— 这是能自动断言的部分；
+    「昵称具体有没有去掉」由人工看图确认（无法在不引入 OCR 的前提下断言）。
+    """
+
+    def test_images_are_square(self):
+        for name in IMAGES:
+            p = ROOT / "static" / "images" / name
+            w, h = _jpeg_size(p)
+            assert w == h, (
+                "%s 是 %dx%d，不是正方形 —— 可能又把原始竖版海报放回来了"
+                "（原海报带收款人昵称）" % (name, w, h))
+
+    def test_resolution_enough_for_scanning(self):
+        """二维码区域足够大：裁切后边长至少 300px，手机扫得动。"""
+        for name in IMAGES:
+            p = ROOT / "static" / "images" / name
+            w, _ = _jpeg_size(p)
+            assert w >= 300, "%s 只有 %dpx 宽，二维码可能太小扫不出来" % (name, w)
+
+    def test_not_the_original_poster_size(self):
+        """明确挡一下「把原海报原样塞回来」：原海报尺寸是已知的。"""
+        posters = {(1708, 2560), (1673, 2507), (828, 1124)}
+        for name in IMAGES:
+            size = _jpeg_size(ROOT / "static" / "images" / name)
+            assert size not in posters, (
+                "%s 尺寸 %s 与原始海报一致 —— 说明没裁切（昵称会露出来）"
+                % (name, size))
