@@ -1,4 +1,18 @@
 -- db/migrations/2026_10_24_convertible_bond_constraints.sql
+-- requires-sqlite: 3.53
+--
+-- ⚠️ 上面那行是**硬性运行时要求**，由 db_repository._run_migrations 解析：
+-- 运行环境的 SQLite 低于 3.53 时**跳过本文件**并记 warning，而不是抛异常。
+--
+-- 为什么必须有（2026-11-05 实测事故）：本文件用 ALTER TABLE ... ALTER COLUMN
+-- ... SET NOT NULL（SQLite 3.53+）。本机 sqlite 3.53.1 正常，但 GitHub runner 的
+-- python3.11 链接的 SQLite 更老 ⇒ **只在 CI 冷启动（全新库）时**抛
+--     sqlite3.OperationalError: near "ALTER": syntax error
+-- ⇒ open_db() 崩 ⇒ 同步 3 秒退出 ⇒ 谱系永远建不起来。
+-- 本机**永远看不到**：本地库的 _applied_migrations 早记过本文件，直接跳过。
+-- 跳过是安全的：本文件只为「存量库」补约束，全新库在
+-- 2026_10_24_convertible_bond.sql 里就带着 NOT NULL 建表。
+--
 -- 可转债 schema 约束加固：修复已应用 2026_10_24_convertible_bond.sql 的存量库。
 --
 -- 目标：让「已应用旧版迁移的存量库」与「全新库」收敛到完全一致的 schema

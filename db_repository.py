@@ -1,13 +1,42 @@
 import datetime as dt
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from db_schema import ensure_schema
+from logger import get_logger
 
 MIGRATIONS_DIR = Path(__file__).parent / "db" / "migrations"
+
+# 迁移文件可选头部指令：-- requires-sqlite: 3.53
+# 运行环境的 SQLite 版本低于它时**跳过该文件**（记 warning），而不是让整条链路崩。
+# 为什么（2026-11-05 实测）：2026_10_24_convertible_bond_constraints.sql 用了
+# ALTER TABLE ... ALTER COLUMN ... SET NOT NULL（需要 SQLite >= 3.53）。
+# 本机 sqlite 3.53.1 正常，但 GitHub runner 的 python3.11 链接的 SQLite 更老 ——
+# 于是**只在 CI 冷启动（全新库）时**抛 sqlite3.OperationalError: near "ALTER"
+# ⇒ open_db() 崩 ⇒ 同步 3 秒退出 ⇒ 谱系永远建不起来。
+# 本机永远看不到：本地库的 _applied_migrations 早就记过这个文件，直接跳过。
+_REQUIRES_SQLITE_RE = re.compile(r"^\s*--\s*requires-sqlite:\s*([0-9]+(?:\.[0-9]+)*)", re.M)
+
+
+def _sqlite_version_tuple() -> Tuple[int, ...]:
+    """运行环境里 sqlite3 的版本，如 (3, 53, 1)。"""
+    parts: List[int] = []
+    for piece in sqlite3.sqlite_version.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def _required_sqlite(text: str) -> Optional[Tuple[int, ...]]:
+    """迁移文件声明的 SQLite 版本要求（没有声明则 None）。"""
+    match = _REQUIRES_SQLITE_RE.search(text)
+    if not match:
+        return None
+    return tuple(int(p) for p in match.group(1).split("."))
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
@@ -45,8 +74,29 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         name = sql_file.name
         if name in applied:
             continue
+        sql_text = sql_file.read_text(encoding="utf-8")
+        # SQLite 版本不够时**跳过**（不是崩）。见 _REQUIRES_SQLITE_RE 上面的说明：
+        # 在 CI 的老 SQLite 上，ALTER COLUMN 会让 open_db() 直接抛异常，
+        # 而 open_db() 是同步/选股/计划的第一步 ⇒ 整条流水线 3 秒内全废。
+        # 跳过是安全的：这些语句的作用是「给**存量库**补约束」，
+        # 而全新库在 base 迁移里就已经带 NOT NULL 了（旧库/旧 runner 属降级，记 warning）。
+        need = _required_sqlite(sql_text)
+        if need and _sqlite_version_tuple() < need:
+            get_logger().warning(
+                "迁移 %s 需要 SQLite >= %s（当前 %s），已跳过；"
+                "该迁移只为存量库补约束，全新库不受影响",
+                name,
+                ".".join(str(p) for p in need),
+                sqlite3.sqlite_version,
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO _applied_migrations (filename, applied_at) VALUES (?, ?)",
+                (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
+            continue
         try:
-            conn.executescript(sql_file.read_text())
+            conn.executescript(sql_text)
             conn.execute(
                 "INSERT INTO _applied_migrations (filename, applied_at) VALUES (?, ?)",
                 (name, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
