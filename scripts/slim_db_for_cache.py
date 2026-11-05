@@ -47,6 +47,14 @@ import os
 import shutil
 import sqlite3
 import sys
+from pathlib import Path
+
+# CI 用 `python3 scripts/slim_db_for_cache.py` 调用 ⇒ sys.path[0] 是 scripts/
+# ⇒ **仓库根不在路径上** ⇒ 直接 import shared_lib 会 ModuleNotFoundError
+# （2026-11-05 实测：CI 瘦身步骤因此失败、仍存原库，annotation 写着
+#  「瘦身失败 —— 仍存原库」）。把仓库根加进去，与 audit_coverage.py /
+# db_freshness.py / repair_gaps.py 的做法一致。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 与 clean_trade_plan_rounds 共用同一条 canonical 规则（唯一真相源）。
 # 放在 shared_lib 而不是 scripts 里，是因为这条规则**同时**被「清理脚本」
@@ -89,6 +97,7 @@ def slim(db_path: str, out_path: str, keep_days: int) -> dict:
         row = conn.execute("SELECT MAX(plan_date) FROM trade_plan").fetchone()
         latest = row[0] if row else None
         deleted = 0
+        deleted_rounds = 0
         cutoff = None
         if latest:
             cutoff = (

@@ -20,10 +20,38 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
+
+#: **当天行情什么时候算「已出」**（北京时间小时）。
+#:
+#: A 股 15:00 收盘，行情源通常 15:00~15:30 之间陆续落地，
+#: 所以 15:30 之前不能把当天算进期望（否则必然是「当天 0 只」的假缺口）。
+#:
+#: ⚠️ 之前是「**整天**都排除当天」—— 那在**收盘后**跑就错了：
+#: 实测 2026-11-05 20:34（北京）CI 的 gap-heal 跑完，谱系仍停在 2026-11-04，
+#: 因为 11-05 被当成「还没出数的当天」给排除了 ⇒ 当天永远补不进来。
+#: ⇒ 改成**按时间判断**：收盘后当天就算期望。
+DATA_READY_HOUR = 15
+DATA_READY_MINUTE = 30
+
+
+def _beijing_now() -> dt.datetime:
+    """当前**北京时间**。
+
+    ⚠️ 必须显式换算：CI 的 `actions/setup-python` 跑在 **UTC** 上，
+    `dt.datetime.now()` 取的是 UTC —— 16:00~24:00 UTC 已经是北京次日，
+    「今天」会算错一天（gap-heal.yml 之前**没设 TZ**，deploy-site/daily-audit 设了）。
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        # zoneinfo 不可用（没 tzdata）时退回固定 +8
+        return dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
 
 
 def _trading_days(start: dt.date, end: dt.date) -> List[str]:
@@ -53,25 +81,28 @@ def find_gaps(
     db_path: str, days: int, min_codes: int, today: Optional[dt.date] = None,
     include_today: bool = False,
 ) -> Dict:
-    today = today or dt.date.today()
+    now_bj = _beijing_now()
+    today = today or now_bj.date()
     start = today - dt.timedelta(days=int(days * 1.6) + 7)  # 日历日窗口，覆盖周末/假日
     expected = _trading_days(start, today)
-    # ⚠️ **当前日历日**默认不算期望（2026-11-05 修）。
+    # ⚠️ **当天**要不要算期望，取决于**行情出了没有**（不是「是不是今天」）。
     #
-    # 为什么：当天的行情要等收盘后才落地，而「缺口」的定义是
-    #「**本来应该有**数据却没有」。把当天算进期望 ⇒ 收盘前跑必报一个
-    #「当天 0 只」的**假缺口** ⇒ gap-heal 的「补抓后仍有缺口则失败」永远红，
-    # `clean` 恒为 false ⇒ **谱系永远存不进去**（实测 2026-11-05）。
+    # 为什么不能「整天都排除当天」（2026-11-05 两次踩坑）：
+    # - 收盘**前**跑：当天必然 0 只 ⇒ 假缺口 ⇒ gap-heal「补抓后仍有缺口则失败」
+    #   永远红、clean 恒 false ⇒ 谱系永远存不进去；
+    # - 收盘**后**跑（实测 20:34 北京）：当天数据**已经有了**，却仍被排除 ⇒
+    #   **当天的数据永远补不进谱系**（谱系卡在 2026-11-04 就是这么来的）。
+    # ⇒ 按**时间**判断：北京时间 15:30 之后，当天就算期望。
     #
     # 只排除「**真的就是今天**」的那一天；
     # `--today` 传的是**历史日期**时（复检/测试）照常算进去 ——
     # 那种情况下那一天的数据本来就该存在。
     #
-    # 显式传 --include-today 可以强制把当天算进去（收盘后复检）。
-    real_today = dt.date.today()
-    if (not include_today and expected
-            and expected[-1] == real_today.isoformat()
-            and real_today == today):
+    # 显式传 --include-today 可以强制把当天算进去（不看时间）。
+    data_ready = (now_bj.hour, now_bj.minute) >= (DATA_READY_HOUR, DATA_READY_MINUTE)
+    if (not include_today and not data_ready and expected
+            and expected[-1] == now_bj.date().isoformat()
+            and now_bj.date() == today):
         expected = expected[:-1]
 
     conn = sqlite3.connect(db_path)

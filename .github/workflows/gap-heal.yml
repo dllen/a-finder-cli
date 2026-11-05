@@ -45,6 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONUNBUFFERED: "1"
+      # ⚠️ 必须显式设时区（2026-11-05 加）：GitHub runner 默认 **UTC**，
+      # 而 `dt.date.today()` / `date +%F` 取的是系统本地时区 ⇒
+      # 北京 00:00~08:00 跑的时候「今天」会算成**前一天**。
+      # deploy-site.yml 与 daily-audit.yml 早就设了，gap-heal 漏了。
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@v4
 

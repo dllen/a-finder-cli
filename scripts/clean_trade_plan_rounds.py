@@ -57,6 +57,12 @@ import argparse
 import os
 import sqlite3
 import sys
+from pathlib import Path
+
+# 直接以 `python3 scripts/xxx.py` 调用时 sys.path[0] 是 scripts/ ⇒
+# **仓库根不在路径上** ⇒ import shared_lib 会 ModuleNotFoundError。
+# 把仓库根加进去（与 audit_coverage.py / db_freshness.py 一致）。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 #: canonical 轮次的 SQL **不在这里定义** —— 它与
 #: `scripts/slim_db_for_cache.py`（CI 存谱系前瘦身）也要用同一条规则，
