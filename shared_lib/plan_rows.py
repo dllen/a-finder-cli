@@ -86,4 +86,25 @@ def dedupe_plan_rows(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(kept.values())
 
 
-__all__ = ["ACTION_PRIORITY", "dedupe_plan_rows"]
+#: **canonical 轮次**的 SQL —— 与 `db_repository.canonical_plan_round` 同规则：
+#: 行数最多的那一轮；并列时取 `MAX(plan_id)` 最大的（最新写入的）。
+#:
+#: 放在这里（而不是各自写在脚本里）是因为**两处都要用**：
+#: `scripts/clean_trade_plan_rounds.py`（清理库）与
+#: `scripts/slim_db_for_cache.py`（CI 存谱系前瘦身）。
+#: 两份各写一遍必然漂移，而漂移的后果是「删掉的不是读路径会选的那一轮」
+#: ⇒ 前端数据悄悄变了（2026-11-05 的教训）。
+CANONICAL_ROUNDS_SQL = """
+    SELECT plan_date, portfolio, params_hash FROM (
+        SELECT plan_date, portfolio, params_hash,
+               ROW_NUMBER() OVER (
+                   PARTITION BY plan_date, portfolio
+                   ORDER BY COUNT(*) DESC, MAX(plan_id) DESC
+               ) AS rn
+        FROM trade_plan
+        GROUP BY plan_date, portfolio, params_hash
+    ) WHERE rn = 1
+"""
+
+
+__all__ = ["ACTION_PRIORITY", "CANONICAL_ROUNDS_SQL", "dedupe_plan_rows"]

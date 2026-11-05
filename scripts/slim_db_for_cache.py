@@ -48,6 +48,12 @@ import shutil
 import sqlite3
 import sys
 
+# 与 clean_trade_plan_rounds 共用同一条 canonical 规则（唯一真相源）。
+# 放在 shared_lib 而不是 scripts 里，是因为这条规则**同时**被「清理脚本」
+# 与「瘦身脚本」用 —— 两份各写一遍必然漂移，而漂移的后果是
+# 「删掉的不是读路径会选的那一轮 ⇒ 前端数据悄悄变了」。
+from shared_lib.plan_rows import CANONICAL_ROUNDS_SQL
+
 #: 保留多少个日历日的 trade_plan。
 #:
 #: 必须 >= audit_coverage.WINDOW_DAYS（30 天）——审计要读窗口内的
@@ -92,6 +98,22 @@ def slim(db_path: str, out_path: str, keep_days: int) -> dict:
                 "DELETE FROM trade_plan WHERE plan_date < ?", (cutoff,)
             )
             deleted = cur.rowcount
+            # 只删「旧日期」还不够：窗口内每个 (日期,档位) 还有**多个轮次**
+            # （回补逐轮追加，每轮一个 params_hash）⇒ 一个交易日能到 5000 行。
+            # 再按 canonical 规则（行数最多的那一轮，并列取 MAX(plan_id)）
+            # 收敛成一轮 —— 与 db_repository.canonical_plan_round 同规则。
+            #
+            # ⚠️ 老库/精简库可能没有 params_hash / plan_id 列（canonical 规则
+            # 需要它们）⇒ 这时**跳过**这一步，而不是让瘦身整个崩掉：
+            # 瘦身的本职是「省空间」，不是「改数据结构」。
+            deleted_rounds = 0
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(trade_plan)")}
+            if {"params_hash", "plan_id"} <= cols:
+                cur = conn.execute(
+                    "DELETE FROM trade_plan WHERE (plan_date, portfolio, params_hash) "
+                    "NOT IN (" + CANONICAL_ROUNDS_SQL + ")"
+                )
+                deleted_rounds = cur.rowcount
         conn.commit()
         # VACUUM 回收空间（必须在事务提交后单独跑）
         conn.execute("VACUUM")
@@ -99,6 +121,7 @@ def slim(db_path: str, out_path: str, keep_days: int) -> dict:
             "latest_plan_date": latest,
             "cutoff": cutoff,
             "deleted_trade_plan_rows": deleted,
+            "deleted_non_canonical_rounds": deleted_rounds,
             "trade_plan_rows": conn.execute(
                 "SELECT COUNT(*) FROM trade_plan"
             ).fetchone()[0],

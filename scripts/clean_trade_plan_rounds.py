@@ -58,22 +58,11 @@ import os
 import sqlite3
 import sys
 
-
-#: 与 db_repository.canonical_plan_round **同一条规则**：
-#: 行数最多的那一轮；并列时取 MAX(plan_id) 最大的。
-#: 用窗口函数一次算出全部分组，删除时直接复用同一个子查询。
+#: canonical 轮次的 SQL **不在这里定义** —— 它与
+#: `scripts/slim_db_for_cache.py`（CI 存谱系前瘦身）也要用同一条规则，
+#: 两份各写一遍必然漂移 ⇒ 统一放在 shared_lib（唯一真相源）。
 #: 有测试交叉校验它与 db_repository.canonical_plan_round 选出的轮次一致。
-CANONICAL_ROUNDS_SQL = """
-    SELECT plan_date, portfolio, params_hash FROM (
-        SELECT plan_date, portfolio, params_hash,
-               ROW_NUMBER() OVER (
-                   PARTITION BY plan_date, portfolio
-                   ORDER BY COUNT(*) DESC, MAX(plan_id) DESC
-               ) AS rn
-        FROM trade_plan
-        GROUP BY plan_date, portfolio, params_hash
-    ) WHERE rn = 1
-"""
+from shared_lib.plan_rows import CANONICAL_ROUNDS_SQL
 
 
 def plan_cleanup(conn: sqlite3.Connection) -> dict:

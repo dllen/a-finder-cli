@@ -27,6 +27,10 @@ on:
       - "data_providers.py"
       - "scripts/db_lineage.py"
       - "scripts/db_latest_date.py"
+      # 存谱系前要瘦身 —— 瘦身逻辑变了 ⇒ 谱系体积/内容也变了，必须验一次
+      - "scripts/slim_db_for_cache.py"
+      # canonical 轮次规则（清理 + 瘦身 + 读路径三处共用同一份）
+      - "shared_lib/plan_rows.py"
 
 concurrency:
   group: gap-heal

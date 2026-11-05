@@ -65,6 +65,30 @@ MIN_HISTORY_BARS = 221
 # 本地元数据
 # ---------------------------------------------------------------------------
 
+def read_remote_meta():
+    """读**线上** release 上的谱系 meta（联网，需要 GH_TOKEN）。
+
+    为什么要单独一个函数：`show` 默认只看本地库，容易让人把本地 meta
+    当成线上的读，误判「线上已经是最新」—— 2026-11-05 实际踩过：
+    本地是 2026-11-05，线上其实还停在 2026-11-04。
+
+    线上没有谱系时返回 {"exists": False}（与本地口径一致）。
+    """
+    rel = get_release()
+    if not rel:
+        return {"exists": False}
+    meta_asset = find_asset(rel, META_ASSET)
+    if not meta_asset:
+        return {"exists": False}
+    try:
+        raw = download_asset(meta_asset).decode("utf-8", "ignore")
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        return {"exists": False, "error": str(exc)}
+    data.setdefault("exists", True)
+    return data
+
+
 def read_local_meta(db_path: str):
     """读本地库的关键指纹（不联网，纯 sqlite 查询）。"""
     import sqlite3
@@ -399,8 +423,13 @@ def main(argv=None) -> int:
         help="本次是否通过谱系资格（true/false，来自体检/门禁步骤）",
     )
 
-    p_show = sub.add_parser("show", help="只看本地库元数据（不联网）")
+    p_show = sub.add_parser(
+        "show", help="看谱系元数据（默认只看本地库，不联网）")
     p_show.add_argument("--db", default="hs300.db")
+    p_show.add_argument(
+        "--remote", action="store_true",
+        help="看**线上** release 上的谱系 meta（需要 GH_TOKEN）",
+    )
 
     args = ap.parse_args(argv)
 
@@ -410,7 +439,13 @@ def main(argv=None) -> int:
         if args.cmd == "save":
             return save(args.db, args.lineage_ok.strip().lower() == "true")
         if args.cmd == "show":
-            print(json.dumps(read_local_meta(args.db), ensure_ascii=False, indent=1))
+            if args.remote:
+                # ⚠️ 一定要能**分开**看本地与线上：
+                # 曾经把本地 meta 当成线上的读，误判「线上已经是最新」——
+                # 而线上其实还停在旧日期。
+                print(json.dumps(read_remote_meta(), ensure_ascii=False, indent=1))
+            else:
+                print(json.dumps(read_local_meta(args.db), ensure_ascii=False, indent=1))
             return 0
     except Exception as exc:  # noqa: BLE001
         print("::error::db_lineage %s 失败：%s" % (args.cmd, exc))
