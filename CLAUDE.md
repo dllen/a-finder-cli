@@ -234,6 +234,45 @@ bash a-finder.sh cron                                  # launchd 入口（工作
     meta 为 `max_trade_date=2026-11-04 / codes=300 / min_bars_per_code=222 /
     lineage_ok=true`；下载解压后 `integrity_check=ok`、300 只、88,909 行、222 根。
     这就是「不再依赖 actions/cache」的实证。
+    ⚠️ **上面那次是「跑通了但数据停在 11-04」** —— 又踩了两个「步骤 success
+    但没做成」的坑，2026-11-05 13:28 的 run `42036072366` 才真正推到 11-05
+    （`max_trade_date=2026-11-05 / 89,209 行 / 223 根`，下载解压后 integrity ok）。
+    两个坑 + 一个隐性依赖，都值得单独记：
+
+    - **坑 A：瘦身崩了，但 run 依然 success**。
+      `slim_db_for_cache.py` 里我把 `deleted_rounds` 只写在 `if latest:` 分支内 ⇒
+      CI restore 回来的谱系库 **trade_plan 是空表**（上次瘦身剩 0 行）⇒
+      `if latest` 不成立 ⇒ **UnboundLocalError**。workflow 里是：
+
+          if python3 scripts/slim_db_for_cache.py --db hs300.db; then ...
+          else echo "::warning::瘦身失败 —— 仍存原库（上传更大但不会丢数据）"
+
+      ⇒ **整个 run 依然 success**，只在 annotation 里留一句「瘦身失败」，
+      极容易当成无害告警。**瘦身失败 = 谱系一直不瘦身**，不是小事。
+      测试：`tests/test_slim_db_edge_shapes.py`（空 trade_plan / 缺列 都不许崩）。
+    - **坑 B：当天永远不算缺口 ⇒ 当天永远补不进谱系**。
+      `check_gaps.py` 之前是「**整天**排除当前日历日」（怕收盘前报假缺口，
+      这个修复本身是对的，见下一条）。但 gap-heal 在**收盘后**跑（实测 20:34 北京）时，
+      当天数据**已经有了**，却仍被排除 ⇒ 11-05 从不被当成缺口 ⇒ 谱系卡在 11-04。
+      ⇒ 改成**按时间**判断：北京时间 **15:30** 之后当天就算期望
+      （`DATA_READY_HOUR/MINUTE` + `_beijing_now()`）。
+      **两头都要对**：收盘前排除（避免假缺口）、收盘后包含（否则当天永远补不进来）。
+      测试：`tests/test_check_gaps.py::TestTodayIsTimeAware`（monkeypatch 固定时间）。
+    - **坑 C（隐性）：`TZ` 漏配**。GitHub runner 默认 **UTC**，
+      `dt.date.today()` / `bash date +%F` 取的是**系统本地时区** ⇒
+      北京 00:00~08:00 跑时「今天」会算成**前一天**。
+      `deploy-site.yml` 与 `daily-audit.yml` 早就设了 `TZ: Asia/Shanghai`，
+      **`gap-heal.yml` 与 `weekly-evolve.yml` 漏了**（2026-11-05 补上 gap-heal）。
+    - **坑 D（最隐蔽）：脚本方式运行时的 import 路径**。
+      CI 用 `python3 scripts/xxx.py` 调用 ⇒ `sys.path[0]` 是 **`scripts/`** ⇒
+      **仓库根不在导入路径上** ⇒ `from shared_lib.plan_rows import ...` 直接
+      `ModuleNotFoundError`。而本机 `.venv` 是 **uv** 建的、**会把项目根塞进
+      `sys.path`** ⇒ **pytest 全绿也测不出来**。
+      ⇒ 脚本内加 `sys.path.insert(0, str(Path(__file__).resolve().parent.parent))`
+      （与 `audit_coverage.py` / `db_freshness.py` / `repair_gaps.py` 一致）。
+      测试：`tests/test_scripts_run_as_scripts.py` —— **必须用「干净解释器」**
+      （`sys.path` 里没有仓库根，= CI 的情形）以 subprocess 跑脚本；
+      用 venv 的 python 测等于没测。
   - **冷启动本身很快**（2026-11-05 实测，全新空库）：
     `sync-hs300-range --gap-fill` 450 天窗口 **41 秒**、80,262 行、300 只。
     腾讯 `newfqkline` 的 `count` 是「从 end_date 往回取 N 根」，
