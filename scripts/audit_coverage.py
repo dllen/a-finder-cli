@@ -184,11 +184,17 @@ def audit(
     today: Optional[dt.date] = None,
     window_days: int = WINDOW_DAYS,
     min_codes: int = MIN_CODES,
+    include_today: bool = True,
 ) -> Report:
     """三层体检。基准来自交易日历，与库内数据无关。"""
     today = today or dt.date.today()
     start = today - dt.timedelta(days=window_days)
     expected = trading_days(start, today)
+    # ⚠️ 当天是否算进期望，默认**算**（daily-audit 每晚 21:00 跑，当日数据
+    # 收盘后已落地，算进去才对）；缺口体检类脚本默认**不算**（收盘前跑必报
+    # 「当天 0 只」的假缺口）。两者语义不同，用 include_today 区分。
+    if not include_today and expected and expected[-1] == today.isoformat():
+        expected = expected[:-1]
     if not expected:
         # 区分「日历坏了/没这个年份」与「区间内确实没有交易日」，否则报错信息会
         # 把人引到错误的排查方向。已确认的定时炸弹：chinese_calendar 1.11.0 只覆盖
@@ -265,6 +271,8 @@ def main(argv=None) -> int:
     ap.add_argument("--window-days", type=int, default=WINDOW_DAYS)
     ap.add_argument("--min-codes", type=int, default=MIN_CODES)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--exclude-today", action="store_true",
+                    help="不把当天算进期望交易日（收盘前跑体检时用）")
     ap.add_argument("--out", default=None, help="把 JSON 报告写入该文件")
     args = ap.parse_args(argv)
 
@@ -282,7 +290,8 @@ def main(argv=None) -> int:
         today = None
     try:
         report = audit(args.db, today=today, window_days=args.window_days,
-                       min_codes=args.min_codes)
+                       min_codes=args.min_codes,
+                       include_today=not args.exclude_today)
     except CalendarUnavailable as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 2

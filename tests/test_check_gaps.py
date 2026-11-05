@@ -81,3 +81,62 @@ def test_cli_exit_codes(db):
     assert gaps_mod.main(base + ["--days", "1"]) == 0
     assert gaps_mod.main(base + ["--days", "5"]) == 1
     assert gaps_mod.main(["--db", path + ".nope"]) == 2
+
+
+class TestTodayExcludedByDefault:
+    """**当前日历日**默认不算缺口（2026-11-05 修）。
+
+    为什么：当天的行情要等收盘后才落地，而「缺口」的定义是
+    「**本来应该有**数据却没有」。把当天算进期望 ⇒ 收盘前跑必报一个
+    「当天 0 只」的**假缺口** ⇒ gap-heal 的「补抓后仍有缺口则失败」永远红，
+    `clean` 恒为 false ⇒ **谱系永远存不进去**（实测 2026-11-05）。
+
+    这是同一条链上的最后一断点：前三个（窗口不够 / 空库崩溃 /
+    成分股接口抛异常）都修好后，谱系仍然存不进去 ——
+    因为「体检」这一步自己报了个假缺口。
+    """
+
+    def _today_is_trading_day(self):
+        """今天是不是 A 股交易日（周末/假日则本组测试无意义）。"""
+        import datetime as dt
+        return dt.date.today().weekday() < 5
+
+    def test_today_not_expected_by_default(self, db):
+        if not self._today_is_trading_day():
+            pytest.skip("今天不是工作日，测不出「当天假缺口」")
+        path, conn = db
+        import datetime as dt
+        today = dt.date.today()
+        # 填满昨天（若昨天是交易日），今天留空
+        yesterday = today - dt.timedelta(days=1)
+        _seed(conn, yesterday.isoformat(), ["60%04d" % i for i in range(300)])
+        report = gaps_mod.find_gaps(path, 1, 280, today=today)
+        assert report["gaps"] == [], (
+            "当天不该算缺口（当天行情收盘后才落地）"
+        )
+
+    def test_include_today_reports_the_gap(self, db):
+        if not self._today_is_trading_day():
+            pytest.skip("今天不是工作日，测不出「当天假缺口」")
+        path, conn = db
+        import datetime as dt
+        today = dt.date.today()
+        yesterday = today - dt.timedelta(days=1)
+        _seed(conn, yesterday.isoformat(), ["60%04d" % i for i in range(300)])
+        report = gaps_mod.find_gaps(path, 1, 280, today=today,
+                                   include_today=True)
+        assert [g["date"] for g in report["gaps"]] == [today.isoformat()], (
+            "显式要求含当天时，应当报出当天的缺口"
+        )
+
+    def test_historical_baseline_day_still_checked(self, db):
+        """--today 传**历史日期**时，那一天照常算进去（复检语义不变）。"""
+        path, conn = db
+        # 10-19 与 10-21 都有数据，10-20 没有
+        _seed(conn, "2026-10-19", ["61%04d" % i for i in range(300)])
+        _seed(conn, "2026-10-21", ["62%04d" % i for i in range(300)])
+        report = gaps_mod.find_gaps(path, 3, 280,
+                                   today=gaps_mod.dt.date(2026, 10, 21))
+        assert [g["date"] for g in report["gaps"]] == ["2026-10-20"], (
+            "历史里真的缺的那天仍然必须报出来"
+        )

@@ -50,11 +50,29 @@ def _trading_days(start: dt.date, end: dt.date) -> List[str]:
 
 
 def find_gaps(
-    db_path: str, days: int, min_codes: int, today: Optional[dt.date] = None
+    db_path: str, days: int, min_codes: int, today: Optional[dt.date] = None,
+    include_today: bool = False,
 ) -> Dict:
     today = today or dt.date.today()
     start = today - dt.timedelta(days=int(days * 1.6) + 7)  # 日历日窗口，覆盖周末/假日
     expected = _trading_days(start, today)
+    # ⚠️ **当前日历日**默认不算期望（2026-11-05 修）。
+    #
+    # 为什么：当天的行情要等收盘后才落地，而「缺口」的定义是
+    #「**本来应该有**数据却没有」。把当天算进期望 ⇒ 收盘前跑必报一个
+    #「当天 0 只」的**假缺口** ⇒ gap-heal 的「补抓后仍有缺口则失败」永远红，
+    # `clean` 恒为 false ⇒ **谱系永远存不进去**（实测 2026-11-05）。
+    #
+    # 只排除「**真的就是今天**」的那一天；
+    # `--today` 传的是**历史日期**时（复检/测试）照常算进去 ——
+    # 那种情况下那一天的数据本来就该存在。
+    #
+    # 显式传 --include-today 可以强制把当天算进去（收盘后复检）。
+    real_today = dt.date.today()
+    if (not include_today and expected
+            and expected[-1] == real_today.isoformat()
+            and real_today == today):
+        expected = expected[:-1]
 
     conn = sqlite3.connect(db_path)
     try:
@@ -87,6 +105,8 @@ def main(argv=None) -> int:
     ap.add_argument("--min-codes", type=int, default=280, help="当日最少应有几只")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--today", default=None, help="基准日 YYYY-MM-DD（默认今天，测试用）")
+    ap.add_argument("--include-today", action="store_true",
+                    help="把当天也算进期望交易日（默认不算：当天行情收盘后才落地）")
     args = ap.parse_args(argv)
 
     if not Path(args.db).exists():
@@ -94,7 +114,8 @@ def main(argv=None) -> int:
         return 2
     today = dt.date.fromisoformat(args.today) if args.today else None
     try:
-        report = find_gaps(args.db, args.days, args.min_codes, today=today)
+        report = find_gaps(args.db, args.days, args.min_codes, today=today,
+                           include_today=args.include_today)
     except RuntimeError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 2

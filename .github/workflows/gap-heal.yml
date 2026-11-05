@@ -71,7 +71,12 @@ jobs:
             exit 0
           fi
           set +e
+          # ⚠️ 不要用 `| tee` 单独判 rc：rc 取的是 **tee** 的状态（恒 0），
+          # 不是 check_gaps 的 ⇒ 「补抓前体检有没有缺口」这个判据一直是假的。
+          # 这里先开 pipefail（见下方注释），rc 才真的是 check_gaps 的。
+          set -o pipefail
           python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 | tee /tmp/gaps_before.txt
+          set +e
           rc=$?
           set -e
           { echo "## 体检（补抓前）"; echo '```'; cat /tmp/gaps_before.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -180,6 +185,9 @@ jobs:
           rc=0
           python3 scripts/check_gaps.py --db hs300.db --days 30 --min-codes 280 \
             | tee /tmp/gaps_after.txt || rc=$?
+          # ⚠️ check_gaps 默认**不含当前日历日**（当天行情收盘后才落地，
+          # 收盘前跑必报「当天 0 只」的假缺口 ⇒ 这道红灯会永远亮、
+          # clean 恒为 false ⇒ 谱系永远存不进去 —— 实测 2026-11-05）。
           { echo "## 体检（补抓后）"; echo '```'; cat /tmp/gaps_after.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           # ⚠️ 谱系根的资格还要看**历史深度**（2026-11-01 修）。
           # 为什么：restore-keys 取**最新**的匹配条目，谁最后保存谁就是下一个 run

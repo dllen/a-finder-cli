@@ -183,9 +183,18 @@ def _request(method: str, url: str, data=None, headers=None, raw: bool = False):
         with urllib.request.urlopen(req, timeout=120) as resp:
             payload = resp.read()
     except urllib.error.HTTPError as exc:
+        # 404 = 「没有这个 release/资产」⇒ 调用方按「没有谱系」处理（冷启动）。
+        # 其它状态码是真问题（401 = token 无效、403 = 权限不足），必须报出来 ——
+        # 否则「谱系一直不存在」和「token 坏了」会混成同一个现象。
         if exc.code == 404:
             return None
         detail = exc.read().decode("utf-8", "ignore")[:400]
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                "GitHub API %s %s -> HTTP %s（token 无效或权限不足，"
+                "restore 需要读 release、save 需要 contents:write）：%s"
+                % (method, url, exc.code, detail)
+            )
         raise RuntimeError("GitHub API %s %s -> HTTP %s: %s" % (method, url, exc.code, detail))
     if raw:
         return payload
