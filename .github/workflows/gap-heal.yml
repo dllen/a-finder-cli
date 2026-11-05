@@ -17,6 +17,16 @@ on:
     paths:
       - ".github/workflows/gap-heal.yml"
       - "scripts/check_gaps.py"
+      # 下面这些**直接决定冷启动能不能建出库**（2026-11-05 教训）：
+      # 一个跑不了的老-SQLite 迁移让 open_db() 崩 ⇒ 补抓 3 秒结束 ⇒
+      # 谱系永远建不起来；而当时 push 路径里没有它们，改了也不会跑一次验证。
+      - "db_repository.py"
+      - "db_schema.py"
+      - "db/migrations/**"
+      - "sync_service.py"
+      - "data_providers.py"
+      - "scripts/db_lineage.py"
+      - "scripts/db_latest_date.py"
 
 concurrency:
   group: gap-heal
