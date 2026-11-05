@@ -170,6 +170,21 @@ bash a-finder.sh cron                                  # launchd 入口（工作
      `pick_history` 按每只票 221 根 K 线过滤。窗口 ≥ 45 天（审计窗口 30 天 + 余量）。
    - ⚠️ 瘦身**必须原地**（文件名仍是 `hs300.db`）：下游与 `db_lineage save`
      都按固定文件名找库，换名字早晚漏一处 ⇒ 表现为「库里没数据」。
+   - **⚠️ `trade_plan` 会被回补撑大（2026-11-05 实测）**：
+     `plan build-all --backfill` **逐轮追加**、每轮用不同的 `params_hash`，
+     于是同一个 `(日期, 档位, code)` 有**多条**行 —— 一个交易日能到 5000 行。
+     本机实测 **1,276,354 行 / 499 MB**（264 个交易日 × 11 档位）。
+     清理：`scripts/clean_trade_plan_rounds.py`（按**代码库自己的** canonical 规则
+     `db_repository.canonical_plan_round` 保留每个 `(日期,档位)` 的 canonical 轮次）
+     → **43,621 行 / 47 MB**（VACUUM 后）。
+     - 安全性：canonical 轮次本来就是「行数最多」⇒ 删掉别的轮次**不改变**
+       canonical 轮次是谁 ⇒ **读路径结果不变**（已对全部 2904 个组合校验 0 处不一致）；
+       且它是**派生表**，丢了能由 `plan build-all --backfill` 重算。
+     - ⚠️ **清理不能替代读路径去重**：下一轮回补又会长出多行，
+       所以「库里少存 + 读时也去重」**两处都要做**。
+     - ⚠️ 脚本与 `db_repository.canonical_plan_round` **必须同规则**，
+       否则「脚本以为该留的被删了，读路径改选另一轮 ⇒ 前端数据悄悄变了」。
+       有测试交叉校验（`tests/test_clean_trade_plan_rounds.py`）。
 5. **本地兜底只在「CI 已经放弃」时动手**：过了 deadline（默认 17:00 北京）
    线上仍落后才算数。本地抢跑本身就在制造分叉。
 - **（历史）缓存 key 必须带 run_id**：这条只适用于已经弃用的 `actions/cache` 方案
@@ -458,7 +473,13 @@ Layered modules (top-level flat modules + a few packages):
 - **日期筛选组件** — `templates/components/date_filter.html`（Jinja macro）+ `static/css/date-filter.css` + `static/js/date-filter.js`。五个页面统一用它：picks/plan 用完整版（`date_filter('d','日期')`），cb/decide/portfolio 用 `compact=true`。portfolio 的日期来源是 `/api/portfolio/dates`（只列档位组合真有 `trade_plan` 行的日期；必须排除 `default` 档，否则选中后「当日计划」恒为空）。组合 PnL 支持 `as_of`：`/api/portfolio/summary|detail?date=YYYY-MM-DD` 会按该日重建（`db_repository.rebuild_positions_as_of` 用 trade_events 做移动平均成本还原持仓，价格取该日或更早最近收盘）；不传 date 仍是原「当前状态」计算。能力：‹/› 步进交易日（选项按新→旧排列，方向在 JS 里换算）、`?d=YYYY-MM-DD` URL 状态（停留在最新时不写入参数）、键盘 ←/→/Home/End、加载/错误/成功三态类（`setDateFilterState`）。八态预览见 `docs/previews/date-filter.html`。新增页面用该组件时不要自建日期控件，否则又会出现多套日期交互。
 - **Views** — `view_models` builds row tuples from `Stock`/`scores`; `formatter.format_table/format_lines` renders CLI tables. `pick_history.run_picks` (with `do_sync=False` flag) is what the web "重算榜单" button calls.
 - **Web** — `app.py` (Flask, ~680 lines) serves Jinja2 templates from `templates/` and static assets from `static/`. Pages: picks (`/`), plan (`/plan`), portfolio (`/portfolio`), cb (`/cb`), decide (`/decide`). JS is Vanilla ES6 modules in `static/js/` (no jQuery). Bootstrap 5.3.3 and Chart.js 4.4.1 are vendored locally in `static/vendor/` (no CDN dependency). Dual deployment: Flask API mode and static JSON+HTML mode (gh-pages via `export_json.py`). Static asset URLs carry `?v=<git-sha>` cache-busting (Cloudflare serves `static/*.js` with `max-age=14400`).
-- **10w 决策台** — `/decide` 按 `config.PORTFOLIO_10W`（8w 股 + 2w 债、≤8 只、单票 ≤10%、总仓位 ≤75%）展示今日执行清单，对照用户手工录入的真实持仓（`real_positions` / `real_cb_positions`，仓储 `real_position_repository.py`）高亮偏差。判定逻辑在 `decide_service.py`（纯函数，10 类偏差 × info/warn/danger）。**读取 `trade_plan` 的 10W 档位必须按 code 去重**——回补会用不同 `params_hash` 追加重复行。报告见 `docs/reports/10w-decision-system.md`。
+- **10w 决策台** — `/decide` 按 `config.PORTFOLIO_10W`（8w 股 + 2w 债、≤8 只、单票 ≤10%、总仓位 ≤75%）展示今日执行清单，对照用户手工录入的真实持仓（`real_positions` / `real_cb_positions`，仓储 `real_position_repository.py`）高亮偏差。判定逻辑在 `decide_service.py`（纯函数，10 类偏差 × info/warn/danger）。**读取 `trade_plan` 的 10W 档位必须按 code 去重**——回补会用不同 `params_hash` 追加重复行。
+  ⚠️ **这条以前只做到一半（2026-11-05 修）**：去重键写的是 `(code, action)`，
+  而 `buy` 与 `hold` 是**不同的 action** ⇒ 同一只票既能 `buy` 又能 `hold` 时两个键都不同
+  ⇒ **都能通过去重 ⇒ 组合页上同一只票渲染两行**（实测线上 5W 重复 3 只、50W 重复 4 只）。
+  现在统一走 `shared_lib/plan_rows.dedupe_plan_rows`：**每个 code 只留一行**，
+  多行时按 `ACTION_PRIORITY = {buy:0, hold:1, exit:2}` 保留更可执行的那条。
+  `export_json.py` 与 `app.py` **各有一份读路径** ⇒ 规则必须共用这个模块，否则两份必然漂移。报告见 `docs/reports/10w-decision-system.md`。
 - **持仓云端化（Worker + D1）** — 持仓的唯一真相源是 **Cloudflare D1**，由 `worker/index.js` 提供 `/api/decide/*`（读公开、写需登录的 HttpOnly Cookie）。**登录是双因子**：`DECIDE_USER` + `DECIDE_PASSWORD`，签名密钥 `DECIDE_SECRET`，三者都走 `wrangler secret put`；前端用 Bootstrap Modal（`templates/components/decide_login_modal.html`），不使用浏览器原生弹窗。本地 SQLite 同名表保留但不再写入。**对比逻辑有 Python 与 JS 两份实现**：`decide_service.py`（服务端/导出）与 `static/js/decide_compare.js`（前端实时算），由 `tests/test_decide_compare_parity.py` 用 node 跑同一 fixture 保证逐项一致；配置来源 `data/decide-config.json`。D1 建表见 `worker/schema.sql`，部署见 `wrangler.toml`（路由 `ycu.space/api/*`）与 `scripts/deploy-worker.sh`。
 - **Shared plan/backtest** — `shared_lib/strategy.py` exposes `PlanRow`, `params_hash`, `compute_plan_prices` and re-exports `RiskManager`, `PositionConfig`, `default_candidate_config`. Treat it as the single source of truth — both `plan_builder` and `ma_backtest` import from here.
 
