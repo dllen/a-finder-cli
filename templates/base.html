@@ -13,11 +13,19 @@
 {% include 'components/nav.html' %}
 {% block body %}{% endblock %}
 <footer class="app-footer">
-<div class="container d-flex flex-column flex-md-row justify-content-between align-items-center py-3 gap-1">
+<div class="container d-flex flex-column flex-md-row justify-content-between align-items-center py-3 gap-2">
 <span>&copy; {{ year }} 每日机会</span>
-<span>沪深300 选股与交易计划 &middot; 数据仅供参考，不构成投资建议</span>
+<div class="d-flex flex-column flex-md-row align-items-center gap-2 text-center text-md-end">
+<span class="text-muted small">沪深300 选股与可转债分析 &middot; 数据仅供参考，不构成投资建议</span>
+<button type="button" class="btn btn-sm btn-tip" data-bs-toggle="modal" data-bs-target="#tipModal">
+&#9749; 赞赏支持
+</button>
+</div>
 </div>
 </footer>
+
+{# 赞赏弹窗：入口在页脚按钮，两页（每日机会 / 可转债）共用 #}
+{% include 'components/tip_modal.html' %}
 <script src="{{ url_for('static', filename='vendor/bootstrap.bundle.min.js') }}"></script>
 <script>window.APP_MODE={{ app_mode|tojson }};window.DATA_PREFIX={{ data_prefix|tojson }};</script>
 <script type="module" src="{{ url_for('static', filename='js/date-filter.js') }}"></script>

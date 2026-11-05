@@ -344,6 +344,16 @@ def export(db_path: str, out_dir: str) -> int:
     dst_vendor.mkdir(exist_ok=True)
     for f in (src_static / "vendor").glob("*"):
         shutil.copy(f, dst_vendor / f.name)
+    # 图片（赞赏收款码，2026-11-05 加）
+    # ⚠️ 漏了这块的后果很隐蔽：本地 Flask 站图片正常（直接读 static/），
+    # 但静态站会**图裂**—— 只在线上复现，本机测不出来。
+    src_images = src_static / "images"
+    if src_images.is_dir():
+        dst_images = static_dir / "images"
+        dst_images.mkdir(exist_ok=True)
+        for f in src_images.iterdir():
+            if f.is_file():
+                shutil.copy(f, dst_images / f.name)
     # Favicon
     shutil.copy(src_static / "favicon.svg", static_dir / "favicon.svg")
 
