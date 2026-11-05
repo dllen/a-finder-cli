@@ -1,7 +1,9 @@
 {# 日期筛选组件：日期标签 + 前/后交易日步进 + "回到最新" + 状态区。
    用法：{% from 'components/date_filter.html' import date_filter %}
-        {{ date_filter('d', '日期') }}              页面主筛选（picks / plan）
-        {{ date_filter('cb-date', '日期', compact=true) }}  紧凑表头（cb / decide）
+        {{ date_filter('d', '日期') }}              页面主筛选（picks）
+        {{ date_filter('cb-date', '日期', compact=true) }}  紧凑表头（cb）
+   ⚠️ 2026-11-05：plan / portfolio / decide 三个页面已下线，
+   现在只有 picks 与 cb 在用这个组件。
    行为由 static/js/date-filter.js 提供（步进、URL ?d= 状态、键盘、状态类）。#}
 {% macro date_filter(select_id='d', label='日期', compact=false) -%}
 <div class="date-filter{% if compact %} date-filter--compact{% endif %}"

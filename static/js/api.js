@@ -1,5 +1,10 @@
 // 数据源抽象：API 模式（Flask）与静态模式（gh-pages JSON）共用。
 // window.APP_MODE / window.DATA_PREFIX 由 base.html 注入。
+//
+// ⚠️ 2026-11-05：「交易计划」「持仓组合」「决策台」已下线（用户要求）。
+// 相关函数（fetchPlan / fetchHoldings / fetchPortfolio* / fetchDecide* /
+// postPlanBuild / planHref）已删除，对应的 Flask 路由与静态 JSON 也一并移除。
+// 恢复功能时请从 git 历史（commit 前 89150fb）取回本文件对应片段。
 
 export function isStatic() { return window.APP_MODE === 'static'; }
 function dsPath(file) { return (window.DATA_PREFIX || '') + file; }
@@ -23,45 +28,10 @@ export function fetchDates() {
     : getJSON('/api/dates');
 }
 
-export function fetchPlanDates() {
-  return isStatic()
-    ? getJSON(dsPath('data/plan-dates.json'))
-    : getJSON('/api/plan/dates');
-}
-
-export function fetchPlan(date, includeFailed) {
-  return isStatic()
-    ? getJSON(dsPath('data/plan-' + date + '.json'))
-    : getJSON('/api/plan/' + date, { include_failed: includeFailed ? '1' : '0' });
-}
-
 export function fetchDashboard() {
   return isStatic()
     ? getJSON(dsPath('data/dashboard.json'))
     : getJSON('/api/dashboard');
-}
-
-export function fetchHoldings() {
-  return isStatic()
-    ? getJSON(dsPath('data/holdings.json'))
-    : getJSON('/api/holdings');
-}
-
-export function fetchPortfolioDates() {
-  // 静态站的组合快照没有日期维度，调用方在 static 模式下不会走到这里
-  return getJSON('/api/portfolio/dates');
-}
-
-export function fetchPortfolioSummary(date, strategy) {
-  return isStatic()
-    ? getJSON(dsPath('data/portfolio/summary.json'))
-    : getJSON('/api/portfolio/summary', { date, strategy });
-}
-
-export function fetchPortfolioDetail(label, date, strategy) {
-  return isStatic()
-    ? getJSON(dsPath('data/portfolio/' + label + '.json'))
-    : getJSON('/api/portfolio/' + encodeURIComponent(label), { date, strategy });
 }
 
 export function fetchStats() {
@@ -75,19 +45,6 @@ export async function postRefresh(sync) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sync }),
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw { status: resp.status, ...err };
-  }
-  return resp.json();
-}
-
-export async function postPlanBuild(params) {
-  const resp = await fetch('/api/plan/build', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -113,7 +70,6 @@ export async function pollJob(jobId, onProgress, onComplete, onError) {
 }
 
 export function picksHref() { return isStatic() ? 'index.html' : '/'; }
-export function planHref() { return isStatic() ? 'plan.html' : '/plan'; }
 export function cbHref() { return isStatic() ? 'cb.html' : '/cb'; }
 
 // ---------------------------------------------------------------------------
@@ -150,53 +106,16 @@ if (isStatic()) {
     document.querySelectorAll('.write-control').forEach(el => el.style.display = 'none');
     const picksLink = document.querySelector('a[data-nav="picks"]');
     if (picksLink) picksLink.href = 'index.html';
-    const planLink = document.querySelector('a[data-nav="plan"]');
-    if (planLink) planLink.href = 'plan.html';
     const cbLink = document.querySelector('a[data-nav="cb"]');
     if (cbLink) cbLink.href = 'cb.html';
   });
 }
 
 // ---------------------------------------------------------------------------
-// 10w 决策台
-// ---------------------------------------------------------------------------
-
-export function fetchDecideDates() {
-  return isStatic()
-    ? getJSON(dsPath('data/decide-dates.json'))
-    : getJSON('/api/decide/plan');
-}
-
-export async function fetchDecidePlan(date) {
-  if (!isStatic()) {
-    return getJSON('/api/decide/plan', { date });
-  }
-  // 静态站：没有 date 时先从 decide-dates.json 取最新，避免拼出 decide-undefined.json
-  let d = date;
-  if (!d) {
-    const datesRes = await getJSON(dsPath('data/decide-dates.json'));
-    d = (datesRes && datesRes.dates && datesRes.dates[0]) || '';
-  }
-  if (!d) return { date: '', rows: [], skipped: [], dates: [] };
-  const plan = await getJSON(dsPath('data/decide-' + d + '.json'));
-  const datesRes = await getJSON(dsPath('data/decide-dates.json')).catch(() => ({ dates: [d] }));
-  return Object.assign({ dates: datesRes.dates || [d] }, plan);
-}
-
-export function fetchDecidePositions() {
-  return isStatic()
-    ? getJSON(dsPath('data/decide-positions.json'))
-    : getJSON('/api/decide/positions');
-}
-
-export function fetchDecideComparison(date) {
-  return isStatic()
-    ? getJSON(dsPath('data/decide-' + date + '.json'))
-    : getJSON('/api/decide/comparison', { date });
-}
-
-// ---------------------------------------------------------------------------
-// Cloudflare Worker（持仓写入；D1 是唯一真相源）
+// 刷新数据（本机 agent 跑流水线，Worker 只做排队与状态）
+//
+// 两个端点都在 Worker 上（`/api/*` 走脚本路由），静态站没有它们 ——
+// 所以调用方必须先用 isStatic() 判断，静态站根本不该走到这里。
 // ---------------------------------------------------------------------------
 
 // 线上静态站：同源（Worker 挂在 ycu.space/api/*）
@@ -209,55 +128,6 @@ async function reqJSON(url, opts) {
   if (!resp.ok) throw Object.assign({ status: resp.status }, data);
   return data;
 }
-
-export function fetchDecidePositionsRemote() {
-  return reqJSON(API_BASE + '/api/decide/positions');
-}
-
-export function postDecidePosition(payload) {
-  return reqJSON(API_BASE + '/api/decide/positions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-}
-
-export function deleteDecidePosition(code, isCb) {
-  const q = isCb ? '?cb=1' : '';
-  return reqJSON(
-    API_BASE + '/api/decide/positions/' + encodeURIComponent(code) + q,
-    { method: 'DELETE' },
-  );
-}
-
-export function loginDecide(user, password) {
-  return reqJSON(API_BASE + '/api/decide/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user, password }),
-  });
-}
-
-export function logoutDecide() {
-  return reqJSON(API_BASE + '/api/decide/logout', { method: 'POST' });
-}
-
-export function fetchDecideAuthState() {
-  return reqJSON(API_BASE + '/api/decide/health');
-}
-
-export function fetchDecideConfig() {
-  return isStatic()
-    ? getJSON(dsPath('data/decide-config.json'))
-    : getJSON('/api/decide/config');
-}
-
-// ---------------------------------------------------------------------------
-// 刷新数据（本机 agent 跑流水线，Worker 只做排队与状态）
-//
-// 两个端点都在 Worker 上（`/api/*` 走脚本路由），静态站没有它们 ——
-// 所以调用方必须先用 isStatic() 判断，静态站根本不该走到这里。
-// ---------------------------------------------------------------------------
 
 export function fetchRefresh() {
   return reqJSON(API_BASE + '/api/refresh', { method: 'POST' });

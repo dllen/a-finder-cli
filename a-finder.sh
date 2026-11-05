@@ -123,31 +123,6 @@ cmd_picks() {
   run_py "$ROOT_DIR/pick_history.py" --db "$db" --top "$top" $sync_flag
 }
 
-cmd_plan() {
-  # 用法: a-finder.sh plan [DB] [DATE]
-  local db="${1:-$DEFAULT_DB}"
-  local date="${2:-$(date +%F)}"
-  run_cmd plan build --db "$db" --date "$date"
-}
-
-cmd_plan_all() {
-  # 用法: a-finder.sh plan-all [DB] [TIERS]
-  local db="${1:-$DEFAULT_DB}"
-  local tiers="${2:-$TIERS}"
-  run_cmd plan build-all --db "$db" --strategy linyuan --tiers "$tiers"
-}
-
-cmd_daily_plan() {
-  # 用法: a-finder.sh daily-plan [DB] [TOP] [pick-cmd] [EXTRA...]
-  local db="${1:-$DEFAULT_DB}"
-  local top="${2:-20}"
-  local pick_cmd="${3:-picks}"
-  cmd_sync_incremental "$db" "$top" "$pick_cmd" "${@:4}"
-  run_cmd plan build --db "$db" --date "$(date +%F)"
-}
-
-# ============================ site ============================
-
 push_site_to_ghpages() {
   local export_dir="$1"
   [[ -f "$export_dir/index.html" ]] || { echo "❌ $export_dir/index.html 缺失，跳过推送" >&2; exit 1; }
@@ -203,16 +178,9 @@ except Exception:
     echo "ERROR: 库里没有行情数据（$db 无 daily_prices 表或 MAX(trade_date) 为空），中止" >&2
     return 1
   fi
-  echo "[2/5] 生成 $plan_date 交易计划（库里行情最新日）..."
-  run_cmd plan build --db "$db" --date "$plan_date"
-
-  echo "[3/5] 构建 10 个资金档位组合..."
-  run_cmd plan build-all --db "$db" --strategy linyuan --tiers "$TIERS"
-
-  echo "[4/5] 回补历史组合（since ${BACKFILL_ANCHOR}）..."
-  run_cmd plan build-all --backfill --since "$BACKFILL_ANCHOR" --db "$db"
-
-  echo "[5/5] 导出静态数据到 $out..."
+  # ⚠️ 2026-11-05：「交易计划」「持仓组合」已下线（用户要求），
+  # 不再跑 plan build / build-all / --backfill（CLI 子命令也已删除）。
+  echo "[2/2] 导出静态数据到 $out..."
   run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
 
   cp "$out/index.html" "$out/404.html"
@@ -296,14 +264,12 @@ cmd_refresh() {
   echo "[1/4] 刷新元数据..."
   run_cmd sync-hs300-meta --db "$db" || echo "元数据同步失败，继续执行"
 
-  echo "[2/4] 补齐行情 $start ~ $end..."
+  echo "[2/3] 补齐行情 $start ~ $end..."
   run_cmd sync-hs300-range --start "$start" --end "$end" --db "$db" \
     --gap-fill --concurrency 8 --rate 8 --retries 1 || echo "行情补齐失败，继续执行"
 
-  echo "[3/4] 回补交易计划（since ${start}）..."
-  run_cmd plan build-all --backfill --since "$start" --db "$db"
-
-  echo "[4/4] 导出网站数据到 $out..."
+  # ⚠️ 2026-11-05：交易计划已下线，不再回补 plan（CLI 子命令已删除）。
+  echo "[3/3] 导出网站数据到 $out..."
   run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
 
   cp "$out/index.html" "$out/404.html"
@@ -319,37 +285,6 @@ cmd_refresh() {
 }
 
 # ============================ portfolio (补齐 portfolio 数据) ============================
-
-cmd_portfolio() {
-  # 用法: a-finder.sh portfolio [DB] [OUT] [--push]
-  # 一键补齐 /data/portfolio 各资金档位数据（累计收益对比 + 当日计划 + 当前持仓）。
-  # 依赖 trade_events / open_positions（plan build-all 的 paper trade 写库），先回补计划再导出。
-  local db="${1:-$DEFAULT_DB}"
-  local out="${2:-site}"
-  local push=0
-  for a in "$@"; do
-    if [[ "$a" == "--push" ]]; then push=1; fi
-  done
-
-  echo "=== 补齐 portfolio 数据 ==="
-  echo "db=$db out=$out push=$push"
-  echo ""
-
-  echo "[1/2] 回补交易计划（since ${BACKFILL_ANCHOR}）..."
-  run_cmd plan build-all --backfill --since "$BACKFILL_ANCHOR" --db "$db"
-
-  echo "[2/2] 生成 portfolio 数据到 $out/data/portfolio..."
-  run_py "$ROOT_DIR/export_json.py" --portfolio-only --db "$db" --out "$out"
-
-  echo "JSON: $(ls -1 "$out/data/portfolio/"*.json 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "$push" == "1" ]]; then
-    push_site_to_ghpages "$out"
-  else
-    echo "推送: bash a-finder.sh portfolio $db $out --push"
-  fi
-}
-
-# ============================ web (Flask app.py) ============================
 
 cmd_web() {
   # 用法: a-finder.sh web {start|stop|restart|status}   环境变量 DB / PORT / TOP
@@ -623,23 +558,18 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
       增量同步（meta + range --gap-fill 并发）+ 选股落库。
       pick-mode: pick-history（写 daily_picks）/ picks / ma-picks。
 
-──────── 选股 / 计划 ────────
+──────── 选股 ────────
   picks [--no-sync]            环境变量 DB / TOP。pick_history.py 落库。
-  plan [DB] [DATE]             生成单 portfolio 交易计划（plan build）。
-  plan-all [DB] [TIERS]        批量生成多档位组合（默认 5W-50W 10 档）。
-  daily-plan [DB] [TOP] [pick-cmd] [EXTRA...]
-      sync-incremental + plan build，一次性日流水。
+  # ⚠️ 2026-11-05：「交易计划」「持仓组合」已下线（用户要求），
+  # plan / plan-all / daily-plan / portfolio 四个子命令已删除。
 
 ──────── 网站 ────────
   site [DB] [TOP] [OUT] [--push]
-      全流程：sync-incremental → plan build → build-all → backfill
-      → export_json。--push 把 site/ orphan-push 到 gh-pages。
+      全流程：sync-incremental → export_json。
+      --push 把 site/ orphan-push 到 gh-pages。
   refresh [MONTHS] [DB] [OUT] [--push]
-      最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 计划回补 → 网站导出。
-      计划回补只覆盖 daily_picks 已有日期；不重算历史选股（避免未来函数偏差）。
-  portfolio [DB] [OUT] [--push]
-      一键补齐 /data/portfolio 各档位数据（累计收益对比 + 当日计划 + 当前持仓）。
-      先回补计划（plan build-all --backfill）再导出 portfolio JSON。
+      最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 网站导出。
+      不重算历史选股（避免未来函数偏差）。
   web {start|stop|restart|status}    环境变量 DB / PORT / TOP。Flask app.py。
   refresh-agent {start|stop|status}
       刷新按钮的本机端：轮询 Worker 任务队列，领到就跑 site --push。
@@ -657,10 +587,8 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --gap-fill
   bash a-finder.sh sync-incremental hs300.db 20 pick-history
   bash a-finder.sh picks --no-sync
-  bash a-finder.sh plan hs300.db 2026-09-07
   bash a-finder.sh site hs300.db 20 site --push
   bash a-finder.sh refresh 3 hs300.db site --push
-  bash a-finder.sh portfolio hs300.db site --push
   DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
   bash a-finder.sh daemon start overview
   bash a-finder.sh backtest hs300.db 10 240 --tune
@@ -678,12 +606,10 @@ case "${1:-help}" in
   sync-all)        shift; cmd_sync_all "$@" ;;
   sync-incremental) shift; cmd_sync_incremental "$@" ;;
   picks)           shift; cmd_picks "$@" ;;
-  plan)            shift; cmd_plan "$@" ;;
-  plan-all)        shift; cmd_plan_all "$@" ;;
-  daily-plan)      shift; cmd_daily_plan "$@" ;;
+
   site)            shift; cmd_site "$@" ;;
   refresh)         shift; cmd_refresh "$@" ;;
-  portfolio)       shift; cmd_portfolio "$@" ;;
+
   web)             shift; cmd_web "$@" ;;
   refresh-agent)   shift; cmd_refresh_agent "$@" ;;
   daemon)          shift; cmd_daemon "$@" ;;

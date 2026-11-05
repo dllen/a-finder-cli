@@ -22,23 +22,19 @@ import re
 import shutil
 from pathlib import Path
 
+# 2026-11-05：交易计划 / 持仓组合 / 决策台已下线，
+# 所以不再需要 get_trade_plan_by_date / get_today_plan_summary /
+# get_open_positions_with_unrealized / get_recent_pnl / get_holdings_detail /
+# compute_portfolio_pnl / CAPITAL_TIERS / PORTFOLIO_10W / dedupe_plan_rows。
 from db_repository import (
     open_db,
-    get_trade_plan_by_date,
     get_last_refresh,
-    get_today_plan_summary,
-    get_open_positions_with_unrealized,
-    get_recent_pnl,
-    get_holdings_detail,
-    compute_portfolio_pnl,
 )
 from app import (
     list_dates,
     picks_for_date,
     _dt_class,
 )
-from config import CAPITAL_TIERS, PORTFOLIO_10W
-from shared_lib.plan_rows import dedupe_plan_rows
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
@@ -88,28 +84,62 @@ def _render_static_page(template_name: str, **kwargs) -> str:
     return _cache_bust(html, _static_version())
 
 
-def _cleanup_stale_date_files(data_dir: Path, pick_dates, plan_dates) -> None:
-    """删除 site/data 下已不在当前日期集合中的 picks-*/plan-* 陈旧文件。
+#: 已下线功能的产物（2026-11-05 去掉「交易计划」「持仓组合」「决策台」）。
+#: 导出时必须**主动删掉**这些旧文件，否则 gh-pages 上会继续留着，
+#: 站点等于没下线（Cloudflare 还会继续对外提供这些 JSON）。
+OBSOLETE_DATA_GLOBS = (
+    "plan-*.json",        # 每日交易计划
+    "plan-dates.json",
+    "decide-*.json",      # 决策台
+    "holdings.json",      # 持仓明细
+    "confirm-*.json",
+)
+OBSOLETE_DATA_DIRS = ("portfolio",)   # 档位组合目录
+OBSOLETE_PAGES = ("plan.html", "portfolio.html", "decide.html")
+
+
+def _cleanup_stale_date_files(data_dir: Path, pick_dates) -> None:
+    """删除陈旧 picks-* 文件、以及**已下线功能**留下的所有产物。
 
     export 只写当前日期、不清理历史残留；重导出后旧日期文件会留在原地。
     这里按文件名里的 YYYY-MM-DD 过滤，删掉不在最新日期集合里的。
+
+    ⚠️ 2026-11-05：交易计划 / 持仓组合 / 决策台已下线。仅「不再生成」是不够的 ——
+    上一版发布出去的 plan-*.json、data/portfolio/、decide-*.json、holdings.json、
+    plan.html 等**会一直留在 gh-pages 上**，站点实际上没有下线。
+    所以这里必须显式删除（见 OBSOLETE_* 常量）。
     """
     pick_set = set(pick_dates)
-    plan_set = set(plan_dates)
-    for prefix, keep in (("picks", pick_set), ("plan", plan_set)):
-        for f in data_dir.glob(f"{prefix}-*.json"):
-            date = f.stem[len(prefix) + 1:]  # picks-YYYY-MM-DD -> YYYY-MM-DD
-            if len(date) != 10 or date[4] != "-" or date[7] != "-":
-                continue  # 跳过 plan-dates.json 等非日期文件
-            if date not in keep:
-                f.unlink()
+    for f in data_dir.glob("picks-*.json"):
+        date = f.stem[len("picks") + 1:]  # picks-YYYY-MM-DD -> YYYY-MM-DD
+        if len(date) != 10 or date[4] != "-" or date[7] != "-":
+            continue
+        if date not in pick_set:
+            f.unlink()
+
+    # 已下线功能的产物：无条件删除
+    for pattern in OBSOLETE_DATA_GLOBS:
+        for f in data_dir.glob(pattern):
+            f.unlink()
+    for name in OBSOLETE_DATA_DIRS:
+        d = data_dir / name
+        if d.is_dir():
+            shutil.rmtree(d)
 
 
 def _dashboard_payload(conn) -> dict:
+    """Dashboard 卡片数据：运行状态 + 可转债摘要。
+
+    ⚠️ 2026-11-05 起「交易计划」「持仓组合」「决策台」已下线（用户要求），
+    trade_plan / open_positions / trade_events 三张表已清空
+    （迁移 2026_11_05_remove_plan_features）⇒ 不再导出
+    today_plan / open_positions / pnl_5d / holdings_summary。
+
+    保留 last_refresh（数据新鲜度，选股页仍需要）与 cb（可转债仍在线）。
+    cb 这部分**必须**在这里带上：静态站的 dashboard.js 读的是同一个
+    dashboard.json，不给它 cb 的话转债卡片在 gh-pages 上恒为「未初始化」。
+    """
     last = get_last_refresh(conn)
-    today = get_today_plan_summary(conn, _dt_class.now().strftime("%Y-%m-%d"))
-    opens = get_open_positions_with_unrealized(conn)
-    pnl = get_recent_pnl(conn, days=5)
     if last:
         try:
             parsed = _dt_class.fromisoformat(last["updated_at"])
@@ -118,12 +148,24 @@ def _dashboard_payload(conn) -> dict:
         ago = (_dt_class.now() - parsed).total_seconds() / 3600
         last["ago_hours"] = round(ago, 1)
         last["freshness"] = "fresh" if ago < 24 else ("warm" if ago < 72 else "stale")
+    # 可转债摘要（与 /api/dashboard 同构，保证静态站与 API 模式显示一致）
+    from cb_repository import get_cb_positions
+    cb_date = conn.execute(
+        "SELECT MAX(trade_date) FROM cb_picks").fetchone()[0]
+    cb_picks_count = 0
+    if cb_date:
+        cb_picks_count = conn.execute(
+            "SELECT COUNT(*) FROM cb_picks WHERE trade_date=?", (cb_date,)
+        ).fetchone()[0]
+    cb_positions_count = len(get_cb_positions(conn))
+
     return {
         "last_refresh": last,
-        "today_plan": today,
-        "open_positions": opens,
-        "pnl_5d": pnl,
-        "holdings_summary": get_holdings_detail(conn)["summary"],
+        "cb": {
+            "picks_count": cb_picks_count,
+            "positions_count": cb_positions_count,
+            "latest_date": cb_date,
+        },
     }
 
 
@@ -227,129 +269,6 @@ def _export_cb_data(conn, data_dir: Path) -> None:
     )
 
 
-def _export_decide_data(conn, data_dir: Path) -> None:
-    """导出 10w 决策台快照（静态站只读）：建仓计划 + 对照 + 实际持仓。
-
-    数据源是 daily_picks 的「买入信号」榜单（报告第 3 章），不是 trade_plan
-    的 10W 档位——后者是多策略叠加的 23-26 只，合计超本金 2.5 倍。
-    """
-    from decide_service import build_plan_from_picks
-    from real_position_repository import get_real_cb_positions, get_real_positions
-
-    dates = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT date FROM daily_picks WHERE kind='买入信号' "
-            "ORDER BY date DESC"
-        ).fetchall()
-    ]
-    json.dump({"dates": dates}, (data_dir / "decide-dates.json").open("w"), ensure_ascii=False)
-
-    # 降级用：Worker 不可用时前端仍可只读展示本地 SQLite 的持仓快照
-    actual_rows = get_real_positions(conn)
-    cb_rows = get_real_cb_positions(conn)
-    json.dump(
-        {"rows": actual_rows, "cb_rows": cb_rows},
-        (data_dir / "decide-positions.json").open("w"),
-        ensure_ascii=False, default=str,
-    )
-
-    for d in dates:
-        picks = [
-            dict(zip(["rank", "code", "name", "buy", "stop", "target", "score", "strategy"], r))
-            for r in conn.execute(
-                "SELECT rank, code, name, buy, stop, target, score, strategy "
-                "FROM daily_picks WHERE kind='买入信号' AND date=? ORDER BY rank",
-                (d,),
-            )
-        ]
-        built = build_plan_from_picks(picks)
-        # 只导 plan；对比结果由前端 decide_compare.js 实时算（持仓在 D1，随时可变）
-        json.dump(
-            {"date": d, **built},
-            (data_dir / f"decide-{d}.json").open("w"),
-            ensure_ascii=False, default=str,
-        )
-
-    # 前端对比用的配置（PORTFOLIO_10W），保证前后端规则同源
-    (data_dir / "decide-config.json").write_text(
-        json.dumps(PORTFOLIO_10W, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
-def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = None) -> None:
-    """写出 portfolio 静态数据 + portfolio.html。"""
-    pf_dir = out_dir / "data" / "portfolio"
-    pf_dir.mkdir(parents=True, exist_ok=True)
-
-    conn = open_db(db_path)
-    try:
-        latest = plan_date or conn.execute(
-            "SELECT MAX(plan_date) FROM trade_plan"
-        ).fetchone()[0] or ""
-
-        tiers = []
-        for capital in CAPITAL_TIERS:
-            label = f"{capital // 10000}W"
-            pnl = compute_portfolio_pnl(conn, label, initial_capital=capital)
-            holdings = get_open_positions_with_unrealized(conn, portfolio=label)
-            cur = conn.execute(
-                "SELECT tp.*, m.name AS name FROM trade_plan tp "
-                "LEFT JOIN hs300_metadata m ON m.code = tp.code "
-                "WHERE tp.plan_date=? AND tp.portfolio=? "
-                "ORDER BY tp.action DESC, tp.code",
-                (latest, label),
-            )
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-            # 每个 code 只保留一行（buy > hold > exit）。
-            # ⚠️ 旧实现按 (code, action) 去重 —— 同一只票既 buy 又 hold 时
-            # 两个 key 都不同 ⇒ **同一只票在页面上出现两次**（实测线上 5W 重复 3 只、
-            # 50W 重复 4 只）。规则与 app.py 共用 shared_lib.plan_rows（唯一真相源）。
-            plan_rows = dedupe_plan_rows(rows)
-            tiers.append({
-                "label": label,
-                "capital": capital,
-                "cash_remaining": pnl["cash_remaining"],
-                "position_value": pnl["position_value"],
-                "total_value": pnl["total_value"],
-                "realized_pnl": pnl["realized_pnl"],
-                "unrealized_pnl": pnl["unrealized_pnl"],
-                "return_rate": pnl["return_rate"],
-                "last_plan_date": latest,
-            })
-            detail = {
-                "label": label,
-                "capital": capital,
-                "date": latest,
-                "pnl": pnl,
-                "holdings": holdings,
-                "plan_rows": plan_rows,
-                "last_plan_date": latest,
-            }
-            json.dump(
-                detail,
-                (pf_dir / f"{label}.json").open("w"),
-                ensure_ascii=False, default=str,
-            )
-
-        json.dump(
-            {"date": latest, "tiers": tiers},
-            (pf_dir / "summary.json").open("w"),
-            ensure_ascii=False, default=str,
-        )
-    finally:
-        conn.close()
-
-    # 静态页
-    (out_dir / "portfolio.html").write_text(
-        _render_static_page("portfolio.html",
-            today=latest,
-            strategy_options="",
-            year=_dt_class.now().year),
-        encoding="utf-8",
-    )
-
-
 def export(db_path: str, out_dir: str) -> int:
     out = Path(out_dir)
     data_dir = out / "data"
@@ -360,15 +279,9 @@ def export(db_path: str, out_dir: str) -> int:
     conn = open_db(db_path)
     try:
         pick_dates = list_dates(conn)
-        plan_dates = [
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT plan_date FROM trade_plan ORDER BY plan_date DESC"
-            ).fetchall()
-        ]
 
         # JSON payloads (mirror the Flask API responses)
         json.dump({"dates": pick_dates}, (data_dir / "dates.json").open("w"), ensure_ascii=False)
-        json.dump({"dates": plan_dates}, (data_dir / "plan-dates.json").open("w"), ensure_ascii=False)
         for d in pick_dates:
             groups = {}
             for row in picks_for_date(conn, d):
@@ -378,60 +291,27 @@ def export(db_path: str, out_dir: str) -> int:
                 (data_dir / f"picks-{d}.json").open("w"),
                 ensure_ascii=False,
             )
-        for d in plan_dates:
-            rows = get_trade_plan_by_date(conn, d, include_failed=True)
-            json.dump(
-                {"plan_date": d, "rows": rows},
-                (data_dir / f"plan-{d}.json").open("w"),
-                ensure_ascii=False,
-                default=str,
-            )
         json.dump(_dashboard_payload(conn), (data_dir / "dashboard.json").open("w"),
                   ensure_ascii=False, default=str)
-        json.dump(get_holdings_detail(conn), (data_dir / "holdings.json").open("w"),
-                  ensure_ascii=False, default=str)
         _export_cb_data(conn, data_dir)
-        _export_decide_data(conn, data_dir)
         _export_stats(conn, data_dir)
     finally:
         conn.close()
 
-    # 清理已不在当前日期集合里的陈旧 picks-*/plan-* 文件
-    _cleanup_stale_date_files(data_dir, pick_dates, plan_dates)
+    # 清理陈旧 picks-* 文件 + 已下线功能的产物（plan/portfolio/decide/holdings）
+    _cleanup_stale_date_files(data_dir, pick_dates)
 
     # 静态页默认日期 = 最新可用数据日期（fallback 到今天仅用于展示占位）
     today = _dt_class.now().strftime("%Y-%m-%d")
     picks_default = pick_dates[0] if pick_dates else today
-    plan_default = plan_dates[0] if plan_dates else today
-
-    # Generate tier filter options for plan page
-    tier_filter_options = "".join(
-        f'<li><label class="dropdown-item"><input type="checkbox" class="form-check-input me-1 tier-filter-cb" value="{c}"> {c // 10000}W</label></li>'
-        for c in CAPITAL_TIERS
-    )
 
     (out / "index.html").write_text(
         _render_static_page("picks.html", today=picks_default, year=_dt_class.now().year),
         encoding="utf-8",
     )
-    (out / "plan.html").write_text(
-        _render_static_page("plan.html",
-            today=plan_default,
-            capital_tiers=CAPITAL_TIERS,
-            tier_filter_options=tier_filter_options,
-            year=_dt_class.now().year),
-        encoding="utf-8",
-    )
     (out / "cb.html").write_text(
         _render_static_page("cb.html",
             today=_dt_class.now().strftime("%Y-%m-%d"),
-            year=_dt_class.now().year),
-        encoding="utf-8",
-    )
-    (out / "decide.html").write_text(
-        _render_static_page("decide.html",
-            today=_dt_class.now().strftime("%Y-%m-%d"),
-            config=PORTFOLIO_10W,
             year=_dt_class.now().year),
         encoding="utf-8",
     )
@@ -467,8 +347,13 @@ def export(db_path: str, out_dir: str) -> int:
     # Favicon
     shutil.copy(src_static / "favicon.svg", static_dir / "favicon.svg")
 
-    print(f"导出完成：picks={len(pick_dates)} plan={len(plan_dates)} → {out}")
-    export_portfolio(db_path, out)
+    # 已下线功能的静态页也一并删除（否则 gh-pages 上还留着）
+    for name in OBSOLETE_PAGES:
+        p = out / name
+        if p.exists():
+            p.unlink()
+
+    print(f"导出完成：picks={len(pick_dates)} → {out}（已下线 plan/portfolio/decide）")
     return 0
 
 
@@ -476,12 +361,7 @@ def main():
     ap = argparse.ArgumentParser(description="导出静态站点（Cloudflare Pages）")
     ap.add_argument("--db", default="hs300.db")
     ap.add_argument("--out", default="site")
-    ap.add_argument("--portfolio-only", action="store_true",
-                    help="只导出 portfolio 数据（data/portfolio/*.json + portfolio.html）")
     args = ap.parse_args()
-    if args.portfolio_only:
-        export_portfolio(args.db, Path(args.out))
-        return
     raise SystemExit(export(args.db, args.out))
 
 

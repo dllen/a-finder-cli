@@ -197,15 +197,21 @@ def test_l2_gap_suppresses_l3(db):
     assert [g.layer for g in gap] == ["L2"]
 
 
-def test_l3_gap_when_portfolio_missing(db):
+def test_l3_not_checked_after_plan_feature_removal(db):
+    """L3（计划）体检已于 2026-11-05 关闭：即使 trade_plan 完全没行也不报 L3。
+
+    为什么必须有这条：用户要求下线「交易计划」「持仓组合」，trade_plan 已被
+    迁移清空。若体检还判 L3，**每个交易日都会报「缺档位」** ⇒ daily-audit 每晚
+    必红，repair 还会去跑已删除的 `plan build` 命令。
+    恢复功能时把这条测试连同 audit_coverage 的 L3 段一起改回来。
+    """
     path, conn = db
     _seed_prices(conn, "2026-10-26")
     _seed_picks(conn, "2026-10-26")
-    _seed_plan(conn, "2026-10-26", portfolios=["10W", "default"])
+    # 故意一行 trade_plan 都不写
     report = audit_mod.audit(path, today=dt.date(2026, 10, 26), window_days=0)
     gap = [g for g in report.gaps if g.date == "2026-10-26"]
-    assert [g.layer for g in gap] == ["L3"]
-    assert "5W" in gap[0].detail
+    assert gap == [], "L3 已关闭，不应再报计划缺口"
 
 
 def test_calendar_unavailable_raises(db, monkeypatch):

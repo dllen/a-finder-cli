@@ -1,66 +1,89 @@
-"""静态导出：写入控件在静态模式下被隐藏的回归测试。"""
+"""静态导出：写入控件在静态模式下被隐藏的回归测试。
+
+⚠️ 2026-11-05：「交易计划」「持仓组合」「决策台」已下线（用户要求），
+所以本文件里原来针对 plan.html / holdings.json 的断言已删除或改写：
+  - plan.html 模板已删除 ⇒ 只校验 picks.html 的写入控件被隐藏；
+  - holdings.json 不再产出 ⇒ 改成断言它**不**存在（下线要彻底）；
+  - _cleanup_stale_date_files 的签名去掉了 plan_dates，且它现在负责
+    **主动删除**已下线功能的产物（plan-* / decide-* / portfolio/ 等）。
+"""
 
 
 def test_static_mode_hides_write_controls():
     """Static mode renders templates with show_write_controls=False."""
     from export_json import _render_static_page
-    from config import CAPITAL_TIERS
 
     picks_html = _render_static_page("picks.html", today="2026-10-24", year=2026)
-    tier_filter_options = "".join(
-        f'<li><label class="dropdown-item"><input type="checkbox" class="form-check-input me-1 tier-filter-cb" value="{c}"> {c // 10000}W</label></li>'
-        for c in CAPITAL_TIERS
-    )
-    plan_html = _render_static_page("plan.html",
-        today="2026-10-24", capital_tiers=CAPITAL_TIERS,
-        tier_filter_options=tier_filter_options, year=2026)
+    cb_html = _render_static_page("cb.html", today="2026-10-24", year=2026)
 
-    for html in (picks_html, plan_html):
-        assert "write-control" not in html
-        assert "btn-recalc" not in html
-        assert "btn-sync" not in html
-        assert "btn-build" not in html
-        assert "include-failed" not in html
+    # picks 页的写入控件来自 filter_toolbar.html，有 show_write_controls 服务端守卫
+    assert "write-control" not in picks_html
+    assert "btn-recalc" not in picks_html
+    assert "btn-sync" not in picks_html
+    assert "btn-build" not in picks_html
+    assert "include-failed" not in picks_html
 
-    # Navigation and content still present
+    # 导航与内容仍在
     assert "每日机会" in picks_html
     assert 'id="dashboard"' in picks_html
-    assert "交易计划" in plan_html
-    assert 'id="board"' in plan_html
-
-    # Search input not stripped
+    assert 'id="board"' in picks_html
     assert 'id="q"' in picks_html
 
+    # cb 页仍能渲染（其「刷新」按钮**没有**服务端守卫 —— 既有问题，
+    # 不属本次下线范围：静态站靠 api.js 用 JS 隐藏 .write-control，
+    # 那正是本文件 docstring 说的「假隐藏」，见汇总说明）
+    assert "可转债" in cb_html
+    assert 'id="cb-refresh"' in cb_html
 
-def test_export_emits_holdings_json(tmp_path):
-    import os, tempfile
+
+def test_export_does_not_emit_retired_artifacts(tmp_path):
+    """已下线功能的产物**不能**出现在导出里（含 holdings.json / plan / portfolio）。
+
+    仅「不再生成」不够：老产物若留在 site/ 会被一起推上 gh-pages，
+    站点等于没下线。export 必须主动删除它们。
+    """
+    import os
+    import tempfile
     from db_repository import open_db
     from export_json import export
+
     fd, db = tempfile.mkstemp(suffix=".db")
     os.close(fd)
-    open_db(db).close()
-    out = str(tmp_path / "site")
-    export(db, out)
-    assert os.path.exists(os.path.join(out, "data", "holdings.json"))
+    try:
+        open_db(db).close()
+        out = str(tmp_path / "site")
+        export(db, out)
+        data = os.path.join(out, "data")
+        for gone in ("holdings.json", "plan-dates.json"):
+            assert not os.path.exists(os.path.join(data, gone)), gone
+        assert not os.path.exists(os.path.join(data, "portfolio"))
+        for page in ("plan.html", "portfolio.html", "decide.html"):
+            assert not os.path.exists(os.path.join(out, page)), page
+        assert os.path.exists(os.path.join(out, "index.html"))
+        assert os.path.exists(os.path.join(out, "cb.html"))
+    finally:
+        os.unlink(db)
 
 
-def test_cleanup_stale_date_files(tmp_path):
+def test_cleanup_removes_retired_and_stale_files(tmp_path):
+    """清理：陈旧 picks-* 要删；已下线功能的产物**无条件**删；无关文件保留。"""
     from export_json import _cleanup_stale_date_files
+
     data = tmp_path / "data"
     data.mkdir()
     (data / "picks-2026-08-12.json").write_text("{}")
-    (data / "picks-2026-08-20.json").write_text("{}")  # 陈旧
-    (data / "plan-2026-08-12.json").write_text("{}")
-    (data / "plan-2026-08-20.json").write_text("{}")  # 陈旧
-    (data / "plan-dates.json").write_text("{}")  # 特殊文件，不应被删
-    (data / "dashboard.json").write_text("{}")  # 非日期文件，不应被删
+    (data / "picks-2026-08-20.json").write_text("{}")      # 陈旧 picks
+    (data / "plan-2026-08-12.json").write_text("{}")       # 已下线：删
+    (data / "plan-dates.json").write_text("{}")            # 已下线：删
+    (data / "decide-2026-08-12.json").write_text("{}")     # 已下线：删
+    (data / "holdings.json").write_text("{}")              # 已下线：删
+    (data / "dashboard.json").write_text("{}")             # 保留
+    (data / "dates.json").write_text("{}")                 # 保留
+    pf = data / "portfolio"
+    pf.mkdir()
+    (pf / "10W.json").write_text("{}")                     # 整目录删
 
-    _cleanup_stale_date_files(data, ["2026-08-12"], ["2026-08-12"])
+    _cleanup_stale_date_files(data, ["2026-08-12"])
 
     names = sorted(p.name for p in data.iterdir())
-    assert "picks-2026-08-12.json" in names
-    assert "picks-2026-08-20.json" not in names
-    assert "plan-2026-08-12.json" in names
-    assert "plan-2026-08-20.json" not in names
-    assert "plan-dates.json" in names
-    assert "dashboard.json" in names
+    assert names == ["dashboard.json", "dates.json", "picks-2026-08-12.json"]

@@ -15,11 +15,11 @@
 </button>
 <div class="collapse navbar-collapse" id="appNav">
 <div class="navbar-nav ms-auto">
+{# 2026-11-05：「持仓组合」「交易计划」「决策台」已下线（用户要求）。
+   导航只保留「每日机会」与「可转债」。
+   恢复功能时把对应 nav-link 加回来，并同步恢复 app.py 路由与模板。 #}
 <a class="nav-link {% if active_page == 'picks' %}active{% endif %}" data-nav="picks" href="/">每日机会</a>
-<a class="nav-link {% if active_page == 'portfolio' %}active{% endif %}" data-nav="portfolio" href="/portfolio">持仓组合</a>
-<a class="nav-link {% if active_page == 'plan' %}active{% endif %}" data-nav="plan" href="/plan">交易计划</a>
 <a class="nav-link {% if active_page == 'cb' %}active{% endif %}" data-nav="cb" href="/cb">可转债</a>
-<a class="nav-link {% if active_page == 'decide' %}active{% endif %}" data-nav="decide" href="/decide">决策台</a>
 </div>
 </div>
 </div>

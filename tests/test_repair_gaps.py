@@ -226,9 +226,8 @@ def test_l1_gap_cascades_to_picks_and_plans():
     assert "--gap-fill" in cmds[0]
     # 2) 再补选股
     assert any(_has(c, "pick_history.py") and "2026-10-26" in c for c in cmds)
-    # 3) 再补计划（default 档 + 全档位重放）
-    assert any("build" in c and "2026-10-26" in c for c in cmds)
-    assert any("build-all" in c and "--backfill" in c for c in cmds)
+    # 3) ⚠️ 2026-11-05：L3（计划）已下线，不再连带 plan build / build-all
+    assert not any("build" in c for c in cmds), "计划命令应随功能下线一并移除"
     # 顺序：行情在最前（选股依赖行情）
     assert _has(cmds[0], "sync-hs300-range")
 
@@ -241,8 +240,8 @@ def test_l1_cascade_uses_same_dates_only():
     )
     cmds = actions[0].commands
     for c in cmds:
-        if _has(c, "pick_history.py") or "build" in c:
-            assert "2026-10-26" in c or "--since" in c
+        if _has(c, "pick_history.py"):
+            assert "2026-10-26" in c
 
 
 def test_l2_gap_plans_pick_history():
@@ -258,17 +257,8 @@ def test_l2_gap_plans_pick_history():
     assert "--no-sync" in cmd
 
 
-def test_l3_gap_plans_default_then_backfill():
-    actions = repair_mod.plan_repairs(
-        _report([("2026-10-26", "L3", "缺档位 5W,10W")]),
-        db_path="hs300.db", today=TODAY,
-    )
-    assert len(actions) == 1
-    cmds = actions[0].commands
-    assert len(cmds) == 2
-    assert "build" in cmds[0] and "--date" in cmds[0]
-    assert "build-all" in cmds[1] and "--backfill" in cmds[1]
-    assert "--since" in cmds[1] and "2026-10-26" in cmds[1]
+# ⚠️ test_l3_gap_plans_default_then_backfill 已随「交易计划下线」删除（2026-11-05）。
+# 计划层 L3 不再体检、不再修复；恢复功能时从 git 历史取回。
 
 
 def test_multiple_l2_dates_merge_into_one_action():
@@ -279,61 +269,52 @@ def test_multiple_l2_dates_merge_into_one_action():
     assert len(actions) == 1
     assert actions[0].dates == ("2026-10-26", "2026-10-27")
     cmds = actions[0].commands
-    # 每个日期一条 pick_history + 一条 plan build（default 档），全档位重放只一条
+    # 每个日期一条 pick_history；计划命令已随 L3 下线移除
     assert sum(1 for c in cmds if _has(c, "pick_history.py")) == 2
-    assert sum(1 for c in cmds if "build" in c and "--date" in c) == 2
-    assert sum(1 for c in cmds if _has(c, "build-all")) == 1
-    last = cmds[-1]
-    assert _has(last, "build-all") and "2026-10-26" in last
+    assert not any("build" in c for c in cmds)
 
 
-def test_l2_gap_also_plans_followup_l3_commands():
-    """F1 回归：选股缺失必然意味着计划缺失，L2 动作必须自带 L3 命令。
-
-    否则 audit → repair → 复检 会停在 L3 缺口上，要跑第二轮才收敛
-    （Task 7 e2e：10-26 删 daily_picks + trade_plan，修复后复检报
-    「缺档位 5W..default」）。
-    """
+def test_l2_gap_only_plans_pick_history():
+    """L2 动作只补选股（L3 计划层已于 2026-11-05 下线）。"""
     actions = repair_mod.plan_repairs(
         _report([("2026-10-26", "L2", "无选股数据")]),
         db_path="hs300.db", today=TODAY,
     )
-    assert [a.layer for a in actions] == ["L2"]     # 不需要单独的 L3 动作
+    assert [a.layer for a in actions] == ["L2"]
     cmds = actions[0].commands
-    assert len(cmds) == 3
-    assert _has(cmds[0], "pick_history.py")         # 1) 先补选股
-    assert "build" in cmds[1] and "--date" in cmds[1]   # 2) 补 default 档
-    assert _has(cmds[2], "build-all") and "--backfill" in cmds[2]
+    assert len(cmds) == 1
+    assert _has(cmds[0], "pick_history.py")
+    assert not any("build" in c for c in cmds)
 
 
-def test_l2_and_l3_gaps_share_one_plan_replay():
-    """L2 与 L3 缺口同时存在：一个 action 内含三类命令，且命令不重复。"""
+def test_l3_gaps_are_ignored_after_plan_removal():
+    """L3（计划）缺口已关闭：即报告里还带着 L3，也不再生成任何修复动作。
+
+    防止「体检脚本改回 L3、修复脚本却已删 L3」时静默什么都不修。
+    """
     actions = repair_mod.plan_repairs(
-        _report([("2026-10-26", "L2", "无选股数据"),
-                 ("2026-10-23", "L3", "缺档位 5W")]),
+        _report([("2026-10-23", "L3", "缺档位 5W")]),
         db_path="hs300.db", today=TODAY,
     )
-    assert [a.layer for a in actions] == ["L2", "L3"]
-    l2, l3 = actions
+    assert actions == []
 
-    # 三类命令都在 L2 动作里：补选股 → 补 default 档 → 全档位重放
-    assert _has(l2.commands[0], "pick_history.py")
-    assert "build" in l2.commands[1] and "--date" in l2.commands[1]
-    last = l2.commands[-1]
-    assert _has(last, "build-all") and "--backfill" in last
-    # since 取并集最早日：只按 L2 的 10-26 重放会漏掉更早的 L3 缺口
-    assert "--since" in last and "2026-10-23" in last
 
-    # 不重复生成：build-all 全局只一条，L3 动作只补 default 档
-    assert sum(1 for a in actions for c in a.commands if _has(c, "build-all")) == 1
-    assert l3.commands and all("build" in c and "--date" in c for c in l3.commands)
+def _two_actions():
+    """两个动作（各 2 条 / 1 条命令）—— 只测 run_repairs 的「失败不中断」语义。
+
+    ⚠️ 2026-11-05：L3 已下线，plan_repairs 不再产出两个动作，
+    所以这里**手工构造**，不去借道 plan_repairs。
+    """
+    return [
+        repair_mod.RepairAction(layer="L1", dates=("2026-10-26",),
+                                commands=(("sync",), ("pick_history.py",)), reason="a"),
+        repair_mod.RepairAction(layer="L2", dates=("2026-10-27",),
+                                commands=(("pick_history.py",),), reason="b"),
+    ]
 
 
 def test_run_repairs_reports_failure_and_keeps_going():
-    actions = repair_mod.plan_repairs(
-        _report([("2026-10-26", "L2", "无选股"), ("2026-10-27", "L3", "缺档位")]),
-        db_path="hs300.db", today=TODAY,
-    )
+    actions = _two_actions()
     calls = []
 
     def fake_runner(cmd):
@@ -344,18 +325,15 @@ def test_run_repairs_reports_failure_and_keeps_going():
 
     outcomes = repair_mod.run_repairs(actions, runner=fake_runner)
     assert len(outcomes) == 2
-    assert outcomes[0].ok is False          # L2 失败（第一条 pick_history 就挂）
-    assert outcomes[1].ok is True           # L3 仍执行（不中断整体）
-    # L2 动作首条命令失败即中断（1 条），L3 动作只有 default 档（1 条）
-    assert len(calls) == 2
+    assert outcomes[0].ok is False          # 第一个动作失败（pick_history 挂）
+    assert outcomes[1].ok is False          # 第二个也失败（同样有 pick_history）
+    # L1 动作：sync 成功 → pick_history 失败即中断；L2 动作：pick_history 失败
+    assert len(calls) == 3
 
 
 def test_runner_exception_marks_action_failed_and_keeps_going():
     """执行器抛异常只算当前 action 失败，不能穿出 run_repairs 连累后面的层。"""
-    actions = repair_mod.plan_repairs(
-        _report([("2026-10-26", "L2", "无选股"), ("2026-10-27", "L3", "缺档位")]),
-        db_path="hs300.db", today=TODAY,
-    )
+    actions = _two_actions()
     calls = []
 
     def boom(cmd):
@@ -368,8 +346,9 @@ def test_runner_exception_marks_action_failed_and_keeps_going():
     assert len(outcomes) == 2
     assert outcomes[0].ok is False
     assert "python 不见了" in outcomes[0].output
-    assert outcomes[1].ok is True           # L3 照跑
-    assert len(calls) == 2                  # L2 首条即抛；L3 只有 default 档
+    # 第二个动作同样抛异常 —— 关键是不穿出 run_repairs（否则这里到不了）
+    assert outcomes[1].ok is False
+    assert len(calls) == 3                  # sync 成功 → 各自 pick_history 抛
 
 
 def test_dry_run_does_not_execute():
@@ -535,8 +514,14 @@ def _open_position(db, code="600519", date="2026-10-26"):
     conn.close()
 
 
-def test_cli_records_side_effects_of_plan_replay(capsys, tmp_path):
-    """L3 重放会改写组合状态 → 必须把行数变化写进 --out 的 side_effects。
+def test_cli_records_side_effects_of_repairs(capsys, tmp_path):
+    """修复会改写组合状态 → 必须把行数变化写进 --out 的 side_effects。
+
+    ⚠️ 2026-11-05：「交易计划」已下线，L3 的 `plan build` 重放不再发生，
+    但 side_effects 机制本身**必须保留** —— 将来任何会写 open_positions /
+    trade_events 的修复动作都要靠它把「数字自己变了」暴露出来。
+    所以这里改成用 L2 动作（补选股）驱动第一次命令去建仓，验证机制还在。
+
 
     实测（2026-10-28 评审）：补 10-26 后 open_positions 535→542、
     trade_events 1048→1055；export 后 10W 的 holdings.count 7→8、
@@ -546,13 +531,13 @@ def test_cli_records_side_effects_of_plan_replay(capsys, tmp_path):
     """
     db = _make_db(tmp_path)
     rep = _write_report(tmp_path, "2026-10-27", [
-        {"date": "2026-10-26", "layer": "L3", "detail": "缺档位 5W"}])
+        {"date": "2026-10-26", "layer": "L2", "detail": "无选股数据"}])
     out = tmp_path / "repair.json"
     calls = {"n": 0}
 
     def fake_runner(cmd):
         calls["n"] += 1
-        if calls["n"] == 1:              # 第一条 `plan build` 建了一仓
+        if calls["n"] == 1:              # 第一条命令补选股，顺手建了一仓
             _open_position(db)
         return (0, "ok")
 

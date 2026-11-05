@@ -228,25 +228,21 @@ def audit(
             report.gaps.append(
                 Gap(d, "L1", f"行情只有 {codes} 只（阈值 {min_codes}）",
                     codes=codes, bases=day_bases))
-            # L1 缺 → L2/L3 判定无意义，记 suppressed 备查，不报
+            # L1 缺 → L2 判定无意义，记 suppressed 备查，不报
+            # （L3 计划层已于 2026-11-05 关闭，见下方说明）
             if d not in picks:
                 report.suppressed.append(Gap(d, "L2", "无选股（派生自 L1 缺失）"))
-            missing_pf = [p for p in EXPECTED_PORTFOLIOS if p not in plans.get(d, set())]
-            if missing_pf:
-                report.suppressed.append(
-                    Gap(d, "L3", f"缺档位 {','.join(missing_pf)}（派生自 L1 缺失）"))
             continue
 
         # L2 选股：只看有没有行（行数天然波动，不设阈值）
         if d not in picks:
             report.gaps.append(Gap(d, "L2", "无选股数据"))
-            continue   # 选股没有 → 计划同样无从生成
+            continue
 
-        # L3 计划：每个应有档位都要有行
-        have = plans.get(d, set())
-        missing_pf = [p for p in EXPECTED_PORTFOLIOS if p not in have]
-        if missing_pf:
-            report.gaps.append(Gap(d, "L3", f"缺档位 {','.join(missing_pf)}"))
+        # ⚠️ L3（计划）**已于 2026-11-05 关闭**：用户要求下线「交易计划」与
+        # 「持仓组合」，trade_plan 已被迁移 2026_11_05_remove_plan_features 清空。
+        # 继续判 L3 会让**每个交易日都报「缺档位」** ⇒ daily-audit 每晚必红、
+        # repair 又去跑已删除的 `plan build` 命令。恢复功能时把这段加回来。
 
     return report
 

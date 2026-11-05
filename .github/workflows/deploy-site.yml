@@ -232,31 +232,25 @@ jobs:
           fi
 
 
-      - name: 选股 + 计划 + 组合 + 可转债
+      - name: 选股 + 可转债（计划/组合已于 2026-11-05 下线）
         if: steps.trade-day.outputs.is_trade_day == 'true' && steps.plan.outputs.run == 'true'
-        env:
-          BACKFILL_ANCHOR: "2026-08-01"
         run: |
           set -e
-          # 计划日期对齐「库里真正的行情最新日」，而不是硬编码今天：
-          # 同步失败时不会为一个没有行情的日期生成空计划，也不会让后续步骤中断。
-          # ⚠️ 不要用一行裸 sqlite 查询：库里没有 daily_prices 表时它会
-          # 抛异常并退出 1，而本步是 set -e ⇒ **整步瞬间失败**，
-          # 真正的错误（同步没抓到数据）早在上一步被吞掉了（2026-11-05 实测）。
-          # 用 robust 版：rc=3 = 库里没有行情（明确报出来），0 = 有。
+          # ⚠️ 2026-11-05：用户要求下线「交易计划」与「持仓组合」，
+          # 所以这里**不再**跑 plan build / build-all / --backfill。
+          # 相关表（trade_plan / open_positions / trade_events）已由迁移
+          # 2026_11_05_remove_plan_features 清空（保留表结构）。
+          #
+          # 选股本应由上一步的 pick_history 完成；这里只补可转债（全市场扫描慢 +
+          # 易限流，失败不中断）。保留 DATA_DATE 输出给后续步骤做门禁。
           DATA_DATE=$(python3 scripts/db_latest_date.py --db hs300.db) || DATE_RC=$?
           DATE_RC=${DATE_RC:-0}
           if [ "$DATE_RC" != "0" ] || [ -z "$DATA_DATE" ]; then
-            echo "::error::库里没有行情（rc=$DATE_RC）—— 同步没成功，本步不生成计划"
+            echo "::error::库里没有行情（rc=$DATE_RC）—— 同步没成功"
             exit 1
           fi
           echo "行情最新日: $DATA_DATE（期望交易日 ${{ steps.trade-day.outputs.today_bj }}）"
           echo "## 数据日期 $DATA_DATE" >> "$GITHUB_STEP_SUMMARY"
-          python stock_cli.py plan build --db hs300.db --date "$DATA_DATE"
-          python stock_cli.py plan build-all --db hs300.db --date "$DATA_DATE" \
-            --strategy linyuan --tiers 50000,100000,150000,200000,250000,300000,350000,400000,450000,500000
-          python stock_cli.py plan build-all --backfill --since "$BACKFILL_ANCHOR" --db hs300.db
-          # 可转债：全市场扫描慢 + 易限流，失败不中断
           python stock_cli.py cb-picks --top 20 --db hs300.db --concurrency 2 --rate 4 || true
 
       - name: 导出静态站 + 校验产物

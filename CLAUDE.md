@@ -36,8 +36,7 @@ uv run a-finder sync-hs300-range --start 2025-01-01 --end 2026-03-12 --db hs300.
     --concurrency 6 --rate 8 --retries 4 --backoff 0.6
 uv run a-finder sync-hs300-range ... --no-resume | --only-failed | --gap-fill | --retry-gaps
 
-# Trade-plan / strategy evolution
-uv run a-finder plan build [--capital 100000] [--backfill]
+# 策略进化（交易计划已下线，见「已下线功能」一节）
 uv run a-finder evolve
 
 # 可转债策略（独立转债仓，不走 plan_builder）
@@ -61,6 +60,86 @@ bash a-finder.sh sync-incremental hs300.db 15 picks --limit 100
 bash a-finder.sh site [db] [top] [out] [--push]        # 本地一键生成网站数据（同步+选股+计划+组合+导出+可选推送 gh-pages）
 bash a-finder.sh cron                                  # launchd 入口（工作日 15:30 跑 site --push）
 ```
+
+# 已下线功能：交易计划 / 持仓组合 / 决策台（2026-11-05，用户要求）
+
+**用户原话**：「去掉 持仓组合 和 交易计划 功能，下线相关数据」。
+澄清后追加确认：**决策台（/decide）一起下线**；数据「停止产出 + 清空表，保留表结构」。
+
+## 现在站点只剩两个页面
+
+| 页面 | 路由 | 状态 |
+|---|---|---|
+| 每日机会 | `/` | ✅ 保留 |
+| 可转债 | `/cb` | ✅ 保留 |
+| ~~交易计划~~ | ~~`/plan`~~ | ❌ 已删（路由 404） |
+| ~~持仓组合~~ | ~~`/portfolio`~~ | ❌ 已删（路由 404） |
+| ~~决策台~~ | ~~`/decide`~~ | ❌ 已删（路由 404） |
+
+## 数据：清空但**保留表结构**
+
+`db/migrations/2026_11_05_remove_plan_features.sql` 清空三张表：
+
+    trade_events     → 0
+    open_positions   → 0
+    trade_plan      → 0   （清理前 43,627 行）
+
+**为什么用迁移而不是手工 DELETE**：CI 的谱系库（Release `db-lineage` 上的
+`hs300.db.gz`）也会执行这个迁移一次（`_applied_migrations` 记账），
+否则 CI restore 回来的旧库会一直带着这些行 —— 删了本地等于白删。
+
+**没有动的**：`daily_prices` / `daily_picks`（行情与选股，站点还在用）、
+`pick_outcomes`（`/api/stats` 还在用）、`cb_*`（可转债还在）、
+`real_positions` / `real_cb_positions`（D1 才是真相源，本地本就是空表）。
+
+## 代码改动清单（恢复时按这个反向加回来）
+
+- **`app.py`**：删 `/plan` `/portfolio` `/decide` 三个页面路由 +
+  `/api/plan/*`（5 个）、`/api/portfolio/*`（3 个）、`/api/decide/*`、`/api/holdings`、
+  `/api/plan/build`；`/api/dashboard` 改成只返回 `last_refresh` + `cb`。
+  771 → 349 行，只剩 12 个路由。
+- **`export_json.py`**：停掉 `plan-*.json` / `plan-dates.json` / `decide-*.json` /
+  `holdings.json` / `data/portfolio/` / `plan.html` / `portfolio.html` / `decide.html` 的产出。
+  ⚠️ **仅「不再生成」是不够的** —— 老产物会留在 `site/` 被一起推上 gh-pages，
+  站点等于没下线。所以 `_cleanup_stale_date_files()` 现在会**主动删除**这些
+  （见 `OBSOLETE_DATA_GLOBS` / `OBSOLETE_DATA_DIRS` / `OBSOLETE_PAGES`）。
+  实测一次导出清掉 **555 个**旧文件。
+- **`cli_layer.py`**：删 `plan` 子命令（`build` / `build-all` 及其 handler）。
+- **模板/前端**：删 `plan.html` `portfolio.html` `decide.html`；
+  删 `static/js/{plan,portfolio,decide,decide_compare,decide_export}.js`；
+  `nav.html` 只留两个入口；`api.js` 删对应函数。
+- **`a-finder.sh`**：删 `cmd_plan` / `cmd_plan_all` / `cmd_daily_plan` / `cmd_portfolio`
+  及其 dispatch；`cmd_site` / `cmd_refresh` 不再跑 `plan build*`。
+- **`deploy-site.yml`**：`选股 + 计划 + 组合 + 可转债` 步骤改名，去掉三条 `plan build*`。
+- **`scripts/audit_coverage.py`**：**关闭 L3（计划）体检**。
+  ⚠️ 不改的话**每个交易日都会报「缺档位」**（表已清空）⇒ daily-audit 每晚必红。
+- **`scripts/repair_gaps.py`**：删 `_plan_l3` / `_backfill_cmd`，
+  `_plan_l1` / `_plan_l2` 不再连带 `plan build*`。
+  `side_effects`（open_positions/trade_events 行数变化）机制**保留** ——
+  将来任何会写这两张表的修复动作仍需靠它暴露「数字自己变了」。
+
+## 测试
+
+删除 9 个只测已删接口的文件（`test_api_portfolio` / `test_cli_plan` /
+`test_cli_plan_portfolio` / `test_decide*` / `test_export_portfolio` /
+`test_integration_plan` / `test_web_plan`）；改写 `test_audit_coverage`（L3 不再报）、
+`test_repair_gaps`（无 L3 动作）、`test_export_static`（断言下线产物**不存在**）。
+**823 passed**。
+
+## 遗留 / 未做（恢复或后续处理时注意）
+
+1. **`worker/index.js` 的 `/api/decide/*` 仍在线**（D1 里的 `real_positions` 是用户
+   自己录入的真实持仓，与本次删除的派生数据无关）。站点已无页面调用它，
+   但 API 本身仍可访问。要彻底下掉需改 `worker/**` 并重新部署 Worker。
+2. **刷新按钮变成「无页面挂着」**：`/api/refresh` + 本机 `refresh_agent.py` 这套
+   基础设施保留（它原本挂在决策台页面上）。`api.js` 仍导出 `fetchRefresh` 系列，
+   将来重新接入时直接用。
+3. **`cb.html` 的「刷新」按钮没有 `show_write_controls` 服务端守卫**
+   （既有问题，与本次下线无关）：静态站靠 `api.js` 用 JS 隐藏 `.write-control`，
+   属于「假隐藏」。`picks.html` 的写入控件是有服务端守卫的。
+4. **库里的库内模块没删**（`plan_builder.py` / `decide_service.py` /
+   `db_repository` 里的 plan 函数 / `shared_lib/plan_rows.py`）：
+   它们不再被页面调用，但保留着可降低回滚成本。要彻底删需连带清理引用与测试。
 
 # CI 自动部署（deploy-site.yml）
 - `.github/workflows/deploy-site.yml`：A 股交易日 15:30 北京（07:30 UTC）自动
@@ -511,15 +590,15 @@ Layered modules (top-level flat modules + a few packages):
 - **可转债** — `cb_data_provider.py`（akshare 多源降级）、`cb_repository.py`（`cb_` 表读写，写入用 SAVEPOINT 原子化）、`cb_pipeline.py`（编排）、`strategies/convertible.py`（粗筛/打分/预警）。表前缀 `cb_`，与股票体系完全隔离；转债整手 10 张（面值 100 元），风控独立于 `risk_manager.py`（`config.CB_RISK`：止损-8% / 止盈+20% / 单只15% / 10张一手）。分组打分：债底40%/股性30%/条款30%，缺失因子组内重新归一化。数据源：`bond_zh_cov`（全市场）→ `bond_zh_cov_info`（裸 6 位代码）→ `bond_cb_redeem_jsl`（强赎状态）。
 - **日期筛选组件** — `templates/components/date_filter.html`（Jinja macro）+ `static/css/date-filter.css` + `static/js/date-filter.js`。五个页面统一用它：picks/plan 用完整版（`date_filter('d','日期')`），cb/decide/portfolio 用 `compact=true`。portfolio 的日期来源是 `/api/portfolio/dates`（只列档位组合真有 `trade_plan` 行的日期；必须排除 `default` 档，否则选中后「当日计划」恒为空）。组合 PnL 支持 `as_of`：`/api/portfolio/summary|detail?date=YYYY-MM-DD` 会按该日重建（`db_repository.rebuild_positions_as_of` 用 trade_events 做移动平均成本还原持仓，价格取该日或更早最近收盘）；不传 date 仍是原「当前状态」计算。能力：‹/› 步进交易日（选项按新→旧排列，方向在 JS 里换算）、`?d=YYYY-MM-DD` URL 状态（停留在最新时不写入参数）、键盘 ←/→/Home/End、加载/错误/成功三态类（`setDateFilterState`）。八态预览见 `docs/previews/date-filter.html`。新增页面用该组件时不要自建日期控件，否则又会出现多套日期交互。
 - **Views** — `view_models` builds row tuples from `Stock`/`scores`; `formatter.format_table/format_lines` renders CLI tables. `pick_history.run_picks` (with `do_sync=False` flag) is what the web "重算榜单" button calls.
-- **Web** — `app.py` (Flask, ~680 lines) serves Jinja2 templates from `templates/` and static assets from `static/`. Pages: picks (`/`), plan (`/plan`), portfolio (`/portfolio`), cb (`/cb`), decide (`/decide`). JS is Vanilla ES6 modules in `static/js/` (no jQuery). Bootstrap 5.3.3 and Chart.js 4.4.1 are vendored locally in `static/vendor/` (no CDN dependency). Dual deployment: Flask API mode and static JSON+HTML mode (gh-pages via `export_json.py`). Static asset URLs carry `?v=<git-sha>` cache-busting (Cloudflare serves `static/*.js` with `max-age=14400`).
-- **10w 决策台** — `/decide` 按 `config.PORTFOLIO_10W`（8w 股 + 2w 债、≤8 只、单票 ≤10%、总仓位 ≤75%）展示今日执行清单，对照用户手工录入的真实持仓（`real_positions` / `real_cb_positions`，仓储 `real_position_repository.py`）高亮偏差。判定逻辑在 `decide_service.py`（纯函数，10 类偏差 × info/warn/danger）。**读取 `trade_plan` 的 10W 档位必须按 code 去重**——回补会用不同 `params_hash` 追加重复行。
+- **Web** — `app.py` (Flask, ~350 lines) serves Jinja2 templates from `templates/` and static assets from `static/`. Pages: picks (`/`), cb (`/cb`)。**（2026-11-05 起 `plan` / `portfolio` / `decide` 三个页面已下线，见下节）** JS is Vanilla ES6 modules in `static/js/` (no jQuery). Bootstrap 5.3.3 and Chart.js 4.4.1 are vendored locally in `static/vendor/` (no CDN dependency). Dual deployment: Flask API mode and static JSON+HTML mode (gh-pages via `export_json.py`). Static asset URLs carry `?v=<git-sha>` cache-busting (Cloudflare serves `static/*.js` with `max-age=14400`).
+- ~~**10w 决策台**~~ — **已于 2026-11-05 下线**（见「已下线功能」一节）。以下是当时的设计记录，仅供恢复时参考：`/decide` 按 `config.PORTFOLIO_10W`（8w 股 + 2w 债、≤8 只、单票 ≤10%、总仓位 ≤75%）展示今日执行清单，对照用户手工录入的真实持仓（`real_positions` / `real_cb_positions`，仓储 `real_position_repository.py`）高亮偏差。判定逻辑在 `decide_service.py`（纯函数，10 类偏差 × info/warn/danger）。**读取 `trade_plan` 的 10W 档位必须按 code 去重**——回补会用不同 `params_hash` 追加重复行。
   ⚠️ **这条以前只做到一半（2026-11-05 修）**：去重键写的是 `(code, action)`，
   而 `buy` 与 `hold` 是**不同的 action** ⇒ 同一只票既能 `buy` 又能 `hold` 时两个键都不同
   ⇒ **都能通过去重 ⇒ 组合页上同一只票渲染两行**（实测线上 5W 重复 3 只、50W 重复 4 只）。
   现在统一走 `shared_lib/plan_rows.dedupe_plan_rows`：**每个 code 只留一行**，
   多行时按 `ACTION_PRIORITY = {buy:0, hold:1, exit:2}` 保留更可执行的那条。
   `export_json.py` 与 `app.py` **各有一份读路径** ⇒ 规则必须共用这个模块，否则两份必然漂移。报告见 `docs/reports/10w-decision-system.md`。
-- **持仓云端化（Worker + D1）** — 持仓的唯一真相源是 **Cloudflare D1**，由 `worker/index.js` 提供 `/api/decide/*`（读公开、写需登录的 HttpOnly Cookie）。**登录是双因子**：`DECIDE_USER` + `DECIDE_PASSWORD`，签名密钥 `DECIDE_SECRET`，三者都走 `wrangler secret put`；前端用 Bootstrap Modal（`templates/components/decide_login_modal.html`），不使用浏览器原生弹窗。本地 SQLite 同名表保留但不再写入。**对比逻辑有 Python 与 JS 两份实现**：`decide_service.py`（服务端/导出）与 `static/js/decide_compare.js`（前端实时算），由 `tests/test_decide_compare_parity.py` 用 node 跑同一 fixture 保证逐项一致；配置来源 `data/decide-config.json`。D1 建表见 `worker/schema.sql`，部署见 `wrangler.toml`（路由 `ycu.space/api/*`）与 `scripts/deploy-worker.sh`。
+- **持仓云端化（Worker + D1）** — ⚠️ **2026-11-05：决策台下线后，这条链路只剩 Worker 侧的 API 在跑，站点已无页面使用它**（`/api/refresh` 刷新队列仍在用）。恢复决策台时再按下面的记录接回来。持仓的唯一真相源是 **Cloudflare D1**，由 `worker/index.js` 提供 `/api/decide/*`（读公开、写需登录的 HttpOnly Cookie）。**登录是双因子**：`DECIDE_USER` + `DECIDE_PASSWORD`，签名密钥 `DECIDE_SECRET`，三者都走 `wrangler secret put`；前端用 Bootstrap Modal（`templates/components/decide_login_modal.html`），不使用浏览器原生弹窗。本地 SQLite 同名表保留但不再写入。**对比逻辑有 Python 与 JS 两份实现**：`decide_service.py`（服务端/导出）与 `static/js/decide_compare.js`（前端实时算），由 `tests/test_decide_compare_parity.py` 用 node 跑同一 fixture 保证逐项一致；配置来源 `data/decide-config.json`。D1 建表见 `worker/schema.sql`，部署见 `wrangler.toml`（路由 `ycu.space/api/*`）与 `scripts/deploy-worker.sh`。
 - **Shared plan/backtest** — `shared_lib/strategy.py` exposes `PlanRow`, `params_hash`, `compute_plan_prices` and re-exports `RiskManager`, `PositionConfig`, `default_candidate_config`. Treat it as the single source of truth — both `plan_builder` and `ma_backtest` import from here.
 
 ## Conventions
