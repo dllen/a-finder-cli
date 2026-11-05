@@ -8,6 +8,11 @@
     python3 scripts/check_gaps.py --db hs300.db --days 30 --json
 
 退出码：0 = 无缺口；1 = 有缺口（并打印明细）；2 = 参数/库错误。
+
+2026-11-05：谱系已从 actions/cache 换成 GitHub Release 资产（tag db-lineage），
+冷启动窗口 450 天，成分股接口不可达时降级到仓库内置名单
+（data/hs300_constituents.json）。本文件在 gap-heal 的 push 触发路径里，
+改动它会触发一次 gap-heal run —— 用来验证新谱系链路是否真的跑通。
 """
 
 from __future__ import annotations
