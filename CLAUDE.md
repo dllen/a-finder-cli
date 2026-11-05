@@ -61,6 +61,34 @@ bash a-finder.sh site [db] [top] [out] [--push]        # 本地一键生成网�
 bash a-finder.sh cron                                  # launchd 入口（工作日 15:30 跑 site --push）
 ```
 
+# 赞赏（打赏）功能（2026-11-05 加）
+
+站点页脚有「☕ 赞赏支持」按钮 → 打开 Bootstrap 弹窗展示两张收款码：
+
+    static/images/alipay-qr.jpeg   ← 支付宝（用户提供的海报原图）
+    static/images/wechat-qr.jpeg   ← 微信支付
+
+组件：`templates/components/tip_modal.html`（`base.html` include，两页共用）
++ `static/css/app.css` 的 `.btn-tip` / `.tip-qr` / `.tip-badge-*`。
+
+## 两个坑（改这块前先读）
+
+1. **`export_json.py` 必须拷 `static/images/`**。本地 Flask 直接读 `static/`，
+   图片永远正常；静态站用的是导出时**拷贝**出来的 `site/static/`，漏拷就 404 ——
+   **只在线上复现，本机测不出来**。所以 `tests/test_tip_feature.py` 里
+   **真的跑一次 export** 校验图片落地 + 页面 `img src`（去掉 `?v=`）能解析。
+2. **收款码按「宽度」放大，不能按高度限。** 这两张是带大片品牌留白的**长海报**
+   （支付宝 1673×2507），用 `max-height` 限高会把真正的二维码压到 **~85px**，
+   手机根本扫不出来。现在 `.tip-qr{width:100%;max-width:300px;height:auto}`
+   + 弹窗 `modal-lg` + 小屏 `col-12 col-sm-6` 叠一列，二维码约 165px；
+   每张还包了 `target="_blank"` 可点开原图。测试锁死「不许回退 max-height」。
+
+## 图片别压缩
+
+两张是原始海报（339 KB / 120 KB，合计约 460 KB），**不要再压** —— 
+二维码压糊就扫不出来。用 `loading="lazy" decoding="async"` 避免拖慢首屏
+（弹窗默认隐藏，浏览器不会立刻加载）。
+
 # 已下线功能：交易计划 / 持仓组合 / 决策台（2026-11-05，用户要求）
 
 **用户原话**：「去掉 持仓组合 和 交易计划 功能，下线相关数据」。
