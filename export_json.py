@@ -38,6 +38,7 @@ from app import (
     _dt_class,
 )
 from config import CAPITAL_TIERS, PORTFOLIO_10W
+from shared_lib.plan_rows import dedupe_plan_rows
 
 STATIC_CONFIG = "window.APP_MODE='static'; window.DATA_PREFIX='';"
 
@@ -300,15 +301,11 @@ def export_portfolio(db_path: str, out_dir: Path, *, plan_date: str | None = Non
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-            # 回补第二轮按 strategy 写了重复的 (code, action) 行（价格/仓位/止损止盈
-            # 完全相同，仅 strategy 标签不同），当日计划只保留每个 (code, action) 一行。
-            seen = set()
-            plan_rows = []
-            for r in rows:
-                key = (r.get("code"), r.get("action"))
-                if key not in seen:
-                    seen.add(key)
-                    plan_rows.append(r)
+            # 每个 code 只保留一行（buy > hold > exit）。
+            # ⚠️ 旧实现按 (code, action) 去重 —— 同一只票既 buy 又 hold 时
+            # 两个 key 都不同 ⇒ **同一只票在页面上出现两次**（实测线上 5W 重复 3 只、
+            # 50W 重复 4 只）。规则与 app.py 共用 shared_lib.plan_rows（唯一真相源）。
+            plan_rows = dedupe_plan_rows(rows)
             tiers.append({
                 "label": label,
                 "capital": capital,
