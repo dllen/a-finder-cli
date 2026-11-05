@@ -29,3 +29,10 @@ site/
 .wrangler-home/
 # 本地兜底 launchd plist（fallback-install 生成，含绝对路径）
 deploy/com.afinder.fallback.plist
+
+# 赞赏收款码的**原始海报**（用户私发、放在仓库根目录的那两张）。
+# ⚠️ 底部印着收款人昵称，**绝不能提交**（用户明确要求不露昵称）。
+# 站点用的是裁切版：static/images/{alipay,wechat}-qr.jpeg（只有二维码 + 白边）。
+# 这两行只是防止误 `git add -A` 泄露；文件本身可以随时删掉。
+/zfb.jpeg
+/wx.jpeg
