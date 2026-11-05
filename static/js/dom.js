@@ -1,8 +1,8 @@
-// DOM 辅助函数（替代 jQuery 的 common.js）
+// DOM helpers (replaces the jQuery common.js)
 
 export function $(id) { return document.getElementById(id); }
 
-export function fmt(v) { return v == null ? '—' : Number(v).toFixed(2); }
+export function fmt(v) { return v == null ? '无' : Number(v).toFixed(2); }
 
 export function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -40,23 +40,23 @@ export function setProgress(pct) {
   const el = $('prog');
   if (!el) return;
   if (pct == null) { el.innerHTML = ''; return; }
-  const color = pct >= 100 ? 'bg-success' : 'bg-primary';
+  const width = Math.max(0, Math.min(100, pct));
   const label = pct >= 100 ? '完成' : pct + '%';
   el.innerHTML =
-    `<div class="progress" style="height:1.2rem">` +
-    `<div class="progress-bar progress-bar-striped progress-bar-animated ${color}" ` +
-    `role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" ` +
-    `style="width:${pct}%">${label}</div></div>`;
+    '<div class="meter">' +
+    '<div class="meter__track">' +
+    `<span class="meter__fill" style="width:${width}%"></span>` +
+    '</div>' +
+    `<span class="meter__label">${label}</span>` +
+    '</div>';
 }
 
 export function setLog(lines) {
   const el = $('log');
   if (!el) return;
   if (!lines || !lines.length) { el.innerHTML = ''; return; }
-  const items = lines.map(l =>
-    `<div class="border-bottom py-1 text-muted small">${l}</div>`
-  ).join('');
-  el.innerHTML = `<div class="card"><div class="card-body log-scroll">${items}</div></div>`;
+  const items = lines.map(l => `<div class="log-line">${l}</div>`).join('');
+  el.innerHTML = `<div class="logpanel"><div class="log-scroll">${items}</div></div>`;
 }
 
 let __loadingSince = 0;
@@ -70,7 +70,7 @@ export function showBoardLoading() {
   const board = $('board');
   if (board) {
     board.innerHTML =
-      `<div class="app-card skeleton-table" aria-busy="true" aria-label="加载中">${rows}</div>`;
+      `<div class="skeleton-panel" aria-busy="true" aria-label="加载中">${rows}</div>`;
   }
 }
 

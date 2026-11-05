@@ -40,6 +40,21 @@ class TestTemplate:
         for img in re.findall(r"<img[^>]*images/[^>]*>", html):
             assert 'loading="lazy"' in img, "收款码图片没加 loading=lazy"
 
+    def test_qr_has_save_action(self):
+        """手机上「长按保存」是唯一路径太隐蔽：每张码都要有下载按钮。"""
+        html = (TEMPLATES / "components" / "tip_modal.html").read_text(encoding="utf-8")
+        for name in IMAGES:
+            assert 'download="%s"' % name in html, "收款码没有保存图片按钮: %s" % name
+        assert html.count(">保存图片</a>") == 2
+        assert "tip-actions" in html
+
+    def test_phone_switches_channel_instead_of_stacking(self):
+        """手机上一次只显示一张码，用渠道切换代替两张竖排。"""
+        html = (TEMPLATES / "components" / "tip_modal.html").read_text(encoding="utf-8")
+        assert "tip-switch" in html, "缺少渠道切换"
+        assert 'for="tip-alipay"' in html and 'for="tip-wechat"' in html
+        assert html.count('name="tip-channel"') == 2
+
     def test_images_exist_in_repo(self):
         for name in IMAGES:
             p = ROOT / "static" / "images" / name
@@ -72,6 +87,30 @@ class TestStaticExport:
                 p = out / "static" / "images" / name
                 assert p.is_file(), "静态产物缺少 %s —— 线上会图裂" % name
                 assert p.stat().st_size > 10_000
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_export_pages_reference_existing_downloads(self):
+        """保存按钮的 href 也必须在静态产物里落地（带 ?v= 版本号时同理）。"""
+        from db_repository import open_db
+        from export_json import export
+
+        tmp = Path(tempfile.mkdtemp())
+        db = str(tmp / "t.db")
+        open_db(db).close()
+        out = tmp / "site"
+        try:
+            export(db, str(out))
+            for page in ("index.html", "cb.html"):
+                html = (out / page).read_text(encoding="utf-8")
+                tags = re.findall(r'<a[^>]*download="[^"]*"[^>]*>', html)
+                assert len(tags) == 2, "%s 的保存按钮数量不对" % page
+                for tag in tags:
+                    m = re.search(r'href="([^"]+)"', tag)
+                    assert m, "保存按钮没有 href"
+                    assert (out / m.group(1).split("?")[0]).is_file(), \
+                        "%s 的保存按钮指向不存在的文件 %s" % (page, m.group(1))
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)

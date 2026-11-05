@@ -1,0 +1,13 @@
+shots/
+before/
+before.json
+before.txt
+compare.html
+tools/
+.npm-cache/
+site-preview/
+review-*.md
+after/
+probe/
+chrome-nosandbox.sh
+shots.mjs

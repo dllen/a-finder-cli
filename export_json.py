@@ -33,6 +33,7 @@ from db_repository import (
 from app import (
     list_dates,
     picks_for_date,
+    latest_close_map,
     _dt_class,
 )
 
@@ -279,12 +280,19 @@ def export(db_path: str, out_dir: str) -> int:
     conn = open_db(db_path)
     try:
         pick_dates = list_dates(conn)
+        # 与 /api/picks 同构：涨跌% 由「最新收盘 / 买入价」算，静态站不能少这一列
+        close_map = latest_close_map(conn)
 
         # JSON payloads (mirror the Flask API responses)
         json.dump({"dates": pick_dates}, (data_dir / "dates.json").open("w"), ensure_ascii=False)
         for d in pick_dates:
             groups = {}
             for row in picks_for_date(conn, d):
+                close = close_map.get(row["code"])
+                row["ret_pct"] = (
+                    round((close / row["buy"] - 1) * 100, 2)
+                    if (close and row["buy"]) else None
+                )
                 groups.setdefault(row["kind"], []).append(row)
             json.dump(
                 {"date": d, "groups": groups},
@@ -354,6 +362,14 @@ def export(db_path: str, out_dir: str) -> int:
         for f in src_images.iterdir():
             if f.is_file():
                 shutil.copy(f, dst_images / f.name)
+    # 字体（Hallmark 重设计自托管，tokens.css 里用 ../fonts/ 相对路径引用）
+    src_fonts = src_static / "fonts"
+    if src_fonts.is_dir():
+        dst_fonts = static_dir / "fonts"
+        dst_fonts.mkdir(exist_ok=True)
+        for f in src_fonts.iterdir():
+            if f.is_file():
+                shutil.copy(f, dst_fonts / f.name)
     # Favicon
     shutil.copy(src_static / "favicon.svg", static_dir / "favicon.svg")
 

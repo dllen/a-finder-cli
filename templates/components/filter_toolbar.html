@@ -1,9 +1,25 @@
 {% from 'components/date_filter.html' import date_filter %}
-<div class="filter-toolbar">
-  {{ date_filter('d', '日期') }}
-  <input id="q" type="search" class="form-control" placeholder="筛选：代码 / 名称 / 策略" aria-label="快速筛选">
-  {% if show_write_controls|default(true) %}
-  <button id="btn-recalc" class="btn btn-outline-primary write-control">重算榜单</button>
-  <button id="btn-sync" class="btn btn-primary write-control">同步行情并重算</button>
-  {% endif %}
+<div class="toolbar">
+{{ date_filter('d', '日期') }}
+<div class="field field--search">
+<label class="visually-hidden" for="q">筛选榜单</label>
+<input id="q" type="search" class="input" placeholder="筛选：代码、名称或策略" autocomplete="off">
+</div>
+<div class="toolbar__sort">
+<label class="visually-hidden" for="sort-select">排序</label>
+<select id="sort-select" class="sort-select">
+<option value="score:-1">评分 高到低</option>
+<option value="ret_pct:-1">涨跌% 高到低</option>
+<option value="buy:-1">买入价 高到低</option>
+<option value="stop:-1">止损价 高到低</option>
+<option value="target:-1">目标价 高到低</option>
+<option value="code:1">代码 升序</option>
+</select>
+</div>
+{% if show_write_controls|default(true) %}
+<div class="toolbar__actions">
+<button id="btn-recalc" class="btn btn--quiet write-control" type="button">重算榜单</button>
+<button id="btn-sync" class="btn btn--primary write-control" type="button">同步行情并重算</button>
+</div>
+{% endif %}
 </div>

@@ -2,117 +2,98 @@
 
 import { fetchCbPicks, fetchCbPositions, fetchCbAlerts, fetchCbDates } from './api.js';
 import { $, fmt, esc, setStatus } from './dom.js';
-import { scoreBand } from './table.js';
+import { setDateFilterState } from './date-filter.js';
 
-const ALERT_CLS = {
-  emergency: 'bg-danger',
-  important: 'bg-warning text-dark',
-  watch: 'bg-info text-dark',
-  normal: 'bg-secondary',
-};
+const view = { pickRows: [], pickDate: '', positions: [], alerts: [], alertsAt: '' };
 
-function pct(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
+function pct(v) { return v == null ? '无' : (v * 100).toFixed(1) + '%'; }
 
-// ---------------------------------------------------------------------------
-// 摘要卡
-// ---------------------------------------------------------------------------
+function figure(label, value, meta) {
+  return '<div class="figure">' +
+    `<p class="figure__label">${label}</p>` +
+    `<p class="figure__value">${value}</p>` +
+    `<p class="figure__meta">${meta}</p>` +
+    '</div>';
+}
 
 function renderSummary(picksCount, positionsCount, alertsCount, latestDate) {
   const el = $('cb-summary');
   if (!el) return;
-  const card = (title, value, sub) => `
-    <div class="col">
-      <div class="card shadow-sm h-100">
-        <div class="card-body py-2 px-3">
-          <div class="text-muted small mb-1">${title}</div>
-          <div class="fs-4 fw-bold">${value}</div>
-          <div class="text-muted small">${sub}</div>
-        </div>
-      </div>
-    </div>`;
   el.innerHTML =
-    card('转债榜单', picksCount, latestDate ? `最新 ${latestDate}` : '暂无数据') +
-    card('持仓', positionsCount, positionsCount ? '只' : '空仓') +
-    card('预警', alertsCount, alertsCount ? '需处理' : '无');
+    figure('转债榜单', picksCount,
+      latestDate ? `<span class="figure__meta-label">交易日 </span>${esc(latestDate)}` : '暂无数据') +
+    figure('持仓', positionsCount, positionsCount ? '只' : '空仓') +
+    figure('预警', alertsCount, alertsCount ? '需处理' : '无');
 }
-
-// ---------------------------------------------------------------------------
-// 预警
-// ---------------------------------------------------------------------------
 
 function renderAlerts(alerts, generatedAt) {
   const el = $('cb-alerts');
   if (!el) return;
   if (!alerts || !alerts.length) {
-    el.innerHTML = '<div class="empty-state">无预警：持仓全部正常</div>';
+    el.innerHTML = '<p class="empty-line">无预警，持仓全部正常</p>';
     return;
   }
-  let html = '<div class="app-card mb-2">';
+  const chipOf = (level) => level === 'emergency' ? 'chip chip--bad'
+    : (level === 'important' ? 'chip chip--warm' : 'chip');
+  let html = '<ul class="trail">';
   alerts.forEach(a => {
-    const cls = ALERT_CLS[a.level] || 'bg-secondary';
-    html += `<div class="border-bottom py-2 d-flex align-items-start gap-2">` +
-      `<span class="badge ${cls}">${esc(a.level_label || a.level)}</span>` +
-      `<div class="flex-grow-1">` +
-        `<div class="fw-semibold">${esc(a.code)} ${esc(a.name)}` +
-        `<span class="text-muted ms-2">${a.shares != null ? a.shares + ' 张' : ''}</span></div>` +
-        `<div class="small">${esc(a.message)}</div>` +
-        `<div class="small text-muted">现价 ${fmt(a.price)}</div>` +
-      `</div></div>`;
+    html += '<li class="trail__row">' +
+      `<span class="${chipOf(a.level)}">${esc(a.level_label || a.level)}</span>` +
+      '<div class="trail__body">' +
+      `<p class="trail__title"><span class="code">${esc(a.code)}</span> ${esc(a.name)}` +
+      `${a.shares != null ? ` <span class="record__meta">${a.shares} 张</span>` : ''}</p>` +
+      `<p class="trail__note">${esc(a.message)}</p>` +
+      `<p class="trail__meta">现价 ${fmt(a.price)}</p>` +
+      '</div></li>';
   });
-  html += '</div>';
-  if (generatedAt) {
-    html += `<div class="text-muted small mb-3">快照时间 ${esc(generatedAt)}</div>`;
-  }
+  html += '</ul>';
+  if (generatedAt) html += `<p class="trail__meta">快照时间 ${esc(generatedAt)}</p>`;
   el.innerHTML = html;
 }
-
-// ---------------------------------------------------------------------------
-// 持仓
-// ---------------------------------------------------------------------------
 
 function renderPositions(rows) {
   const el = $('cb-positions');
   if (!el) return;
   if (!rows || !rows.length) {
-    el.innerHTML = '<div class="empty-state">暂无转债持仓</div>';
+    el.innerHTML = '<p class="empty-line">暂无转债持仓</p>';
     return;
   }
-  let html = '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
+  let html = '<div class="table-wrap"><table class="ledger"><thead><tr>' +
     '<th>代码</th><th>名称</th><th>正股</th><th>建仓日</th><th class="num">建仓价</th>' +
     '<th class="num">张数</th><th class="num">止损</th><th class="num">止盈</th><th>备注</th>' +
     '</tr></thead><tbody>';
   rows.forEach(r => {
-    html += `<tr><td class="code">${esc(r.code)}</td><td>${esc(r.name || '—')}</td>` +
-      `<td>${esc(r.stock_name || r.stock_code || '—')}</td>` +
-      `<td>${esc(r.entry_date || '—')}</td>` +
+    html += `<tr><td class="code">${esc(r.code)}</td><td class="name">${esc(r.name || '无')}</td>` +
+      `<td class="strategy">${esc(r.stock_name || r.stock_code || '无')}</td>` +
+      `<td class="mono">${esc(r.entry_date || '无')}</td>` +
       `<td class="num">${fmt(r.entry_price)}</td>` +
       `<td class="num">${r.shares}</td>` +
       `<td class="num">${fmt(r.stop_price)}</td>` +
       `<td class="num">${fmt(r.tp_price)}</td>` +
-      `<td>${esc(r.note || '')}</td></tr>`;
+      `<td class="strategy">${esc(r.note || '')}</td></tr>`;
   });
   html += '</tbody></table></div>';
 
-  html += '<div class="app-card d-md-none mb-3">';
+  html += '<ul class="ledger-list">';
   rows.forEach(r => {
-    html += `<div class="plan-card"><div class="card-header-row">` +
-      `<span class="code fw-semibold">${esc(r.code)}</span>` +
-      `<span class="card-title-text">${esc(r.name || '')}</span>` +
-      `<span class="num">${r.shares} 张</span></div>` +
-      `<div class="kv-grid">` +
-        `<span class="k">正股</span><span class="v wrap">${esc(r.stock_name || r.stock_code || '—')}</span>` +
-        `<span class="k">建仓</span><span class="v num">${esc(r.entry_date || '—')} @ ${fmt(r.entry_price)}</span>` +
-        `<span class="k">止损</span><span class="v num">${fmt(r.stop_price)}</span>` +
-        `<span class="k">止盈</span><span class="v num">${fmt(r.tp_price)}</span>` +
-      `</div></div>`;
+    html += '<li class="ledger-row">' +
+      '<div class="ledger-row__head">' +
+      `<span class="code">${esc(r.code)}</span>` +
+      `<span class="ledger-row__name">${esc(r.name || '')}</span>` +
+      `<span class="record__meta">${r.shares} 张</span>` +
+      '</div>' +
+      '<div class="kv-grid">' +
+      `<span class="k">正股</span><span class="v wrap">${esc(r.stock_name || r.stock_code || '无')}</span>` +
+      `<span class="k">建仓</span><span class="v">${esc(r.entry_date || '无')} @ ${fmt(r.entry_price)}</span>` +
+      `<span class="k">止损</span><span class="v">${fmt(r.stop_price)}</span>` +
+      `<span class="k">止盈</span><span class="v">${fmt(r.tp_price)}</span>` +
+      '</div>' +
+      (r.note ? `<p class="trail__meta">${esc(r.note)}</p>` : '') +
+      '</li>';
   });
-  html += '</div>';
+  html += '</ul>';
   el.innerHTML = html;
 }
-
-// ---------------------------------------------------------------------------
-// 榜单
-// ---------------------------------------------------------------------------
 
 export function renderPicks(date, rows) {
   const el = $('cb-board');
@@ -124,57 +105,57 @@ export function renderPicks(date, rows) {
   const maxScore = rows.reduce((m, r) =>
     r.total_score != null && r.total_score > m ? r.total_score : m, 0);
 
-  let html = '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
-    '<th>排名</th><th>代码</th><th>名称</th><th class="num">现价</th><th class="num">总评分</th>' +
-    '<th class="num">债底</th><th class="num">股性</th><th class="num">条款</th>' +
+  let html = '<div class="table-wrap"><table class="ledger"><thead><tr>' +
+    '<th class="rank-col">排名</th><th>代码</th><th>名称</th><th class="num">现价</th>' +
+    '<th class="num">总评分</th><th class="num">债底</th><th class="num">股性</th><th class="num">条款</th>' +
     '<th class="num">仓位</th><th class="num">张数</th><th class="num">止损</th><th class="num">止盈</th>' +
     '<th>理由</th></tr></thead><tbody>';
   rows.forEach((r, i) => {
-    const band = scoreBand(r.total_score, maxScore);
-    html += `<tr class="${band}">` +
-      `<td><span class="rank-badge">${i + 1}</span></td>` +
-      `<td class="code">${esc(r.code)}</td><td>${esc(r.name)}</td>` +
+    const top = r.total_score != null && r.total_score === maxScore;
+    html += `<tr class="${top ? 'is-top' : ''}">` +
+      `<td class="rank-col"><span class="rank">${i + 1}</span></td>` +
+      `<td class="code">${esc(r.code)}</td><td class="name">${esc(r.name)}</td>` +
       `<td class="num">${fmt(r.price)}</td>` +
-      `<td class="num"><span class="score-chip">${r.total_score == null ? '—' : r.total_score}</span></td>` +
-      `<td class="num">${r.a_score == null ? '—' : r.a_score}</td>` +
-      `<td class="num">${r.b_score == null ? '—' : r.b_score}</td>` +
-      `<td class="num">${r.c_score == null ? '—' : r.c_score}</td>` +
+      `<td class="num"><span class="score">${r.total_score == null ? '无' : r.total_score}</span></td>` +
+      `<td class="num">${r.a_score == null ? '无' : r.a_score}</td>` +
+      `<td class="num">${r.b_score == null ? '无' : r.b_score}</td>` +
+      `<td class="num">${r.c_score == null ? '无' : r.c_score}</td>` +
       `<td class="num">${pct(r.size_pct)}</td>` +
       `<td class="num">${r.shares}</td>` +
       `<td class="num">${fmt(r.stop_price)}</td>` +
       `<td class="num">${fmt(r.tp_price)}</td>` +
-      `<td class="small">${esc(r.reason || '')}` +
-      `${r.risk_note ? ` <span class="text-warning">${esc(r.risk_note)}</span>` : ''}</td>` +
-      `</tr>`;
+      `<td class="strategy">${esc(r.reason || '')}` +
+      `${r.risk_note ? ` <span class="note">${esc(r.risk_note)}</span>` : ''}</td></tr>`;
   });
   html += '</tbody></table></div>';
 
-  html += '<div class="app-card d-md-none mb-3">';
+  html += '<ul class="ledger-list">';
   rows.forEach((r, i) => {
-    const band = scoreBand(r.total_score, maxScore).replace('row-', 'band-');
-    html += `<div class="plan-card ${band}"><div class="card-header-row">` +
-      `<span class="rank-badge">${i + 1}</span>` +
-      `<span class="code fw-semibold">${esc(r.code)}</span>` +
-      `<span class="card-title-text">${esc(r.name)}</span>` +
-      `<span class="score-chip">${r.total_score == null ? '—' : r.total_score}</span></div>` +
-      `<div class="kv-grid">` +
-        `<span class="k">现价</span><span class="v num">${fmt(r.price)}</span>` +
-        `<span class="k">评分</span><span class="v num">债底 ${r.a_score ?? '—'} / 股性 ${r.b_score ?? '—'} / 条款 ${r.c_score ?? '—'}</span>` +
-        `<span class="k">仓位</span><span class="v num">${pct(r.size_pct)} · ${r.shares} 张</span>` +
-        `<span class="k">止损</span><span class="v num">${fmt(r.stop_price)}</span>` +
-        `<span class="k">止盈</span><span class="v num">${fmt(r.tp_price)}</span>` +
-      `</div>` +
-      (r.reason ? `<div class="small text-muted mt-1">${esc(r.reason)}</div>` : '') +
-      (r.risk_note ? `<div class="small text-warning mt-1">${esc(r.risk_note)}</div>` : '') +
-      `</div>`;
+    const top = r.total_score != null && r.total_score === maxScore;
+    html += '<li class="ledger-row">' +
+      '<div class="ledger-row__head">' +
+      `<span class="rank">${i + 1}</span>` +
+      `<span class="code">${esc(r.code)}</span>` +
+      `<span class="ledger-row__name">${esc(r.name)}</span>` +
+      `<span class="score${top ? ' is-top' : ''}">${r.total_score == null ? '无' : r.total_score}</span>` +
+      '</div>' +
+      '<div class="kv-grid">' +
+      `<span class="k">现价</span><span class="v">${fmt(r.price)}</span>` +
+      `<span class="k">仓位</span><span class="v">${pct(r.size_pct)}</span>` +
+      `<span class="k">债底</span><span class="v">${r.a_score == null ? '无' : r.a_score}</span>` +
+      `<span class="k">股性</span><span class="v">${r.b_score == null ? '无' : r.b_score}</span>` +
+      `<span class="k">条款</span><span class="v">${r.c_score == null ? '无' : r.c_score}</span>` +
+      `<span class="k">张数</span><span class="v">${r.shares}</span>` +
+      `<span class="k">止损</span><span class="v">${fmt(r.stop_price)}</span>` +
+      `<span class="k">止盈</span><span class="v">${fmt(r.tp_price)}</span>` +
+      '</div>' +
+      (r.reason ? `<p class="trail__meta">${esc(r.reason)}</p>` : '') +
+      (r.risk_note ? `<p class="trail__meta"><span class="note">${esc(r.risk_note)}</span></p>` : '') +
+      '</li>';
   });
-  html += '</div>';
+  html += '</ul>';
   el.innerHTML = html;
 }
-
-// ---------------------------------------------------------------------------
-// 加载
-// ---------------------------------------------------------------------------
 
 function fillDateOptions(dates) {
   const sel = $('cb-date');
@@ -190,33 +171,95 @@ async function loadPicks(date) {
   return data;
 }
 
+function skeleton(el, rows) {
+  if (!el) return;
+  let html = '<div class="skeleton-panel" aria-busy="true" aria-label="加载中">';
+  for (let i = 0; i < (rows || 3); i++) html += '<div class="skeleton skeleton-row"></div>';
+  el.innerHTML = html + '</div>';
+}
+
+async function loadBoard(date) {
+  setDateFilterState('cb-date', 'loading');
+  skeleton($('cb-board'), 3);
+  try {
+    const data = await loadPicks(date);
+    view.pickRows = data.rows || [];
+    view.pickDate = data.date || date;
+    renderSummary(view.pickRows.length, view.positions.length, view.alerts.length, view.pickDate);
+    setDateFilterState('cb-date', '', '');
+  } catch (e) {
+    setDateFilterState('cb-date', 'error', '榜单读取失败');
+    const board = $('cb-board');
+    if (board) board.innerHTML = '<div class="empty-state">转债榜单读取失败</div>';
+  }
+}
+
 export async function loadAll() {
+  const btn = $('cb-refresh');
+  if (btn) btn.disabled = true;
   setStatus('加载中…', 'alert-info');
+  setDateFilterState('cb-date', 'loading');
+  skeleton($('cb-summary'), 1);
+  skeleton($('cb-alerts'), 1);
+  skeleton($('cb-positions'), 1);
+  skeleton($('cb-board'), 3);
   try {
     const [datesRes, posRes, alertsRes] = await Promise.all([
-      fetchCbDates().catch(() => ({ dates: [] })),
-      fetchCbPositions().catch(() => ({ rows: [] })),
-      fetchCbAlerts().catch(() => ({ alerts: [], generated_at: '' })),
+      fetchCbDates().catch(() => ({ error: true, dates: [] })),
+      fetchCbPositions().catch(() => ({ error: true, rows: [] })),
+      fetchCbAlerts().catch(() => ({ error: true, alerts: [], generated_at: '' })),
     ]);
     fillDateOptions(datesRes.dates || []);
-    const positions = posRes.rows || [];
-    const alerts = alertsRes.alerts || [];
+    view.positions = posRes.rows || [];
+    view.alerts = alertsRes.alerts || [];
+    view.alertsAt = alertsRes.generated_at || '';
 
     const date = ($('cb-date') && $('cb-date').value) || (datesRes.dates || [])[0] || '';
-    const picks = date ? await loadPicks(date) : { date: '', rows: [] };
+    if (date) {
+      try {
+        const picks = await loadPicks(date);
+        view.pickRows = picks.rows || [];
+        view.pickDate = picks.date || date;
+      } catch (e) {
+        view.pickRows = [];
+        view.pickDate = date;
+        const board = $('cb-board');
+        if (board) board.innerHTML = '<div class="empty-state">转债榜单读取失败</div>';
+      }
+    } else {
+      view.pickRows = [];
+      view.pickDate = '';
+      const board = $('cb-board');
+      if (board) board.innerHTML = '<div class="empty-state">该日期暂无转债榜单</div>';
+    }
 
-    renderSummary((picks.rows || []).length, positions.length, alerts.length, picks.date);
-    renderAlerts(alerts, alertsRes.generated_at);
-    renderPositions(positions);
+    renderSummary(view.pickRows.length, view.positions.length, view.alerts.length, view.pickDate);
+    if (posRes.error) {
+      const el = $('cb-positions');
+      if (el) el.innerHTML = '<div class="empty-state">持仓读取失败</div>';
+    } else {
+      renderPositions(view.positions);
+    }
+    if (alertsRes.error) {
+      const el = $('cb-alerts');
+      if (el) el.innerHTML = '<div class="empty-state">预警读取失败</div>';
+    } else {
+      renderAlerts(view.alerts, view.alertsAt);
+    }
+    if (datesRes.error) setDateFilterState('cb-date', 'error', '日期加载失败');
+    else setDateFilterState('cb-date', '', '');
     setStatus('', '');
   } catch (e) {
     setStatus('加载失败：' + (e && e.message ? e.message : e), 'alert-danger');
+    setDateFilterState('cb-date', 'error', '加载失败');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   const sel = $('cb-date');
-  if (sel) sel.addEventListener('change', () => loadPicks(sel.value));
+  if (sel) sel.addEventListener('change', () => loadBoard(sel.value));
   const btn = $('cb-refresh');
   if (btn) btn.addEventListener('click', loadAll);
   loadAll();

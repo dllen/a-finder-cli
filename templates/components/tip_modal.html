@@ -1,59 +1,49 @@
-{# 赞赏（打赏）弹窗 —— 2026-11-05 加。
-
-   两张收款码由站点主自己提供：
-     static/images/alipay-qr.jpeg  ← 支付宝（1156×1156）
-     static/images/wechat-qr.jpeg  ← 微信支付（387×387）
-
-   已从原始海报**裁成「只有二维码 + 白边」的正方形**：
-     - 裁掉收款人昵称（「王二小(**鹏)」/「Faker(**鹏)」）—— 用户要求不露昵称；
-     - 裁掉海报的品牌区与「扫一扫」文案（弹窗里已有平台标签 + 说明）；
-     - 裁切边界落在二维码**之外的白边**里 ⇒ 二维码一个模块都没丢。
-   详见 `tests/test_tip_feature.py`（校验二维码完整、留白无字）。
-
-   入口在 base.html 的页脚（「赞赏支持」按钮），data-bs-toggle 打开本弹窗。
-   静态站与 Flask 站共用：base.html 两个模式都会 include 它。
-
-   ⚠️ 图片用 loading=lazy + decoding=async：这两张约 450 KB，
-   不该拖慢首屏（选股页真正要紧的是榜单数据）。
-
-   ⚠️ 尺寸按**宽度**控制（modal-lg + 每张 max-width:300px）。
-   这批图已裁成正方形，300px 宽时二维码约 267px —— 很好扫；
-   小屏两列自动叠成整宽，且每张都包了 target=_blank 可点开原图。
-   （历史教训：原始长海报若按 max-height 限高，二维码只剩 ~85px 扫不出来。）
-#}
+{# 赞赏（打赏）弹窗：页脚按钮打开，两页共用。
+   收款码已裁成「二维码 + 白边」的正方形，不露昵称。
+   手机上先选渠道（支付宝 / 微信），只显示一张码，省一次滚动；
+   每张码都带「保存图片」下载按钮，长按保存不再是唯一路径。 #}
 <div class="modal fade" id="tipModal" tabindex="-1" aria-labelledby="tipModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="tipModalLabel">赞赏支持</h5>
+        <h2 class="modal-title" id="tipModalLabel">赞赏支持</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
-        <p class="text-muted small mb-3">
-          如果这个站点对你有帮助，可以扫码赞赏一杯咖啡。
-          <strong>纯属自愿</strong>，不影响任何功能的免费使用。
-        </p>
-        <div class="row g-3 text-center">
-          <div class="col-12 col-sm-6">
-            <a href="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" target="_blank" rel="noopener" title="点击查看大图">
-              <img src="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" class="img-fluid tip-qr" alt="支付宝收款码"
-                   loading="lazy" decoding="async">
-            </a>
-            <div class="mt-2"><span class="tip-badge tip-badge-alipay">支付宝</span></div>
-            <small class="text-muted">支付宝扫一扫</small>
-          </div>
-          <div class="col-12 col-sm-6">
-            <a href="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" target="_blank" rel="noopener" title="点击查看大图">
-              <img src="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" class="img-fluid tip-qr" alt="微信支付收款码"
-                   loading="lazy" decoding="async">
-            </a>
-            <div class="mt-2"><span class="tip-badge tip-badge-wechat">微信支付</span></div>
-            <small class="text-muted">微信扫一扫</small>
+        <p class="tip-lede">如果这个站点对你有帮助，可以扫码赞赏一杯咖啡。纯属自愿，不影响任何功能。</p>
+        <div class="tip-switch">
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-alipay" checked>
+          <label class="tip-switch__label" for="tip-alipay">支付宝</label>
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-wechat">
+          <label class="tip-switch__label" for="tip-wechat">微信支付</label>
+          <div class="row g-3 text-center tip-panes">
+            <div class="col-12 col-sm-6 tip-pane tip-pane--alipay">
+              <a class="tip-qr-link" href="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" target="_blank" rel="noopener" aria-label="打开支付宝收款码原图">
+                <img src="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" class="tip-qr" alt="支付宝收款码"
+                     width="1156" height="1156" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">支付宝</p>
+              <p class="tip-caption">支付宝扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" download="alipay-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="{{ url_for('static', filename='images/alipay-qr.jpeg') }}" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
+            <div class="col-12 col-sm-6 tip-pane tip-pane--wechat">
+              <a class="tip-qr-link" href="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" target="_blank" rel="noopener" aria-label="打开微信收款码原图">
+                <img src="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" class="tip-qr" alt="微信支付收款码"
+                     width="387" height="387" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">微信支付</p>
+              <p class="tip-caption">微信扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" download="wechat-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="{{ url_for('static', filename='images/wechat-qr.jpeg') }}" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
           </div>
         </div>
-        <p class="text-muted small mb-0 mt-3 text-center">
-          电脑可直接扫码；手机可长按保存，或<strong>点图片看大图</strong>后再扫。
-        </p>
+        <p class="tip-caption tip-hint">电脑可直接扫码；手机点「保存图片」存到相册，或长按图片保存，再到支付宝或微信的扫一扫里从相册选择。</p>
       </div>
     </div>
   </div>

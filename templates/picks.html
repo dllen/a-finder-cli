@@ -1,20 +1,26 @@
 {% extends "base.html" %}
 {% set active_page = "picks" %}
-{% block title %}每日机会{% endblock %}
-
+{% block title %}每日机会，沪深300 选股{% endblock %}
+{% block description %}沪深300 每日选股榜单：均线、买入信号、信号策略、多因子四组，附策略胜率统计。{% endblock %}
 {% block body %}
-<main class="container py-4">
-  <div class="page-header">
-    <h1 class="h3 mb-0 page-title">每日机会</h1>
-  </div>
+<main class="container page" id="main">
+<header class="sheet-head">
+<h1 class="sheet-date"><span class="visually-hidden">每日机会，交易日 </span><time id="sheet-date" datetime="{{ today }}">{{ today }}</time></h1>
+{% include 'components/dashboard_cards.html' %}
+</header>
 
-  {% include 'components/dashboard_cards.html' %}
-  {% include 'components/filter_toolbar.html' %}
-  {% include 'components/status_bar.html' %}
-  <div id="board"></div>
+{% include 'components/filter_toolbar.html' %}
+{% include 'components/status_bar.html' %}
 
-  <h2 class="section-title mt-4">策略胜率统计 <small class="text-muted">基于历史标注样本</small></h2>
-  <div id="stats"></div>
+<div id="board" class="board"></div>
+
+<section class="stats" aria-labelledby="stats-title">
+<div class="section-head">
+<h2 id="stats-title">策略胜率统计</h2>
+<p class="section-note">基于历史标注样本</p>
+</div>
+<div id="stats"></div>
+</section>
 </main>
 {% endblock %}
 

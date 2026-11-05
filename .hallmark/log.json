@@ -1,0 +1,22 @@
+[
+ {
+  "shape": "app screen",
+  "theme": "console",
+  "axes": "dark/grotesk-sans/chromatic-amber",
+  "hero": "none (app screen)",
+  "nav": "one rule-separated bar, ledger mark, two quiet links, amber underline on the active page",
+  "footer": "three lines of register plus a quiet tip control",
+  "imagery": "none",
+  "photos": [],
+  "entry": "redesign of a daily A-share picks board and its bond register",
+  "fingerprint": "app: dark console, ledger tables, date-as-reading head, hairline records",
+  "sections": "sheet head (day, freshness, bond register) · toolbar (date dial, filter, actions) · four pick registers · win-rate panel pair · footer",
+  "signature": "the selected trading day set as a reading in the measured face, the freshness and bond register beside it",
+  "waived": "none",
+  "prompt": "a daily A-share stock picks dashboard: trading-day filter, four pick tables with scores, win-rate stats, plus a convertible-bond watch page",
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "date": "2026-11-05"
+ }
+]

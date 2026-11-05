@@ -1,7 +1,7 @@
 // 每日机会页入口
 
 import { fetchPicks, fetchDates, fetchStats, postRefresh, pollJob } from './api.js';
-import { $, fillDateSelect, setStatus, setProgress, setLog, showBoardLoading, whenBoardReady, esc, fmt } from './dom.js';
+import { $, esc, fillDateSelect, setStatus, setProgress, setLog, showBoardLoading, whenBoardReady } from './dom.js';
 import { setDateFilterState } from './date-filter.js';
 import { renderPicksBoard } from './table.js';
 import { startDashboard } from './dashboard.js';
@@ -29,34 +29,54 @@ function drawBoard() {
 function drawStats(d) {
   const el = $('stats');
   if (!el) return;
-  let html = '';
-  const rows = d.strategies || [];
-  if (rows.length) {
-    html += '<div class="table-responsive app-card d-none d-md-block mb-3"><table class="app-table"><thead><tr>' +
-      '<th>策略</th><th class="num">样本</th><th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
-    rows.forEach(r => {
+  const strategies = d.strategies || [];
+  const monthly = d.monthly || [];
+  if (!strategies.length && !monthly.length) {
+    el.innerHTML = '<div class="empty-state">暂无历史标注样本</div>';
+    return;
+  }
+  let html = '<div class="panels">';
+  if (strategies.length) {
+    html += '<section class="panel" aria-labelledby="stats-by-strategy">' +
+      '<h3 class="panel__title" id="stats-by-strategy">按策略</h3>' +
+      '<table class="ledger"><thead><tr><th>策略</th><th class="num">样本</th>' +
+      '<th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
+    strategies.forEach(r => {
+      const cls = r.expectancy > 0 ? 'up' : (r.expectancy < 0 ? 'down' : 'flat');
+      const sign = r.expectancy > 0 ? '+' : '';
       html += `<tr><td>${esc(r.strategy)}</td><td class="num">${r.n}</td>` +
         `<td class="num">${r.win_rate}</td>` +
-        `<td class="num ${r.expectancy >= 0 ? 'text-success' : 'text-danger'}">${r.expectancy >= 0 ? '+' : ''}${r.expectancy}</td></tr>`;
+        `<td class="num ${cls}">${sign}${r.expectancy}</td></tr>`;
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></section>';
   }
-  const mo = d.monthly || [];
-  if (mo.length) {
-    html += '<h2 class="section-title">月度胜率</h2>';
-    html += '<div class="table-responsive app-card"><table class="app-table"><thead><tr>' +
-      '<th>月份</th><th class="num">样本</th><th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
-    mo.forEach(m => {
-      html += `<tr><td>${esc(m.month)}</td><td class="num">${m.n}</td>` +
+  if (monthly.length) {
+    html += '<section class="panel" aria-labelledby="stats-by-month">' +
+      '<h3 class="panel__title" id="stats-by-month">按月</h3>' +
+      '<table class="ledger"><thead><tr><th>月份</th><th class="num">样本</th>' +
+      '<th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
+    monthly.forEach(m => {
+      const cls = m.avg_ret > 0 ? 'up' : (m.avg_ret < 0 ? 'down' : 'flat');
+      const sign = m.avg_ret > 0 ? '+' : '';
+      html += `<tr><td class="mono">${esc(m.month)}</td><td class="num">${m.n}</td>` +
         `<td class="num">${m.win_rate}</td>` +
-        `<td class="num ${m.avg_ret >= 0 ? 'text-success' : 'text-danger'}">${m.avg_ret >= 0 ? '+' : ''}${m.avg_ret}</td></tr>`;
+        `<td class="num ${cls}">${sign}${m.avg_ret}</td></tr>`;
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></section>';
   }
-  el.innerHTML = html || '<div class="empty-state">暂无历史标注样本</div>';
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function setSheetDate(date) {
+  const el = $('sheet-date');
+  if (!el || !date) return;
+  el.textContent = date;
+  el.setAttribute('datetime', date);
 }
 
 function render(date) {
+  setSheetDate(date);
   showBoardLoading();
   fetchPicks(date).then(data => {
     whenBoardReady(() => {
@@ -74,8 +94,10 @@ function loadDates() {
   fetchDates().then(d => {
     const v = fillDateSelect(d.dates);
     setDateFilterState('d', '', '');
-    if (v) render(v);
-    else {
+    if (v) {
+      setSheetDate(v);
+      render(v);
+    } else {
       const board = $('board');
       if (board) board.innerHTML = '<div class="empty-state">暂无选股数据</div>';
     }
@@ -117,7 +139,6 @@ function refresh(sync) {
   });
 }
 
-// Init
 document.addEventListener('DOMContentLoaded', () => {
   const dateSelect = $('d');
   if (dateSelect) dateSelect.addEventListener('change', () => render(dateSelect.value));
@@ -125,6 +146,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchInput = $('q');
   if (searchInput) searchInput.addEventListener('input', () => {
     state.filter = searchInput.value.trim();
+    drawBoard();
+  });
+
+  const sortSelect = $('sort-select');
+  if (sortSelect) sortSelect.addEventListener('change', () => {
+    const parts = sortSelect.value.split(':');
+    state.sort = { key: parts[0], dir: Number(parts[1]) || -1 };
     drawBoard();
   });
 
@@ -136,9 +164,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const board = $('board');
   if (board) board.addEventListener('click', e => {
-    const th = e.target.closest('th.sortable');
-    if (!th) return;
-    const key = th.dataset.sort;
+    const btn = e.target.closest('[data-sort]');
+    if (!btn) return;
+    const key = btn.dataset.sort;
     if (state.sort.key === key) {
       state.sort.dir = -state.sort.dir;
     } else {

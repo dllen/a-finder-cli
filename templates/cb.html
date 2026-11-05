@@ -1,27 +1,35 @@
 {% extends "base.html" %}
 {% from 'components/date_filter.html' import date_filter %}
 {% set active_page = "cb" %}
-{% block title %}可转债{% endblock %}
-
+{% block title %}可转债榜单{% endblock %}
+{% block description %}可转债独立仓：转债榜单、持仓与强赎预警。{% endblock %}
 {% block body %}
-<main class="container py-4">
-  <div class="d-flex align-items-center mb-3">
-    <h2 class="mb-0">可转债</h2>
-    <span class="text-muted fs-6 ms-2">[独立转债仓]</span>
-    <div class="ms-auto d-flex align-items-center gap-2">
-      {{ date_filter('cb-date', '日期', compact=true) }}
-      <button id="cb-refresh" class="btn btn-sm btn-outline-primary write-control">刷新</button>
-    </div>
-  </div>
+<main class="container page" id="main">
+<header class="screen-head">
+<h1>可转债</h1>
+<p class="screen-head__note">独立转债仓</p>
+<div class="screen-head__tools">
+{{ date_filter('cb-date', '日期', compact=true) }}
+<button id="cb-refresh" class="btn btn--quiet write-control" type="button">刷新</button>
+</div>
+</header>
 
-  <div class="row row-cols-1 row-cols-md-3 g-2 mb-3" id="cb-summary"></div>
+<div id="cb-summary" class="figures"></div>
 
-  <h5 class="mt-4">持仓与预警</h5>
-  <div id="cb-alerts"></div>
-  <div id="cb-positions" class="mt-3"></div>
+<section class="block" aria-labelledby="cb-holdings-title">
+<div class="block__head">
+<h2 id="cb-holdings-title">持仓与预警</h2>
+</div>
+<div id="cb-alerts"></div>
+<div id="cb-positions"></div>
+</section>
 
-  <h5 class="mt-4">转债榜单</h5>
-  <div id="cb-board"></div>
+<section class="block" aria-labelledby="cb-board-title">
+<div class="block__head">
+<h2 id="cb-board-title">转债榜单</h2>
+</div>
+<div id="cb-board"></div>
+</section>
 </main>
 {% endblock %}
 

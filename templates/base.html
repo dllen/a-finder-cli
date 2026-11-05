@@ -4,27 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}每日机会{% endblock %}</title>
+<meta name="description" content="{% block description %}沪深300 每日选股榜单与可转债榜单，按交易日查看，数据仅供参考。{% endblock %}">
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/date-filter.css') }}">
 </head>
 <body>
+<a class="skip" href="#main">跳到主要内容</a>
 {% include 'components/nav.html' %}
 {% block body %}{% endblock %}
 <footer class="app-footer">
-<div class="container d-flex flex-column flex-md-row justify-content-between align-items-center py-3 gap-2">
-<span>&copy; {{ year }} 每日机会</span>
-<div class="d-flex flex-column flex-md-row align-items-center gap-2 text-center text-md-end">
-<span class="text-muted small">沪深300 选股与可转债分析 &middot; 数据仅供参考，不构成投资建议</span>
-<button type="button" class="btn btn-sm btn-tip" data-bs-toggle="modal" data-bs-target="#tipModal">
-&#9749; 赞赏支持
-</button>
-</div>
+<div class="container app-footer__inner">
+<p class="app-footer__brand">&copy; {{ year }} 每日机会</p>
+<p class="app-footer__note">沪深300 选股与可转债分析</p>
+<p class="app-footer__note">数据仅供参考，不构成投资建议</p>
+<button type="button" class="btn btn-tip" data-bs-toggle="modal" data-bs-target="#tipModal">赞赏支持</button>
 </div>
 </footer>
-
-{# 赞赏弹窗：入口在页脚按钮，两页（每日机会 / 可转债）共用 #}
 {% include 'components/tip_modal.html' %}
 <script src="{{ url_for('static', filename='vendor/bootstrap.bundle.min.js') }}"></script>
 <script>window.APP_MODE={{ app_mode|tojson }};window.DATA_PREFIX={{ data_prefix|tojson }};</script>

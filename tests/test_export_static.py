@@ -87,3 +87,28 @@ def test_cleanup_removes_retired_and_stale_files(tmp_path):
 
     names = sorted(p.name for p in data.iterdir())
     assert names == ["dashboard.json", "dates.json", "picks-2026-08-12.json"]
+
+
+def test_export_copies_self_hosted_fonts(tmp_path):
+    """字体也是设计系统的一部分，静态站必须带上。
+
+    和收款码同一个坑：本地 Flask 直接读 static/ 永远正常，静态站是
+    export_json.py 逐个目录拷出来的，漏掉 fonts/ 只在线上暴露。
+    """
+    import os
+    import tempfile
+    from db_repository import open_db
+    from export_json import export
+
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        open_db(db).close()
+        out = tmp_path / "site"
+        export(db, str(out))
+        for name in ("host-grotesk.woff2", "atkinson-mono.woff2"):
+            p = out / "static" / "fonts" / name
+            assert p.is_file(), "静态产物缺少字体 %s" % name
+            assert p.stat().st_size > 5_000
+    finally:
+        os.unlink(db)
