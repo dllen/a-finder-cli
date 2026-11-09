@@ -100,6 +100,66 @@ dsh plugin --profile desktop add file:/绝对路径/plugins/dsh-a-finder-sync
         ├── schedule.js      # 提醒任务的幂等创建
         └── client.js        # browser 半侧：一键同步按钮
 
+## ⚠️ 四个实测踩过的坑
+
+### 1. 插件不许 import 宿主包
+
+宿主包（`@deepseek-ai/*`）**不在 profile 的 node_modules 里** —— pnpm 的 peer 不会
+自动链接。第一版写了 `import { defineTool } from '@deepseek-ai/dsh-tools'`，
+结果宿主加载插件时直接 `ERR_MODULE_NOT_FOUND` ⇒ **整个 host 半侧死掉** ⇒
+工具和 `/api` 路由都不存在。
+
+而 browser bundle 由 client-modules 独立提供，照常加载 ⇒ **按钮还在**，点下去
+请求落到 DSH 自己的 `/api` 守卫上返回 **401** ⇒ 界面只显示「同步失败」，
+看起来像同步跑失败了，实际连路由都没到。
+
+所以 `lib/index.js` 只用 `node:*` 内置模块。`ctx.tools.register` 只要求
+`{ name, output: { schema, render } }`，`defineTool` 只是把参数规格转成
+JSON Schema 的语法糖 —— 直接写 JSON Schema 即可，零依赖。
+
+### 2. `dsh plugin add` 不会刷新 `file:` 依赖的副本
+
+pnpm 对 `file:` 依赖做**拷贝**而非软链，且**改了版本号也不重拷**（实测
+`add` 反复报 `resolved 123, reused 1, added 0`，profile 里的文件时间戳一直
+停在第一次安装的时刻）。后果是：**你改了仓库代码，宿主跑的还是旧版**，
+而且看不出任何异常。
+
+必须 `remove` 再 `add`：
+
+```bash
+dsh plugin --profile desktop remove dsh-a-finder-sync
+dsh plugin --profile desktop add file:/绝对路径/plugins/dsh-a-finder-sync
+```
+
+改完代码一定核对 profile 里的副本：
+
+```bash
+P=~/.dsh/profiles/desktop/node_modules/dsh-a-finder-sync
+grep '"version"' $P/package.json
+grep -n '^import' $P/lib/index.js | grep '@deepseek-ai' || echo "(无宿主依赖 ✓)"
+ls -la $P/lib/index.js   # 看时间戳
+```
+
+### 3. 工具 schema 里 `required` 只能为 `true`
+
+`defineTool` 会以 `JsonSchemaError: parameters.push.required must be true when
+present` 拒绝 `required: false`。可选参数**直接省略这个键**。
+
+### 4. 路由拿到的是 node:http 请求，不是 Fetch Request
+
+`webServer.register({ handler })` 的 `req` 是 `IncomingMessage`（可读流），
+**没有 `.text()`**。用 `.text()` 会抛错，被 catch 吞掉后 body 变空 ——
+`push` 之类的参数就被静默忽略了。要按流读：
+
+```js
+const readJsonBody = (req) => new Promise((resolve) => {
+  let raw = ''
+  req.on('data', (c) => { raw += c })
+  req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}) } catch { resolve({}) } })
+  req.on('error', () => resolve({}))
+})
+```
+
 ## 排查
 
 ```bash
@@ -113,5 +173,12 @@ dsh headless --profile desktop "列出所有定时任务"
 tail -40 logs/site-run-*.log
 ```
 
-按钮点了没反应：确认 GUI 里插件已启用（设置 → 插件），且 `projectDir` 下的 `a-finder.sh` 存在。
-同步失败时按钮旁会显示退出码和最后几行输出。
+按钮点了没反应 / 显示同步失败：先看插件自己的日志（每次点击都会写一行起止，
+失败时还会附上流水线最后 40 行）：
+
+```bash
+tail -60 logs/a-finder-sync.log
+```
+
+日志里**没有这次点击的记录** ⇒ 请求根本没到插件（多半是没重启 GUI，或插件没加载成功，
+见上面「部署坑 1」）；有记录但 `ok=false` ⇒ 流水线本身失败，看附带的输出尾部。

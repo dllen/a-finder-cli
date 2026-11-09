@@ -1,6 +1,6 @@
 {
   "name": "dsh-a-finder-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "a-finder 沪深300 行情同步：每天 17:00 自动提醒 + Web GUI 一键同步并推送到 gh-pages",
   "keywords": [
     "dsh-plugin",
@@ -33,8 +33,7 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1"
+    "@deepseek-ai/cordis": "~4.1.0"
   },
   "files": [
     "cordis.patch.yml",
