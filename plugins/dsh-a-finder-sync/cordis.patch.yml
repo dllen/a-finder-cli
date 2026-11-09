@@ -1,0 +1,19 @@
+# Mounts the a-finder sync host plugin.
+#
+# The browser half is discovered through the package's dsh.client manifest and
+# its ./client export, so it needs no entry here.
+#
+# projectDir points at the a-finder-cli repository that holds a-finder.sh and
+# hs300.db. Change it to your own checkout path.
+- insert:
+    - id: a-finder-sync
+      name: dsh-a-finder-sync
+      config:
+        projectDir: /Users/shichaopeng/Work/self-dir/projects/a-finder-cli
+        db: hs300.db
+        top: 20
+        out: site
+        push: true
+        remindTime: '17:00'
+        timeZone: Asia/Shanghai
+        autoSchedule: true

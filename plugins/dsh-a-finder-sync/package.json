@@ -1,0 +1,54 @@
+{
+  "name": "dsh-a-finder-sync",
+  "version": "0.1.0",
+  "description": "a-finder 沪深300 行情同步：每天 17:00 自动提醒 + Web GUI 一键同步并推送到 gh-pages",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "a-finder",
+    "stock",
+    "sync"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/sync.js",
+    "lib/schedule.js",
+    "README.md"
+  ],
+  "keywords.dsh": {
+    "marketplace": {
+      "categories": [
+        "productivity"
+      ]
+    }
+  }
+}
