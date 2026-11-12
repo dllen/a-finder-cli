@@ -57,7 +57,7 @@ bash a-finder.sh web {start|stop|restart|status}      # Flask on http://127.0.0.
 bash a-finder.sh daemon {start|stop|restart|status} [cli-args]
 bash a-finder.sh sync-range 2025-01-01 2026-09-07 hs300.db --gap-fill
 bash a-finder.sh sync-incremental hs300.db 15 picks --limit 100
-bash a-finder.sh site [db] [top] [out] [--push]        # 本地一键生成网站数据（同步+选股+计划+组合+导出+可选推送 gh-pages）
+bash a-finder.sh site [db] [top] [out] [--push] [--no-cb]  # 本地一键生成网站数据（同步+选股+可转债+导出+可选推送 gh-pages）
 bash a-finder.sh cron                                  # launchd 入口（工作日 15:30 跑 site --push）
 ```
 
@@ -638,6 +638,16 @@ Layered modules (top-level flat modules + a few packages):
   （`cb_pipeline.build_cb_picks` 返回 warning），因为把今天的快照挂到别的日期下
   是错标数据，比缺失更糟。榜单日期取「库里最后一个交易日」而不是 `today()`
   （否则周末跑会写出 2026-10-25 这种不存在的交易日）。
+- **`a-finder.sh site` 现在也会同步转债（2026-11-12 加）**：导出前跑
+  `stock_cli.py cb-picks --top "$top" --concurrency 2 --rate 4 --date "$plan_date"`，
+  失败只告警、不中止导出/发布；`--no-cb` 可跳过。dsh 插件 `dsh-a-finder-sync` 的
+  一键同步与 `a_finder_sync` 工具因此默认带转债 —— 插件**只透传 `--no-cb`**，
+  不重写流水线（否则会出现第二个真相源）。
+  ⚠️ `--date "$plan_date"` 是**防错标守卫**，不是冗余参数：`cb_pipeline` 只接受
+  == 今天的日期，所以行情同步失败、库最新日落后时会拒绝把今天的实时快照写进
+  旧日期；非交易日同样拒绝（CLI exit 0，流水线继续）。别为了让转债在周末也更新
+  而删掉它。测试：`tests/test_site_cb_sync.py`（bash 桩跑 `cmd_site`）+
+  `tests/test_plugin_cb_sync.py`（node 跑插件）。
 - **可转债** — `cb_data_provider.py`（akshare 多源降级）、`cb_repository.py`（`cb_` 表读写，写入用 SAVEPOINT 原子化）、`cb_pipeline.py`（编排）、`strategies/convertible.py`（粗筛/打分/预警）。表前缀 `cb_`，与股票体系完全隔离；转债整手 10 张（面值 100 元），风控独立于 `risk_manager.py`（`config.CB_RISK`：止损-8% / 止盈+20% / 单只15% / 10张一手）。分组打分：债底40%/股性30%/条款30%，缺失因子组内重新归一化。数据源：`bond_zh_cov`（全市场）→ `bond_zh_cov_info`（裸 6 位代码）→ `bond_cb_redeem_jsl`（强赎状态）。
 - **日期筛选组件** — `templates/components/date_filter.html`（Jinja macro）+ `static/css/date-filter.css` + `static/js/date-filter.js`。五个页面统一用它：picks/plan 用完整版（`date_filter('d','日期')`），cb/decide/portfolio 用 `compact=true`。portfolio 的日期来源是 `/api/portfolio/dates`（只列档位组合真有 `trade_plan` 行的日期；必须排除 `default` 档，否则选中后「当日计划」恒为空）。组合 PnL 支持 `as_of`：`/api/portfolio/summary|detail?date=YYYY-MM-DD` 会按该日重建（`db_repository.rebuild_positions_as_of` 用 trade_events 做移动平均成本还原持仓，价格取该日或更早最近收盘）；不传 date 仍是原「当前状态」计算。能力：‹/› 步进交易日（选项按新→旧排列，方向在 JS 里换算）、`?d=YYYY-MM-DD` URL 状态（停留在最新时不写入参数）、键盘 ←/→/Home/End、加载/错误/成功三态类（`setDateFilterState`）。八态预览见 `docs/previews/date-filter.html`。新增页面用该组件时不要自建日期控件，否则又会出现多套日期交互。
 - **Views** — `view_models` builds row tuples from `Stock`/`scores`; `formatter.format_table/format_lines` renders CLI tables. `pick_history.run_picks` (with `do_sync=False` flag) is what the web "重算榜单" button calls.

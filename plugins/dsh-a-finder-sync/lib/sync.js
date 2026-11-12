@@ -39,6 +39,26 @@ export async function readLatestTradeDate(dbPath) {
 }
 
 /**
+ * Read the newest date the local database has convertible-bond picks for.
+ *
+ * Kept separate from readLatestTradeDate on purpose: the bond board can lag the
+ * price table (the data source only exposes a realtime snapshot), so the two
+ * dates answer different questions and must not be conflated in the summary.
+ *
+ * No try/catch here: callers decide what a missing cb_picks table means. The
+ * table is created by a migration, so an old database legitimately lacks it.
+ *
+ * @param {string} dbPath - Path to the SQLite database.
+ * @returns {Promise<string>} The newest cb_picks date, or '' when the table is empty.
+ */
+export async function readCbLatestDate(dbPath) {
+  const { stdout } = await execFileAsync('sqlite3', [dbPath, 'SELECT MAX(trade_date) FROM cb_picks;'], {
+    encoding: 'utf8',
+  })
+  return stdout.trim()
+}
+
+/**
  * Read the newest date the published site carries.
  *
  * @param {string} siteDataDir - Directory holding the exported JSON.
@@ -67,6 +87,7 @@ export async function readPublishedDate(siteDataDir) {
  * @param {number} options.top - Number of picks per board.
  * @param {string} options.out - Export directory name inside the repository.
  * @param {boolean} options.push - Whether to publish to gh-pages.
+ * @param {boolean} options.cb - Whether the pipeline should sync the bond board.
  * @param {number} options.timeoutMs - Hard limit for the whole run.
  * @returns {Promise<{ok: boolean, code: number, output: string, timedOut: boolean}>} Run result.
  */
@@ -77,11 +98,16 @@ export function runSitePipeline(options) {
     top = 20,
     out = 'site',
     push = true,
+    cb = true,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options
 
+  // The pipeline owns the bond step: we only pass the opt-out flag. Adding any
+  // bond logic here would create a second source of truth for the published
+  // site, which is exactly what this plugin avoids everywhere else.
   const args = ['a-finder.sh', 'site', db, String(top), out]
   if (push) args.push('--push')
+  if (cb === false) args.push('--no-cb')
 
   return new Promise((resolvePromise) => {
     const child = spawn('/bin/bash', args, {
@@ -146,9 +172,10 @@ export async function resolveProjectDir(configured) {
  * @param {object} result - Result of runSitePipeline.
  * @param {string} latest - Newest date the database now carries.
  * @param {string} published - Newest date the site now carries.
+ * @param {string} cbLatest - Newest date the bond board now carries, or ''.
  * @returns {string} A short human-readable summary.
  */
-export function summarize(result, latest, published) {
+export function summarize(result, latest, published, cbLatest) {
   if (result.timedOut) {
     return '同步超时（超过时限仍未结束），已终止。'
   }
@@ -159,5 +186,8 @@ export function summarize(result, latest, published) {
   const parts = ['同步完成']
   if (latest) parts.push(`数据库最新交易日 ${latest}`)
   if (published) parts.push(`站点最新日期 ${published}`)
+  // Omitted when empty: a database without a bond board should not read as if
+  // the board had synced to an empty date.
+  if (cbLatest) parts.push(`可转债榜单 ${cbLatest}`)
   return parts.join('，') + '。'
 }

@@ -51,7 +51,8 @@ export function buildReminderPrompt(projectDir) {
     '',
     '项目目录：' + projectDir,
     '',
-    '请执行一次 a-finder 数据同步：调用 a_finder_sync 工具完成「同步行情 + 重算选股 + 导出站点 + 推送 gh-pages」。',
+    '请执行一次 a-finder 数据同步：调用 a_finder_sync 工具完成「同步行情 + 重算选股 + 可转债榜单 + 导出站点 + 推送 gh-pages」。',
+    '转债数据源只有实时快照：非交易日必须跳过转债（工具默认行为即可），不要为了刷新转债而改日期。',
     '如果今天不是 A 股交易日，或库里已经有今天的完整数据，请直接说明「今日无需同步」并给出当前数据状态，不要重复推送。',
   ].join('\n')
 }

@@ -144,20 +144,23 @@ push_site_to_ghpages() {
 }
 
 cmd_site() {
-  # 用法: a-finder.sh site [DB] [TOP] [OUT] [--push]
+  # 用法: a-finder.sh site [DB] [TOP] [OUT] [--push] [--no-cb]
+  # 全流程：sync-incremental → cb-picks（可 --no-cb 跳过）→ export_json [→ push]
   local db="${1:-$DEFAULT_DB}"
   local top="${2:-20}"
   local out="${3:-site}"
   local push=0
+  local cb=1
   for a in "$@"; do
     if [[ "$a" == "--push" ]]; then push=1; fi
+    if [[ "$a" == "--no-cb" ]]; then cb=0; fi
   done
 
   echo "=== 本地数据生成 ==="
-  echo "db=$db top=$top out=$out push=$push"
+  echo "db=$db top=$top out=$out push=$push cb=$cb"
   echo ""
 
-  echo "[1/5] 增量同步 + 选股..."
+  echo "[1/3] 增量同步 + 选股..."
   cmd_sync_incremental "$db" "$top" pick-history
 
   # 计划日期对齐**库里真正的行情最新日**，而不是硬编码今天：
@@ -178,9 +181,30 @@ except Exception:
     echo "ERROR: 库里没有行情数据（$db 无 daily_prices 表或 MAX(trade_date) 为空），中止" >&2
     return 1
   fi
+  # [2/3] 可转债榜单 —— 数据源只有实时快照（ak.bond_zh_cov 无历史日接口），
+  # 所以转债榜单天然只有「当天这一份」。
+  #
+  # 为什么把日期交给 --date "$plan_date"，而不是在这里再判一次「今天」：
+  #   ① 日期逻辑只允许有一处。plan_date 已经是库里行情的最新日
+  #      （MAX(daily_prices.trade_date)），在 bash 里再比一次「今天」等于养出
+  #      第二份日期逻辑，早晚与导出/发布守卫漂移；
+  #   ② --date 本身就是**防错标守卫**：cb_pipeline 只接受 == 今天的日期，于是
+  #      行情同步失败、库最新日落后时它会拒绝把今天的实时快照写进旧日期
+  #      （错标数据比缺失更糟）；非交易日同样拒绝并打印 warn/error，但 exit 0，
+  #      流水线照常继续；
+  #   ③ 转债不是主流程：数据源限流/不可用时只告警，导出与发布绝不因此中止
+  #      （转债页沿用库里上一份榜单，总比整站停更强）。
+  if [[ "$cb" == "1" ]]; then
+    echo "[2/3] 可转债榜单（--date ${plan_date}）..."
+    run_cmd cb-picks --top "$top" --db "$db" --concurrency 2 --rate 4 --date "$plan_date" \
+      || echo "WARN: 可转债榜单同步失败，继续导出（转债页沿用库里上一份榜单）" >&2
+  else
+    echo "[2/3] 跳过可转债榜单（--no-cb）"
+  fi
+
   # ⚠️ 2026-11-05：「交易计划」「持仓组合」已下线（用户要求），
   # 不再跑 plan build / build-all / --backfill（CLI 子命令也已删除）。
-  echo "[2/2] 导出静态数据到 $out..."
+  echo "[3/3] 导出静态数据到 $out..."
   run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
 
   cp "$out/index.html" "$out/404.html"
@@ -564,9 +588,10 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   # plan / plan-all / daily-plan / portfolio 四个子命令已删除。
 
 ──────── 网站 ────────
-  site [DB] [TOP] [OUT] [--push]
-      全流程：sync-incremental → export_json。
+  site [DB] [TOP] [OUT] [--push] [--no-cb]
+      全流程：sync-incremental → cb-picks → export_json。
       --push 把 site/ orphan-push 到 gh-pages。
+      --no-cb 跳过可转债榜单（转债数据源不可用时）。
   refresh [MONTHS] [DB] [OUT] [--push]
       最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 网站导出。
       不重算历史选股（避免未来函数偏差）。

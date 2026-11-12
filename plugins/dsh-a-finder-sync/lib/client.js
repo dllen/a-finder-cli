@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
     function SyncButton() {
       const [state, setState] = useState('idle')
       const [message, setMessage] = useState('')
-      const [dates, setDates] = useState({ latest: '', published: '' })
+      const [dates, setDates] = useState({ latest: '', published: '', cb: '' })
       const mounted = useRef(true)
 
       useEffect(() => () => { mounted.current = false }, [])
@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
           if (!response.ok) return
           const data = await response.json()
           if (!mounted.current) return
-          setDates({ latest: data.latest ?? '', published: data.published ?? '' })
+          setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '' })
         } catch {
           // The status line is decoration: a failed read must not break the button.
         }
@@ -48,19 +48,19 @@ window.__ModuleLoader__.load({
       const run = useCallback(async () => {
         if (state === 'running') return
         setState('running')
-        setMessage('正在同步行情并推送…')
+        setMessage('正在同步行情与可转债榜单并推送…')
         try {
           const response = await fetch(API_BASE + '/sync', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ push: true }),
+            body: JSON.stringify({ push: true, cb: true }),
           })
           const data = await response.json().catch(() => ({}))
           if (!mounted.current) return
           setMessage(data.message ?? (response.ok ? '同步完成' : '同步失败'))
           setState(response.ok && data.ok ? 'done' : 'error')
-          if (data.latest || data.published) {
-            setDates({ latest: data.latest ?? '', published: data.published ?? '' })
+          if (data.latest || data.published || data.cb) {
+            setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '' })
           }
         } catch (error) {
           if (!mounted.current) return
@@ -71,7 +71,7 @@ window.__ModuleLoader__.load({
 
       const label = state === 'running' ? '同步中…' : state === 'done' ? '已同步' : state === 'error' ? '重试同步' : '同步数据'
       const hint = dates.latest
-        ? '库 ' + dates.latest + ' · 站点 ' + (dates.published || '—')
+        ? '库 ' + dates.latest + ' · 转债 ' + (dates.cb || '—') + ' · 站点 ' + (dates.published || '—')
         : ''
 
       return react.createElement(
@@ -86,7 +86,7 @@ window.__ModuleLoader__.load({
             type: 'button',
             onClick: () => { void run() },
             disabled: state === 'running',
-            title: '同步 a-finder 沪深300 行情、重算选股并推送到 gh-pages',
+            title: '同步 a-finder 沪深300 行情与可转债榜单、重算选股并推送到 gh-pages',
             style: {
               cursor: state === 'running' ? 'progress' : 'pointer',
               padding: '2px 10px',

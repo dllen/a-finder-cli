@@ -25,7 +25,14 @@
 
 import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { readLatestTradeDate, readPublishedDate, resolveProjectDir, runSitePipeline, summarize } from './sync.js'
+import {
+  readCbLatestDate,
+  readLatestTradeDate,
+  readPublishedDate,
+  resolveProjectDir,
+  runSitePipeline,
+  summarize,
+} from './sync.js'
 import { DEFAULT_REMIND_TIME, TASK_TITLE, ensureDailyReminder } from './schedule.js'
 
 /** The HTTP prefix the client button talks to. */
@@ -54,6 +61,9 @@ export function apply(ctx, config = {}) {
     top: config.top ?? 20,
     out: config.out ?? 'site',
     push: config.push !== false,
+    // The pipeline syncs the bond board by default; `cb: false` only opts out
+    // (the plugin passes --no-cb, it never runs the bond step itself).
+    cb: config.cb !== false,
     timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
     remindTime: config.remindTime ?? DEFAULT_REMIND_TIME,
     timeZone: config.timeZone ?? 'Asia/Shanghai',
@@ -89,9 +99,10 @@ export function apply(ctx, config = {}) {
    * Run the pipeline and report the result.
    *
    * @param {boolean} push - Whether this run should publish.
+   * @param {boolean} cb - Whether this run should sync the bond board.
    * @returns {Promise<object>} A structured run result.
    */
-  const performSync = async (push) => {
+  const performSync = async (push, cb) => {
     if (running !== null) {
       return { ok: false, busy: true, message: '已有同步在进行中，请等待其完成。' }
     }
@@ -100,25 +111,29 @@ export function apply(ctx, config = {}) {
       try {
         projectDir = await resolveProjectDir(settings.projectDir)
         const startedAt = new Date().toISOString()
-        await log(projectDir, '[' + startedAt + '] sync start push=' + push)
+        await log(projectDir, '[' + startedAt + '] sync start push=' + push + ' cb=' + cb)
         const result = await runSitePipeline({
           projectDir,
           db: settings.db,
           top: settings.top,
           out: settings.out,
           push,
+          cb,
           timeoutMs: settings.timeoutMs,
         })
         const latest = await readLatestTradeDate(join(projectDir, settings.db)).catch(() => '')
         const published = await readPublishedDate(join(projectDir, settings.out, 'data')).catch(() => '')
-        const message = summarize(result, latest, published)
+        // A database created before the bond tables existed has no cb_picks;
+        // that is a legitimate state, so an unreadable date degrades to ''.
+        const cbLatest = await readCbLatestDate(join(projectDir, settings.db)).catch(() => '')
+        const message = summarize(result, latest, published, cbLatest)
         await log(projectDir, '[' + new Date().toISOString() + '] sync end ok=' + result.ok + ' code=' + result.code)
         // Keep the tail of a failed run next to the outcome: the button only
         // shows the summary, so without this the reason is lost.
         if (!result.ok) {
           await log(projectDir, result.output.split('\n').slice(-40).join('\n'))
         }
-        return { ok: result.ok, result, latest, published, message }
+        return { ok: result.ok, result, latest, published, cbLatest, message }
       } catch (error) {
         const message = '同步失败：' + (error instanceof Error ? error.message : String(error))
         if (projectDir !== '') await log(projectDir, '[' + new Date().toISOString() + '] ' + message)
@@ -127,6 +142,7 @@ export function apply(ctx, config = {}) {
           result: { ok: false, code: -1, output: String(error), timedOut: false },
           latest: '',
           published: '',
+          cbLatest: '',
           message,
         }
       }
@@ -142,7 +158,7 @@ export function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'a_finder_sync',
     description:
-      '同步 a-finder 沪深300 行情数据：抓取最新交易日行情、重算选股榜单、导出静态站点并推送到 gh-pages。' +
+      '同步 a-finder 沪深300 行情数据：抓取最新交易日行情、重算选股榜单、同步可转债榜单、导出静态站点并推送到 gh-pages。' +
       '在用户要求「补齐今天数据」「同步行情」「发布站点」时调用。返回本次同步的结果摘要与最新数据日期。',
     parameters: {
       type: 'object',
@@ -151,12 +167,17 @@ export function apply(ctx, config = {}) {
           type: 'boolean',
           description: '是否推送到 gh-pages；默认 true。只想更新本地数据时传 false。',
         },
+        cb: {
+          type: 'boolean',
+          description: '是否同步可转债榜单；默认 true。只想更新股票行情与选股时传 false。',
+        },
       },
     },
     output: TOOL_OUTPUT,
     async execute(args) {
       const push = args?.push === undefined ? settings.push : Boolean(args.push)
-      const outcome = await performSync(push)
+      const cb = args?.cb === undefined ? settings.cb : Boolean(args.cb)
+      const outcome = await performSync(push, cb)
       return outcome.message
     },
   })
@@ -213,20 +234,23 @@ export function apply(ctx, config = {}) {
               const projectDir = await resolveProjectDir(settings.projectDir)
               const latest = await readLatestTradeDate(join(projectDir, settings.db)).catch(() => '')
               const published = await readPublishedDate(join(projectDir, settings.out, 'data')).catch(() => '')
-              send(200, { ok: true, running: running !== null, latest, published })
+              const cb = await readCbLatestDate(join(projectDir, settings.db)).catch(() => '')
+              send(200, { ok: true, running: running !== null, latest, published, cb })
               return
             }
 
             if (path === '/sync') {
               const body = await readJsonBody(req)
               const push = body.push === undefined ? settings.push : Boolean(body.push)
-              const outcome = await performSync(push)
+              const cb = body.cb === undefined ? settings.cb : Boolean(body.cb)
+              const outcome = await performSync(push, cb)
               send(outcome.ok ? 200 : 500, {
                 ok: outcome.ok,
                 busy: outcome.busy === true,
                 message: outcome.message,
                 latest: outcome.latest ?? '',
                 published: outcome.published ?? '',
+                cb: outcome.cbLatest ?? '',
               })
               return
             }

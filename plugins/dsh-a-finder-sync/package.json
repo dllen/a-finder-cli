@@ -1,7 +1,7 @@
 {
   "name": "dsh-a-finder-sync",
-  "version": "0.2.0",
-  "description": "a-finder 沪深300 行情同步：每天 17:00 自动提醒 + Web GUI 一键同步并推送到 gh-pages",
+  "version": "0.3.0",
+  "description": "a-finder 沪深300 行情与可转债榜单同步：每天 17:00 自动提醒 + Web GUI 一键同步并推送到 gh-pages",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
