@@ -34,6 +34,8 @@ from app import (
     list_dates,
     picks_for_date,
     latest_close_map,
+    latest_price_date,
+    daily_change_map,
     _dt_class,
 )
 
@@ -280,19 +282,26 @@ def export(db_path: str, out_dir: str) -> int:
     conn = open_db(db_path)
     try:
         pick_dates = list_dates(conn)
-        # 与 /api/picks 同构：涨跌% 由「最新收盘 / 买入价」算，静态站不能少这一列
+        # 与 /api/picks 同构：day_pct = 榜单日当日涨跌；ret_pct = 最新收盘/买入价-1。
+        # 静态站与 API 的字段必须一致，否则同一页面两种部署模式显示不同数字。
         close_map = latest_close_map(conn)
+        latest_date = latest_price_date(conn)
 
         # JSON payloads (mirror the Flask API responses)
         json.dump({"dates": pick_dates}, (data_dir / "dates.json").open("w"), ensure_ascii=False)
         for d in pick_dates:
             groups = {}
+            day_chg = daily_change_map(conn, d)
             for row in picks_for_date(conn, d):
                 close = close_map.get(row["code"])
+                # 榜单日 == 最新行情日 ⇒ 买入价就是当天收盘，自买入收益必然为 0；
+                # 显示 0.00% 会被当成数据坏了，置 None（前端显示 —）。
                 row["ret_pct"] = (
                     round((close / row["buy"] - 1) * 100, 2)
-                    if (close and row["buy"]) else None
+                    if (close and row["buy"] and d < latest_date) else None
                 )
+                dp = day_chg.get(row["code"])
+                row["day_pct"] = round(dp, 2) if dp is not None else None
                 groups.setdefault(row["kind"], []).append(row)
             json.dump(
                 {"date": d, "groups": groups},

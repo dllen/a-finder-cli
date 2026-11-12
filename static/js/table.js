@@ -22,8 +22,8 @@ function retParts(v) {
   return { cls, text: (v > 0 ? '+' : '') + v.toFixed(2) };
 }
 
-export function retCell(r) {
-  const { cls, text } = retParts(r.ret_pct);
+function pctCell(v) {
+  const { cls, text } = retParts(v);
   return `<td class="num ${cls}">${text}</td>`;
 }
 
@@ -73,7 +73,7 @@ export function renderPicksBoard(container, groups, cols, sortState, filterText)
         `<td class="code">${esc(r.code)}</td><td class="name">${esc(r.name)}</td>` +
         `<td class="strategy">${esc(r.strategy)}</td>` +
         `<td class="num">${fmt(r.buy)}</td><td class="num">${fmt(r.stop)}</td><td class="num">${fmt(r.target)}</td>` +
-        retCell(r) +
+        pctCell(r.day_pct) + pctCell(r.ret_pct) +
         `<td class="num"><span class="score">${r.score == null ? '无' : r.score}</span></td></tr>`;
     });
     html += '</tbody></table></div>';
@@ -81,6 +81,7 @@ export function renderPicksBoard(container, groups, cols, sortState, filterText)
     html += '<ul class="ledger-list">';
     rows.forEach((r, i) => {
       const top = r.score != null && r.score === topScore;
+      const day = retParts(r.day_pct);
       const ret = retParts(r.ret_pct);
       html += '<li class="ledger-row">' +
         '<div class="ledger-row__head">' +
@@ -88,13 +89,14 @@ export function renderPicksBoard(container, groups, cols, sortState, filterText)
         `<span class="code">${esc(r.code)}</span>` +
         `<span class="ledger-row__name">${esc(r.name)}</span>` +
         `<span class="score${top ? ' is-top' : ''}">${r.score == null ? '无' : r.score}</span>` +
-        `<span class="ret ${ret.cls}">${ret.text}</span>` +
+        `<span class="ret ${day.cls}">${day.text}</span>` +
         '</div>' +
         '<div class="kv-grid">' +
         `<span class="k">策略</span><span class="v wrap">${esc(r.strategy)}</span>` +
         `<span class="k">买入</span><span class="v">${fmt(r.buy)}</span>` +
         `<span class="k">止损</span><span class="v">${fmt(r.stop)}</span>` +
         `<span class="k">目标</span><span class="v">${fmt(r.target)}</span>` +
+        `<span class="k">收益</span><span class="v ${ret.cls}">${ret.text}</span>` +
         '</div></li>';
     });
     html += '</ul></section>';

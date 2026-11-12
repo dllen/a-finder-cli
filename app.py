@@ -97,6 +97,49 @@ def latest_close_map(conn):
     return {r[0]: r[1] for r in rows}
 
 
+def latest_price_date(conn) -> str:
+    """库里最后一个行情交易日；没有任何行情时返回空串。"""
+    row = conn.execute("SELECT MAX(trade_date) FROM daily_prices").fetchone()
+    return row[0] if row and row[0] else ""
+
+
+def daily_change_map(conn, date):
+    """该交易日各股的当日涨跌幅（%），键是 code。
+
+    优先用落库的 pct_change（交易所口径，除权日也是对的）。但**整天全 0** 必须
+    当成「字段缺失」而不是「全体平盘」：2026-11-05 实测 300 只 pct_change 全是
+    0，而收盘价有涨有跌 —— 备源（新浪）只给 OHLC/成交量，缺字段被静默写成了 0。
+    这时改用「收盘 / 前一交易日收盘」自算：宁可极端除权日有一点口径误差，也不能
+    把一整天的涨跌在页面上显示成 0.00%（那正是用户会当成数据坏了的形态）。
+    """
+    rows = conn.execute(
+        "SELECT code, close, pct_change FROM daily_prices WHERE trade_date = ?",
+        (date,),
+    ).fetchall()
+    if not rows:
+        return {}
+
+    prev_rows = conn.execute(
+        "SELECT d.code, d.close, p.close FROM daily_prices d "
+        "LEFT JOIN daily_prices p ON p.code = d.code AND p.trade_date = ("
+        "  SELECT MAX(trade_date) FROM daily_prices "
+        "  WHERE code = d.code AND trade_date < d.trade_date) "
+        "WHERE d.trade_date = ?",
+        (date,),
+    ).fetchall()
+    fallback = {
+        code: (round((close / prev_close - 1) * 100, 4) if (close and prev_close) else None)
+        for code, close, prev_close in prev_rows
+    }
+
+    stored = [r[2] for r in rows if r[2] is not None]
+    if stored and all(v == 0 for v in stored):
+        # 整天全 0 = 字段缺失，不是全体平盘
+        return fallback
+    # 个别行缺 pct_change 时也回退到自算，别让单行显示「无」
+    return {r[0]: (r[2] if r[2] is not None else fallback.get(r[0])) for r in rows}
+
+
 def create_app(db_path="hs300.db", top=10):
     app = Flask(__name__)
 
@@ -130,9 +173,20 @@ def create_app(db_path="hs300.db", top=10):
         groups = {}
         if date:
             lc = latest_close_map(conn)
+            latest_date = latest_price_date(conn)
+            day_chg = daily_change_map(conn, date)
             for row in picks_for_date(conn, date):
+                # 自买入以来收益：榜单日就是最新行情日时，买入价 == 当天收盘，
+                # 还没有「之后」的收盘 ⇒ 收益恒等于 0。显示 0.00% 会被误读成数据
+                # 坏了，所以置 None（前端显示 —），等下一个交易日再算。
                 c = lc.get(row["code"])
-                row["ret_pct"] = round((c / row["buy"] - 1) * 100, 2) if (c and row["buy"]) else None
+                row["ret_pct"] = (
+                    round((c / row["buy"] - 1) * 100, 2)
+                    if (c and row["buy"] and date < latest_date) else None
+                )
+                # 当日涨跌：始终有数，默认榜单（最新交易日）也能看出各票当天表现
+                dp = day_chg.get(row["code"])
+                row["day_pct"] = round(dp, 2) if dp is not None else None
                 groups.setdefault(row["kind"], []).append(row)
         conn.close()
         return jsonify({"date": date, "groups": groups})

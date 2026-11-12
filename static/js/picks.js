@@ -13,7 +13,11 @@ const PICKS_COLS = [
   { key: 'buy',      label: '买入', type: 'num',  cls: 'num' },
   { key: 'stop',     label: '止损', type: 'num',  cls: 'num' },
   { key: 'target',   label: '目标', type: 'num',  cls: 'num' },
-  { key: 'ret_pct',  label: '涨跌%', type: 'num', cls: 'num' },
+  // 涨跌% = 榜单交易日当天的涨跌幅；收益% = 最新收盘相对买入价。
+  // 两列分开是为了解决「默认（最新）榜单上涨跌% 恒为 0.00%」：买入价就是
+  // 当天收盘，自买入收益在那一天必然是 0，真正的涨跌要看 day_pct。
+  { key: 'day_pct',  label: '涨跌%', type: 'num', cls: 'num' },
+  { key: 'ret_pct',  label: '收益%', type: 'num', cls: 'num' },
   { key: 'score',    label: '评分', type: 'num',  cls: 'num' },
 ];
 
