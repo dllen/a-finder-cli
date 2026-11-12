@@ -89,3 +89,64 @@ def test_main_exits_zero_when_something_produced(tmp_path, monkeypatch):
                         ["pick_history.py", "--db", db, "--no-sync",
                          "--date", "2026-10-30"])
     ph.main()
+
+
+# ---------------------------------------------------------------- 买入信号榜的策略覆盖
+
+
+def _stock(code: str, prices):
+    """构造一只只含价格/成交量的 Stock（买信号只看这两个字段）。"""
+    from domain_models import Stock
+
+    return Stock(
+        code=code, name=code, pe=10.0, pb=1.0, peg=1.0,
+        revenue_growth=0.0, profit_growth=0.0, roe=0.0, cashflow=0.0,
+        prices=list(prices), volumes=[1_000_000] * len(prices),
+    )
+
+
+def _rising(n: int = 70, start: float = 100.0, step: float = 0.1):
+    """稳步上涨：触发「回调买入」（ma20>ma60 且贴近 ma20），RSI 为 100。"""
+    return [round(start + step * i, 2) for i in range(n)]
+
+
+def _falling(n: int = 70, start: float = 140.0, step: float = 0.5):
+    """单边下跌：RSI(14) < 30，且 ma20<ma60（不会触发回调买入）。"""
+    return [round(start - step * i, 2) for i in range(n)]
+
+
+def test_buy_board_keeps_one_slot_per_fired_strategy():
+    """回归（2026-11-12 用户报「RSI超卖 这个策略没有数据」）。
+
+    排序键是 (信号个数, -策略优先级, 20日动量)：RSI超卖 优先级最低（4），
+    且「超卖」本身意味着动量为负 ⇒ 候选 ≥ top 时被 100% 挤出买入信号榜。
+    修复：每个作为主策略出现的策略至少保留 1 个名额。
+    """
+    callback = [_stock(f"60{i:04d}", _rising()) for i in range(25)]
+    oversold = [_stock("300001", _falling())]
+
+    picks = ph.build_buy_picks(callback + oversold, top=20)
+
+    assert len(picks) == 20, picks
+    strategies = [p["strategy"] for p in picks]
+    assert "RSI超卖" in strategies, (
+        "RSI超卖 有信号却被 top-20 挤没了 —— 每个触发的策略必须至少占 1 个名额"
+    )
+    # 覆盖不能破坏排名连续性（rank 仍是 1..20，被捞回来的按原排名落位）
+    assert [p["rank"] for p in picks] == list(range(1, 21))
+
+
+def test_buy_board_without_oversold_is_unchanged():
+    """没有 RSI 候选时，覆盖逻辑不能改变原有 top-N 结果。"""
+    stocks = [_stock(f"60{i:04d}", _rising()) for i in range(10)]
+    picks = ph.build_buy_picks(stocks, top=20)
+    assert len(picks) == 10
+    assert {p["strategy"] for p in picks} == {"回调买入"}
+
+
+def test_buy_board_coverage_respects_small_top():
+    """top 比策略数还小时只取 top 条，不许越界。"""
+    callback = [_stock(f"60{i:04d}", _rising()) for i in range(5)]
+    oversold = [_stock("300001", _falling())]
+    picks = ph.build_buy_picks(callback + oversold, top=1)
+    assert len(picks) == 1

@@ -99,6 +99,38 @@ def _build_ma_fallback(stocks, top: int) -> List[Dict]:
     return picks
 
 
+def _take_ranked_with_strategy_coverage(ranked, top: int):
+    """按排名取前 top 条，但保证**每个作为主策略出现的买信号策略至少 1 个名额**。
+
+    为什么需要它（用户报「RSI超卖 这个策略没有数据」的根因）：
+    排序键是 (信号个数, -策略优先级, 20日动量)。RSI超卖 在
+    BUY_STRATEGY_PRIORITY 里优先级最低（4），而「超卖」本身就意味着 20 日
+    动量为负 ⇒ 在 top 名额里双重垫底。只要当天有 ≥ top 个「均线突破/回调买入」
+    候选，它就会被 100% 挤掉 —— 2026-11-12 实测：4 只 RSI(14)<30 的票在
+    67 个候选里排 64~67，买入信号榜一条都没有，页面看起来就是「策略没有数据」，
+    其实信号是有的。
+    覆盖后仍按原排名顺序输出（rank 连续），只是把被挤掉的策略代表捞回来。
+    """
+    if top <= 0 or not ranked:
+        return []
+    chosen = []
+    seen = set()
+    for idx, entry in enumerate(ranked):
+        strategy = entry[4]
+        if strategy in seen:
+            continue
+        seen.add(strategy)
+        chosen.append(idx)
+        if len(chosen) >= top:
+            break
+    for idx in range(len(ranked)):
+        if len(chosen) >= top:
+            break
+        if idx not in chosen:
+            chosen.append(idx)
+    return [ranked[i] for i in sorted(chosen)]
+
+
 def build_buy_picks(stocks, top: int) -> List[Dict]:
     from signal_rules import score_signal_strength
     ranked = []
@@ -119,7 +151,9 @@ def build_buy_picks(stocks, top: int) -> List[Dict]:
         ranked.append((len(buys), -priority, momentum, stock, primary["strategy"], buy, stop, target))
     ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     picks = []
-    for rank, (_, _, _, stock, strategy, buy, stop, target) in enumerate(ranked[:top], start=1):
+    for rank, (_, _, _, stock, strategy, buy, stop, target) in enumerate(
+        _take_ranked_with_strategy_coverage(ranked, top), start=1
+    ):
         signals_dict = {"买入": [s["strategy"] for s in detect_signals(stock) if s["action"] == "买入"],
                         "卖出": [s["strategy"] for s in detect_signals(stock) if s["action"] == "卖出"]}
         score_total = score_signal_strength(stock, signals_dict).total
