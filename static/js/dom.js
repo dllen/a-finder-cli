@@ -4,6 +4,18 @@ export function $(id) { return document.getElementById(id); }
 
 export function fmt(v) { return v == null ? '无' : Number(v).toFixed(2); }
 
+// 评分：各榜单原始精度不一（买入信号 2 位、均线/信号策略/多因子 4 位、
+// 转债分组分还有 91.6667 这种循环小数），直接打印像没格式化过。
+// 一条规则：整数原样，其余保留 1 位。只影响显示，不参与排序/比较。
+export function fmtScore(v) {
+  if (v == null) return '无';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '无';
+  // 表格列是右对齐等宽数字：精度必须一致，小数点才排成一条线
+  // （之前 strip 掉 ".0" 会让 120 和 113.1 错位 —— review 抓到的）
+  return n.toFixed(1);
+}
+
 export function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]

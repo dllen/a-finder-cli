@@ -23,6 +23,15 @@ const PICKS_COLS = [
 
 const state = { data: null, sort: { key: 'score', dir: -1 }, filter: '' };
 
+// 统计面板：胜率 1 位、平均收益 2 位，和 API 的精度一致。否则同一列会出现
+// 「41 / 46.8」「+1 / +1.6 / -1.35」这种像没格式化的读数（review 抓到的）。
+function rate(v) { return v == null ? '无' : Number(v).toFixed(1); }
+function signedRet(v) {
+  if (v == null) return '无';
+  const n = Number(v);
+  return (n > 0 ? '+' : '') + n.toFixed(2);
+}
+
 function drawBoard() {
   const groups = (state.data && state.data.groups) || {};
   const board = $('board');
@@ -47,10 +56,9 @@ function drawStats(d) {
       '<th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
     strategies.forEach(r => {
       const cls = r.expectancy > 0 ? 'up' : (r.expectancy < 0 ? 'down' : 'flat');
-      const sign = r.expectancy > 0 ? '+' : '';
       html += `<tr><td>${esc(r.strategy)}</td><td class="num">${r.n}</td>` +
-        `<td class="num">${r.win_rate}</td>` +
-        `<td class="num ${cls}">${sign}${r.expectancy}</td></tr>`;
+        `<td class="num">${rate(r.win_rate)}</td>` +
+        `<td class="num ${cls}">${signedRet(r.expectancy)}</td></tr>`;
     });
     html += '</tbody></table></section>';
   }
@@ -61,10 +69,9 @@ function drawStats(d) {
       '<th class="num">胜率%</th><th class="num">平均收益%</th></tr></thead><tbody>';
     monthly.forEach(m => {
       const cls = m.avg_ret > 0 ? 'up' : (m.avg_ret < 0 ? 'down' : 'flat');
-      const sign = m.avg_ret > 0 ? '+' : '';
       html += `<tr><td class="mono">${esc(m.month)}</td><td class="num">${m.n}</td>` +
-        `<td class="num">${m.win_rate}</td>` +
-        `<td class="num ${cls}">${sign}${m.avg_ret}</td></tr>`;
+        `<td class="num">${rate(m.win_rate)}</td>` +
+        `<td class="num ${cls}">${signedRet(m.avg_ret)}</td></tr>`;
     });
     html += '</tbody></table></section>';
   }
@@ -148,10 +155,32 @@ document.addEventListener('DOMContentLoaded', () => {
   if (dateSelect) dateSelect.addEventListener('change', () => render(dateSelect.value));
 
   const searchInput = $('q');
-  if (searchInput) searchInput.addEventListener('input', () => {
-    state.filter = searchInput.value.trim();
+  const searchClear = $('q-clear');
+  const syncClear = () => {
+    if (searchClear) searchClear.hidden = !(searchInput && searchInput.value);
+  };
+  const clearSearch = () => {
+    if (!searchInput) return;
+    searchInput.value = '';
+    state.filter = '';
+    syncClear();
     drawBoard();
-  });
+    searchInput.focus();
+  };
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      state.filter = searchInput.value.trim();
+      syncClear();
+      drawBoard();
+    });
+    // 原生 search 清空（部分浏览器仍会触发）与 Escape 都走同一条清空路径
+    searchInput.addEventListener('search', syncClear);
+    searchInput.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && searchInput.value) clearSearch();
+    });
+  }
+  if (searchClear) searchClear.addEventListener('click', clearSearch);
+  syncClear();
 
   const sortSelect = $('sort-select');
   if (sortSelect) sortSelect.addEventListener('change', () => {

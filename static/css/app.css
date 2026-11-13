@@ -1,7 +1,8 @@
-/* Hallmark · shape: app screen · genre: modern-minimal · theme: Console (deal 2/3, seed daily-a-share-stock-picks-4d76, 2026-11-05, r0) · redesign: full
- * nav: one rule-separated bar, a ledger mark and two quiet links, the current page on a 2px amber underline · signature: the selected trading day set as a reading in the measured face, the freshness and the bond register beside it · states: loading skeleton, empty, error and full on both screens, controls in eight states · console: graphite
- * axes: dark/grotesk-sans/chromatic-amber · posture: restrained · contrast: pass · v2.0.0 */
-/* Hallmark · pre-emit critique: P4 H5 E4 S4 R4 V4 · weakest: S, a board of tables could belong to any tracker · the trading day itself leads the sheet, A-share direction colours replace generic green-up, and the score ladder was cut down to one mark */
+/* Hallmark · checked: 2026-11-13 · genre: modern-minimal (inferred from the Console stamp) · scope: app · polish
+ * floor: 0 FAIL · reflex: 0 · fixed: 7 (uniform score precision · stats columns · time copy · 26b on three controls · select chrome · mobile card labels · search clear chrome) · structural: 3 printed (the 高胜率 board is never rendered; the CB empty state is said four times; 收益% is empty on the newest board) · v2.0.0 */
+/* Hallmark · built: Hallmark · theme: Console · hero: none (app screen) · nav: one rule-separated bar, a ledger mark and two quiet links, the current page on a 2px amber underline · footer: brand register, no disclaimer · redesign: polish
+ * signature kept: the selected trading day set as a reading in the measured face, the freshness and the bond register beside it · states: loading skeleton, empty, error and full on both screens, controls in eight states · console: graphite */
+/* Hallmark · pre-emit critique (kept record): P4 H5 E4 S4 R4 V4 · weakest: S, a board of tables could belong to any tracker · the trading day itself leads the sheet, A-share direction colours replace generic green-up, and the score ladder was cut down to one mark */
 /* Hallmark · reworded the footer register "沪深300 选股与可转债分析 · 数据仅供参考" to two lines · 63 names the middle dot */
 /* Hallmark · reworded "每日机会" to the trading day in the page head · the page name is already the wordmark and the h1's accessible name, the old heading printed it twice (kept record) */
 /* Hallmark · reworded "买入信号 Top 20", "均线 top 2", "信号策略 top 20", "多因子 top 20" to the group name with the count on the trailing edge · a count is data, not part of the name (kept record) */
@@ -47,8 +48,18 @@
 .app-nav__links{display:flex;align-items:center;gap:var(--space-xs);margin-left:auto}
 .nav-link{display:inline-flex;align-items:center;min-height:32px;padding:0 var(--space-sm);border-bottom:2px solid transparent;color:var(--color-muted);font-size:var(--text-sm);text-decoration:none;white-space:nowrap;transition:color var(--dur-micro) var(--ease-out)}
 .nav-link:hover{color:var(--color-ink)}
+.nav-link:active{color:var(--color-accent)}
 .nav-link[aria-current="page"]{color:var(--color-ink);border-bottom-color:var(--color-accent)}
 .nav-link:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px;border-radius:var(--radius-pill)}
+
+/* ---- risk band: the legal line, promoted out of the foot onto every screen ----
+   2026-11-13 用户要求「免责声明更醒目一些」：原先只有页脚一行 muted 小字，
+   长表格要滚到底才看得到。现在放在导航下方、两页首屏都可见；页脚不再重复同一句，
+   避免一页说两遍。 ---- */
+.risk-band{background:var(--color-paper-3);border-bottom:1px solid var(--color-rule);color:var(--color-ink-2)}
+.risk-band__inner{display:flex;align-items:center;gap:var(--space-sm);padding-block:var(--space-xs)}
+.risk-band__label{display:inline-flex;align-items:center;flex:none;min-height:22px;padding:0 var(--space-xs);background:var(--color-accent-soft);border:1px solid color-mix(in oklab,var(--color-accent) 40%,var(--color-rule));border-radius:var(--radius-pill);color:var(--color-accent);font-size:var(--text-xs);font-weight:500;line-height:1;white-space:nowrap}
+.risk-band__text{font-size:var(--text-sm);color:var(--color-ink-2);text-wrap:pretty}
 
 /* ---- shell: foot ---- */
 .app-footer{margin-top:var(--space-3xl);border-top:1px solid var(--color-rule);background:var(--color-paper-2);color:var(--color-ink-2)}
@@ -73,14 +84,28 @@
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm);margin-top:var(--space-lg);padding:var(--space-sm) var(--space-md);background:var(--color-paper-3);border:1px solid var(--color-rule);border-radius:var(--radius-card);color:var(--color-ink-2)}
 .toolbar .field--search{flex:1 1 16rem;min-width:0}
 .toolbar__actions{display:flex;align-items:center;gap:var(--space-xs);margin-left:auto}
-.toolbar__sort{display:none}
-.sort-select{width:100%;height:36px;padding:0 var(--space-sm);background:var(--color-paper);border:1px solid var(--color-muted);border-radius:var(--radius-pill);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-sm);font-weight:500;outline:2px solid transparent;outline-offset:-3px}
+.toolbar__sort{position:relative;display:none}
+.toolbar__sort::after{content:"";position:absolute;right:var(--space-md);top:50%;width:.42rem;height:.42rem;border-right:1.5px solid var(--color-muted);border-bottom:1.5px solid var(--color-muted);transform:translateY(-70%) rotate(45deg);pointer-events:none}
+.sort-select{appearance:none;-webkit-appearance:none;width:100%;height:36px;padding:0 var(--space-xl) 0 var(--space-sm);background:var(--color-paper);border:1px solid var(--color-muted);border-radius:var(--radius-pill);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-sm);font-weight:500;outline:2px solid transparent;outline-offset:-3px;cursor:pointer}
+.sort-select:hover{border-color:var(--color-ink-2)}
+.sort-select:active{background:var(--color-paper-3)}
 .sort-select:focus-visible{outline-color:var(--color-focus);border-color:var(--color-ink-2)}
+.sort-select:disabled{opacity:.55;cursor:not-allowed}
 .input{width:100%;height:36px;padding:0 var(--space-sm);background:var(--color-paper);border:1px solid var(--color-muted);border-radius:var(--radius-pill);color:var(--color-ink);font-size:var(--text-sm);outline:2px solid transparent;outline-offset:-3px;transition:background-color var(--dur-micro) var(--ease-out)}
 .input:hover{background:var(--color-paper-2)}
 .input:focus-visible{outline-color:var(--color-focus);border-color:var(--color-ink-2)}
 .input::placeholder{color:var(--color-muted)}
 .input:disabled{opacity:.55;cursor:not-allowed}
+.field--search{position:relative}
+.field--search .input{padding-right:var(--space-xl)}
+/* 原生搜索框的白色 ✕ 是浏览器自己的 chrome，和旁边自绘的控件不是一套；换成页面的清除按钮 */
+input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+.input-clear{position:absolute;right:var(--space-2xs);top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;background:transparent;border:0;border-radius:var(--radius-pill);color:var(--color-muted);cursor:pointer;transition:color var(--dur-micro) var(--ease-out),background-color var(--dur-micro) var(--ease-out)}
+.input-clear::before{content:"";position:absolute;inset:-6px}
+.input-clear:hover{background:var(--color-paper-3);color:var(--color-ink)}
+.input-clear:active{background:var(--color-paper-2)}
+.input-clear:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
+.input-clear__icon{width:12px;height:12px}
 
 .btn{position:relative;display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 var(--space-md);background:var(--color-paper-2);border:1px solid var(--color-rule-2);border-radius:var(--radius-pill);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-sm);font-weight:500;line-height:1;white-space:nowrap;text-decoration:none;cursor:pointer;transition:background-color var(--dur-micro) var(--ease-out),border-color var(--dur-micro) var(--ease-out),color var(--dur-micro) var(--ease-out),transform var(--dur-micro) var(--ease-out)}
 .btn::before{content:"";position:absolute;inset:-4px}
@@ -142,6 +167,7 @@
 .th-sort{display:flex;align-items:center;gap:var(--space-3xs);width:100%;min-height:36px;padding:var(--space-xs) var(--space-sm);background:none;border:0;color:inherit;font:inherit;text-align:left;cursor:pointer;white-space:nowrap}
 .ledger th.num .th-sort{justify-content:flex-end}
 .th-sort:hover{color:var(--color-ink)}
+.th-sort:active{color:var(--color-accent)}
 .th-sort:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px;border-radius:var(--radius-pill)}
 .sort-mark{display:inline-block;width:0;height:0;border-right:3px solid transparent;border-left:3px solid transparent;border-bottom:4px solid var(--color-accent);transform:translateY(-2px)}
 th[data-dir="desc"] .sort-mark{transform:translateY(-2px) rotate(180deg)}

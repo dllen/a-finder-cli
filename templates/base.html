@@ -15,12 +15,18 @@
 <body>
 <a class="skip" href="#main">跳到主要内容</a>
 {% include 'components/nav.html' %}
+{# 免责声明：从页脚一行 muted 小字提为导航下的全站提示条（2026-11-13，用户要求更醒目）。 #}
+<div class="risk-band" role="note">
+<div class="container risk-band__inner">
+<p class="risk-band__label">风险提示</p>
+<p class="risk-band__text">数据仅供参考，不构成投资建议</p>
+</div>
+</div>
 {% block body %}{% endblock %}
 <footer class="app-footer">
 <div class="container app-footer__inner">
 <p class="app-footer__brand">&copy; {{ year }} 每日机会</p>
 <p class="app-footer__note">沪深300 选股与可转债分析</p>
-<p class="app-footer__note">数据仅供参考，不构成投资建议</p>
 </div>
 </footer>
 {% include 'components/tip_modal.html' %}

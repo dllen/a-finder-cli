@@ -1,5 +1,17 @@
 [
  {
+  "mode": "redesign",
+  "depth": "polish",
+  "scope": "app",
+  "theme": "console",
+  "entry": "polish of the console picks board and bond register: uniform score precision, stats columns, time copy, control states, select chrome, labelled mobile cells, search clear chrome",
+  "prompt": "polish UI details of the daily A-share picks board and its bond register",
+  "fingerprint": "app: dark console, ledger tables, date-as-reading head, hairline records",
+  "waived": "none",
+  "date": "2026-11-13",
+  "fixed": "uniform score precision; stats columns; time copy; :active/:hover/:disabled on three controls; select chrome; labelled mobile cells; search clear chrome"
+ },
+ {
   "shape": "app screen",
   "theme": "console",
   "axes": "dark/grotesk-sans/chromatic-amber",

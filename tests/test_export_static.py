@@ -36,6 +36,25 @@ def test_static_mode_hides_write_controls():
     assert 'id="cb-refresh"' in cb_html
 
 
+def test_risk_note_renders_above_the_page_content():
+    """免责声明必须在页面内容之前（导航下方），不能只躺在页脚。
+
+    2026-11-13 用户要求「免责声明更醒目一些」：原先只有页脚一行 muted 小字，
+    长表格要滚到底才看得到。现在提为导航下的全站提示条，两页共用；
+    页脚不再重复同一句（一页只说一次）。
+    """
+    from export_json import _render_static_page
+
+    for page in ("picks.html", "cb.html"):
+        html = _render_static_page(page, today="2026-10-24", year=2026)
+        assert 'class="risk-band"' in html, page
+        assert "数据仅供参考，不构成投资建议" in html, page
+        # 位置：在 <main> 之前（导航下方、首屏可见），而不是只在 footer
+        assert html.index("risk-band") < html.index('id="main"'), page
+        # 只说一次：页脚不再重复
+        assert html.count("数据仅供参考，不构成投资建议") == 1, page
+
+
 def test_export_does_not_emit_retired_artifacts(tmp_path):
     """已下线功能的产物**不能**出现在导出里（含 holdings.json / plan / portfolio）。
 

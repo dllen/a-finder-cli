@@ -14,6 +14,13 @@ function freshnessChip(f) {
   return `<span class="${cls}">${label}</span>`;
 }
 
+// 「3.3 小时前更新」这种小数小时读着不像人话：<1h 换成分钟，其余取整。
+function agoLabel(hours) {
+  if (hours == null) return '';
+  if (hours < 1) return Math.max(1, Math.round(hours * 60)) + ' 分钟前更新';
+  return Math.round(hours) + ' 小时前更新';
+}
+
 function renderDashboard(d) {
   const lr = d.last_refresh || null;
   const cb = d.cb || null;
@@ -21,7 +28,7 @@ function renderDashboard(d) {
   const statusValue = lr
     ? `${freshnessChip(lr.freshness)} <span class="mono">${esc(lr.date)}</span>`
     : '<span class="record__meta">无数据</span>';
-  const statusMeta = lr ? `${lr.ago_hours} 小时前更新` : '';
+  const statusMeta = lr ? agoLabel(lr.ago_hours) : '';
 
   const cbValue = cb
     ? `<span class="mono">${cb.picks_count}</span> 只榜单 <span class="mono">${cb.positions_count}</span> 只持仓`

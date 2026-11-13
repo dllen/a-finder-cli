@@ -1,6 +1,6 @@
 // Shared ledger rendering and sorting for both screens.
 
-import { esc, fmt } from './dom.js';
+import { esc, fmt, fmtScore } from './dom.js';
 
 export function sortRows(rows, key, dir, cols) {
   if (!key) return rows;
@@ -74,7 +74,7 @@ export function renderPicksBoard(container, groups, cols, sortState, filterText)
         `<td class="strategy">${esc(r.strategy)}</td>` +
         `<td class="num">${fmt(r.buy)}</td><td class="num">${fmt(r.stop)}</td><td class="num">${fmt(r.target)}</td>` +
         pctCell(r.day_pct) + pctCell(r.ret_pct) +
-        `<td class="num"><span class="score">${r.score == null ? '无' : r.score}</span></td></tr>`;
+        `<td class="num"><span class="score">${fmtScore(r.score)}</span></td></tr>`;
     });
     html += '</tbody></table></div>';
 
@@ -88,15 +88,16 @@ export function renderPicksBoard(container, groups, cols, sortState, filterText)
         `<span class="rank">${i + 1}</span>` +
         `<span class="code">${esc(r.code)}</span>` +
         `<span class="ledger-row__name">${esc(r.name)}</span>` +
-        `<span class="score${top ? ' is-top' : ''}">${r.score == null ? '无' : r.score}</span>` +
-        `<span class="ret ${day.cls}">${day.text}</span>` +
+        `<span class="score${top ? ' is-top' : ''}">${fmtScore(r.score)}</span>` +
         '</div>' +
         '<div class="kv-grid">' +
         `<span class="k">策略</span><span class="v wrap">${esc(r.strategy)}</span>` +
         `<span class="k">买入</span><span class="v">${fmt(r.buy)}</span>` +
         `<span class="k">止损</span><span class="v">${fmt(r.stop)}</span>` +
         `<span class="k">目标</span><span class="v">${fmt(r.target)}</span>` +
-        `<span class="k">收益</span><span class="v ${ret.cls}">${ret.text}</span>` +
+        `<span class="k">涨跌</span><span class="v ${day.cls}">${day.text}</span>` +
+        // 收益只在有「之后」的收盘时才有意义；最新榜单那天没有，就不占一行
+        (r.ret_pct == null ? '' : `<span class="k">收益</span><span class="v ${ret.cls}">${ret.text}</span>`) +
         '</div></li>';
     });
     html += '</ul></section>';

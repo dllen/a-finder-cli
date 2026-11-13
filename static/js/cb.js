@@ -1,7 +1,7 @@
 // 可转债页面：榜单 + 持仓 + 强赎预警
 
 import { fetchCbPicks, fetchCbPositions, fetchCbAlerts, fetchCbDates } from './api.js';
-import { $, fmt, esc, setStatus } from './dom.js';
+import { $, fmt, esc, setStatus, fmtScore } from './dom.js';
 import { setDateFilterState } from './date-filter.js';
 
 const view = { pickRows: [], pickDate: '', positions: [], alerts: [], alertsAt: '' };
@@ -116,10 +116,10 @@ export function renderPicks(date, rows) {
       `<td class="rank-col"><span class="rank">${i + 1}</span></td>` +
       `<td class="code">${esc(r.code)}</td><td class="name">${esc(r.name)}</td>` +
       `<td class="num">${fmt(r.price)}</td>` +
-      `<td class="num"><span class="score">${r.total_score == null ? '无' : r.total_score}</span></td>` +
-      `<td class="num">${r.a_score == null ? '无' : r.a_score}</td>` +
-      `<td class="num">${r.b_score == null ? '无' : r.b_score}</td>` +
-      `<td class="num">${r.c_score == null ? '无' : r.c_score}</td>` +
+      `<td class="num"><span class="score">${fmtScore(r.total_score)}</span></td>` +
+      `<td class="num">${fmtScore(r.a_score)}</td>` +
+      `<td class="num">${fmtScore(r.b_score)}</td>` +
+      `<td class="num">${fmtScore(r.c_score)}</td>` +
       `<td class="num">${pct(r.size_pct)}</td>` +
       `<td class="num">${r.shares}</td>` +
       `<td class="num">${fmt(r.stop_price)}</td>` +
@@ -137,14 +137,14 @@ export function renderPicks(date, rows) {
       `<span class="rank">${i + 1}</span>` +
       `<span class="code">${esc(r.code)}</span>` +
       `<span class="ledger-row__name">${esc(r.name)}</span>` +
-      `<span class="score${top ? ' is-top' : ''}">${r.total_score == null ? '无' : r.total_score}</span>` +
+      `<span class="score${top ? ' is-top' : ''}">${fmtScore(r.total_score)}</span>` +
       '</div>' +
       '<div class="kv-grid">' +
       `<span class="k">现价</span><span class="v">${fmt(r.price)}</span>` +
       `<span class="k">仓位</span><span class="v">${pct(r.size_pct)}</span>` +
-      `<span class="k">债底</span><span class="v">${r.a_score == null ? '无' : r.a_score}</span>` +
-      `<span class="k">股性</span><span class="v">${r.b_score == null ? '无' : r.b_score}</span>` +
-      `<span class="k">条款</span><span class="v">${r.c_score == null ? '无' : r.c_score}</span>` +
+      `<span class="k">债底</span><span class="v">${fmtScore(r.a_score)}</span>` +
+      `<span class="k">股性</span><span class="v">${fmtScore(r.b_score)}</span>` +
+      `<span class="k">条款</span><span class="v">${fmtScore(r.c_score)}</span>` +
       `<span class="k">张数</span><span class="v">${r.shares}</span>` +
       `<span class="k">止损</span><span class="v">${fmt(r.stop_price)}</span>` +
       `<span class="k">止盈</span><span class="v">${fmt(r.tp_price)}</span>` +
