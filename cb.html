@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>可转债榜单</title>
+<meta name="description" content="可转债独立仓：转债榜单、持仓与强赎预警。">
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg?v=6a996de">
+<link rel="stylesheet" href="static/vendor/bootstrap.min.css?v=6a996de">
+<link rel="stylesheet" href="static/css/tokens.css?v=6a996de">
+<link rel="stylesheet" href="static/css/base.css?v=6a996de">
+<link rel="stylesheet" href="static/css/app.css?v=6a996de">
+<link rel="stylesheet" href="static/css/date-filter.css?v=6a996de">
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<nav class="app-nav" aria-label="主导航">
+<div class="container app-nav__inner">
+<a class="wordmark" href="/">
+<svg class="wordmark__mark" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+<path class="spine" d="M3 3v14"/>
+<path class="axis" d="M6.5 5.5h9M6.5 10h7M6.5 14.5h4.5"/>
+</svg>
+<span>每日机会</span>
+</a>
+<div class="app-nav__links">
+<a class="nav-link" data-nav="picks" href="/" >每日机会</a>
+<a class="nav-link" data-nav="cb" href="/cb" aria-current="page">可转债</a>
+<button type="button" class="tip-button" data-bs-toggle="modal" data-bs-target="#tipModal" aria-label="赞赏支持" title="赞赏支持">
+<svg class="tip-button__icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+<path d="M4 5h8.4v4.3a3.8 3.8 0 0 1-3.8 3.8H7.8a3.8 3.8 0 0 1-3.8-3.8V5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+<path d="M12.4 6.2h1.4a2.2 2.2 0 0 1 0 4.4h-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+<path d="M5.4 15h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>
+</button>
+</div>
+</div>
+</nav>
+
+<div class="risk-band" role="note">
+<div class="container risk-band__inner">
+<p class="risk-band__label">风险提示</p>
+<p class="risk-band__text">数据仅供参考，不构成投资建议</p>
+</div>
+</div>
+
+<main class="container page" id="main">
+<header class="screen-head">
+<h1>可转债</h1>
+<p class="screen-head__note">独立转债仓</p>
+<div class="screen-head__tools">
+<div class="date-filter date-filter--compact"
+     data-date-filter data-select-id="cb-date">
+  <label class="date-filter__label" for="cb-date">日期</label>
+  <div class="date-filter__control">
+    <button type="button" class="date-filter__step" data-step="-1"
+            aria-label="前一交易日" aria-controls="cb-date" disabled>
+      <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M10 12 6 8l4-4" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <div class="date-filter__field">
+      <select id="cb-date" class="date-filter__select"></select>
+    </div>
+    <button type="button" class="date-filter__step" data-step="1"
+            aria-label="后一交易日" aria-controls="cb-date" disabled>
+      <svg class="date-filter__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+  <button type="button" class="date-filter__latest" hidden>回到最新</button>
+  <span class="date-filter__status" role="status" aria-live="polite"></span>
+</div>
+<button id="cb-refresh" class="btn btn--quiet write-control" type="button">刷新</button>
+</div>
+</header>
+
+<div id="cb-summary" class="figures"></div>
+
+<section class="block" aria-labelledby="cb-holdings-title">
+<div class="block__head">
+<h2 id="cb-holdings-title">持仓与预警</h2>
+</div>
+<div id="cb-alerts"></div>
+<div id="cb-positions"></div>
+</section>
+
+<section class="block" aria-labelledby="cb-board-title">
+<div class="block__head">
+<h2 id="cb-board-title">转债榜单</h2>
+</div>
+<div id="cb-board"></div>
+</section>
+</main>
+
+<footer class="app-footer">
+<div class="container app-footer__inner">
+<p class="app-footer__brand">&copy; 2026 每日机会</p>
+<p class="app-footer__note">沪深300 选股与可转债分析</p>
+</div>
+</footer>
+
+<div class="modal fade" id="tipModal" tabindex="-1" aria-labelledby="tipModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="tipModalLabel">赞赏支持</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <p class="tip-lede">如果这个站点对你有帮助，可以扫码赞赏一杯咖啡。纯属自愿，不影响任何功能。</p>
+        <div class="tip-switch">
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-alipay" checked>
+          <label class="tip-switch__label" for="tip-alipay">支付宝</label>
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-wechat">
+          <label class="tip-switch__label" for="tip-wechat">微信支付</label>
+          <div class="row g-3 text-center tip-panes">
+            <div class="col-12 col-sm-6 tip-pane tip-pane--alipay">
+              <a class="tip-qr-link" href="static/images/alipay-qr.jpeg?v=6a996de" target="_blank" rel="noopener" aria-label="打开支付宝收款码原图">
+                <img src="static/images/alipay-qr.jpeg?v=6a996de" class="tip-qr" alt="支付宝收款码"
+                     width="1156" height="1156" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">支付宝</p>
+              <p class="tip-caption">支付宝扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="static/images/alipay-qr.jpeg?v=6a996de" download="alipay-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="static/images/alipay-qr.jpeg?v=6a996de" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
+            <div class="col-12 col-sm-6 tip-pane tip-pane--wechat">
+              <a class="tip-qr-link" href="static/images/wechat-qr.jpeg?v=6a996de" target="_blank" rel="noopener" aria-label="打开微信收款码原图">
+                <img src="static/images/wechat-qr.jpeg?v=6a996de" class="tip-qr" alt="微信支付收款码"
+                     width="387" height="387" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">微信支付</p>
+              <p class="tip-caption">微信扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="static/images/wechat-qr.jpeg?v=6a996de" download="wechat-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="static/images/wechat-qr.jpeg?v=6a996de" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
+          </div>
+        </div>
+        <p class="tip-caption tip-hint">电脑可直接扫码；手机点「保存图片」存到相册，或长按图片保存，再到支付宝或微信的扫一扫里从相册选择。</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="static/vendor/bootstrap.bundle.min.js?v=6a996de"></script>
+<script>window.APP_MODE="static";window.DATA_PREFIX="";</script>
+<script type="module" src="static/js/date-filter.js?v=6a996de"></script>
+
+<script type="module" src="static/js/cb.js?v=6a996de"></script>
+
+</body>
+</html>

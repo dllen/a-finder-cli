@@ -1,0 +1,70 @@
+/* Hallmark · component: date-filter · genre: modern-minimal · theme: Console · states: 8 · contrast: pass · v2.0.0 */
+/* The sheet's dial: one control steps a trading day, shares it in ?d=, and reports loading, error and success without changing the page's look. */
+:root{
+  --df-surface:var(--color-paper);
+  --df-surface-hover:var(--color-paper-2);
+  --df-surface-active:var(--color-paper-3);
+  --df-border:var(--color-muted);
+  --df-border-hover:var(--color-ink-2);
+  --df-text:var(--color-ink);
+  --df-muted:var(--color-muted);
+  --df-focus:var(--color-focus);
+  --df-error-text:var(--color-bad);
+  --df-error-border:var(--color-bad);
+  --df-error-surface:var(--color-bad-soft);
+  --df-ok-text:var(--color-ok);
+  --df-ok-border:var(--color-ok);
+  --df-ok-surface:var(--color-ok-soft);
+  --df-h:2.25rem;
+  --df-radius:var(--radius-pill);
+  --df-dur-micro:var(--dur-micro);
+  --df-dur-short:var(--dur-short);
+  --df-ease:var(--ease-out);
+}
+.date-filter{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-xs);color:var(--df-text)}
+.date-filter__label{font-size:var(--text-sm);color:var(--df-muted);line-height:1.2;white-space:nowrap}
+.date-filter__control{display:inline-flex;align-items:stretch;height:var(--df-h);background:var(--df-surface);border:1px solid var(--df-border);border-radius:var(--df-radius);transition:border-color var(--df-dur-micro) var(--df-ease),background-color var(--df-dur-micro) var(--df-ease)}
+.date-filter__control:hover{border-color:var(--df-border-hover)}
+.date-filter__control:focus-within{border-color:var(--df-focus);box-shadow:0 0 0 3px color-mix(in oklab,var(--df-focus) 24%,transparent)}
+.date-filter__step{display:inline-flex;align-items:center;justify-content:center;width:2rem;padding:0;border:0;background:transparent;color:var(--df-muted);cursor:pointer;border-radius:calc(var(--df-radius) - 1px) 0 0 calc(var(--df-radius) - 1px);transition:background-color var(--df-dur-micro) var(--df-ease),color var(--df-dur-micro) var(--df-ease),transform var(--df-dur-micro) var(--df-ease)}
+.date-filter__step:last-of-type{border-radius:0 calc(var(--df-radius) - 1px) calc(var(--df-radius) - 1px) 0}
+.date-filter__step:hover:not(:disabled){background:var(--df-surface-hover);color:var(--df-text)}
+.date-filter__step:active:not(:disabled){background:var(--df-surface-active);transform:translateY(1px)}
+.date-filter__step:focus-visible{outline:2px solid var(--df-focus);outline-offset:-2px;border-radius:var(--df-radius)}
+.date-filter__step:disabled{color:var(--df-muted);opacity:.45;cursor:not-allowed;transform:none}
+.date-filter__icon{display:block;width:1rem;height:1rem}
+.date-filter__field{position:relative;display:flex;align-items:center}
+.date-filter__field::after{content:"";position:absolute;right:.7rem;width:.42rem;height:.42rem;border-right:1.5px solid var(--df-muted);border-bottom:1.5px solid var(--df-muted);transform:translateY(-2px) rotate(45deg);pointer-events:none}
+.date-filter__select{appearance:none;-webkit-appearance:none;height:100%;min-width:8.5rem;padding:0 1.7rem 0 var(--space-sm);background:transparent;border:0;border-radius:0;color:var(--df-text);font-family:var(--font-outlier);font-size:var(--text-sm);font-variant-numeric:tabular-nums;cursor:pointer;outline:2px solid transparent;outline-offset:-2px}
+.date-filter .date-filter__select{min-height:0;height:100%}
+.date-filter__select:focus-visible{outline-color:var(--df-focus);border-radius:var(--df-radius)}
+.date-filter__select:disabled{color:var(--df-muted);cursor:progress}
+.date-filter__select option{color:var(--df-text);background:var(--df-surface)}
+.date-filter__latest{padding:0;background:none;border:0;font-family:var(--font-body);font-size:var(--text-xs);color:var(--color-cool);text-decoration:underline;text-underline-offset:.16em;cursor:pointer;transition:color var(--df-dur-micro) var(--df-ease)}
+.date-filter__latest:hover{color:var(--df-text)}
+.date-filter__latest:active{transform:translateY(1px)}
+.date-filter__latest:focus-visible{outline:2px solid var(--df-focus);outline-offset:2px;border-radius:var(--radius-pill)}
+.date-filter__status{font-size:var(--text-xs);color:var(--df-muted);line-height:1.2}
+.date-filter.is-loading .date-filter__field{overflow:hidden}
+.date-filter.is-loading .date-filter__field::before{content:"";position:absolute;inset:0;background:var(--df-surface-active)}
+.date-filter.is-loading .date-filter__select{position:relative;z-index:1;color:transparent}
+.date-filter.is-error .date-filter__control{border-color:var(--df-error-border);background:var(--df-error-surface)}
+.date-filter.is-error .date-filter__status{color:var(--df-error-text)}
+.date-filter.is-success .date-filter__control{border-color:var(--df-ok-border);background:var(--df-ok-surface)}
+.date-filter.is-success .date-filter__status{color:var(--df-ok-text)}
+.date-filter--compact .date-filter__control{height:2rem}
+.date-filter--compact .date-filter__select{min-width:7.5rem;font-size:var(--text-xs)}
+.date-filter__hit{display:none}
+.date-filter.is-hover .date-filter__control{border-color:var(--df-border-hover)}
+.date-filter.is-focus .date-filter__control{border-color:var(--df-focus);box-shadow:0 0 0 3px color-mix(in oklab,var(--df-focus) 24%,transparent)}
+.date-filter.is-active .date-filter__step{background:var(--df-surface-active);transform:translateY(1px)}
+.date-filter.is-hover .date-filter__latest{color:var(--df-text)}
+@media (max-width:48rem){
+  .date-filter__control{height:2.5rem}
+  .date-filter__step{width:2.5rem}
+  .date-filter__select{min-width:9rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .date-filter__control,.date-filter__step,.date-filter__select,.date-filter__latest{transition:none}
+  .date-filter__step:active:not(:disabled),.date-filter__latest:active{transform:none}
+}
