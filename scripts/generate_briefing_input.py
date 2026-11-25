@@ -125,23 +125,28 @@ def build_briefing_input(etf_dir: Path, site_data: Path, db_path: str | None = N
         raise FileNotFoundError(f"{islands_path} not found")
     islands = json.loads(islands_path.read_text(encoding="utf-8"))
 
-    cmp_latest = (islands.get("cmpData") or {}).get("latest") or {}
-    date = cmp_latest.get("date") or ""
-    if not date:
-        dd = islands.get("dailyData") or {}
-        dates = dd.get("dates") or []
-        date = dates[-1] if dates else ""
-
-    is_trading_day = True
+    # Prefer DB date (our own sync is authoritative); fall back to ETF snapshot date.
+    # The external ETF site's daily aggregates can lag behind our DB by hours post-close.
+    db_date = ""
     if db_path:
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             row = conn.execute("SELECT MAX(trade_date) FROM daily_prices").fetchone()
             conn.close()
             if row and row[0]:
-                is_trading_day = (date == row[0])
+                db_date = row[0]
         except Exception:
             pass
+
+    cmp_latest = (islands.get("cmpData") or {}).get("latest") or {}
+    etf_date = cmp_latest.get("date") or ""
+    if not etf_date:
+        dd = islands.get("dailyData") or {}
+        dates = dd.get("dates") or []
+        etf_date = dates[-1] if dates else ""
+
+    date = db_date or etf_date
+    is_trading_day = bool(date)
 
     picks_path = site_data / f"picks-{date}.json"
     return {
