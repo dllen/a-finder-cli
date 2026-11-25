@@ -288,8 +288,8 @@ window.__ModuleLoader__.load({
      * and an old database has no cb table), so an empty bond date is omitted
      * instead of rendered as a dash that reads like a failure.
      *
-     * @param {object} dates - { latest, published, cb }.
-     * @returns {string} "行情 11-19 · 站点 11-19", with a bond segment only when it lags.
+     * @param {object} dates - { latest, published, cb, etf }.
+     * @returns {string} "行情 11-19 · 站点 11-19", with bond/ETF segments only when they lag.
      */
     function dateSummary(dates) {
       const parts = []
@@ -298,6 +298,9 @@ window.__ModuleLoader__.load({
       // its lag is worth a third segment in the dock. The tooltip always lists
       // the bond date, so hiding the duplicate loses nothing.
       if (dates.cb && dates.cb !== dates.latest) parts.push('转债 ' + formatDate(dates.cb))
+      // Same rule for the ETF board: it is fetched from an external snapshot,
+      // so a same-day value is the norm and only a lag earns dock width.
+      if (dates.etf && dates.etf !== dates.latest) parts.push('ETF ' + formatDate(dates.etf))
       if (dates.published) parts.push('站点 ' + formatDate(dates.published))
       return parts.join(' · ')
     }
@@ -390,7 +393,7 @@ window.__ModuleLoader__.load({
       const [state, setState] = useState('idle')
       const [message, setMessage] = useState('')
       const [notice, setNotice] = useState('')
-      const [dates, setDates] = useState({ latest: '', published: '', cb: '' })
+      const [dates, setDates] = useState({ latest: '', published: '', cb: '', etf: '' })
       const [elapsed, setElapsed] = useState(0)
       const mounted = useRef(true)
       const startedAt = useRef(0)
@@ -406,7 +409,7 @@ window.__ModuleLoader__.load({
           if (!response.ok) return
           const data = await response.json()
           if (!mounted.current) return
-          setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '' })
+          setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '', etf: data.etf ?? '' })
         } catch {
           // The status line is decoration: a failed read must not break the button.
         }
@@ -436,12 +439,12 @@ window.__ModuleLoader__.load({
         if (state === 'running') return
         setState('running')
         setNotice('')
-        setMessage('正在同步行情与可转债榜单并推送…')
+        setMessage('正在同步行情、可转债榜单与 ETF 看板并推送…')
         try {
           const response = await fetch(API_BASE + '/sync', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ push: true, cb: true }),
+            body: JSON.stringify({ push: true, cb: true, etf: true }),
           })
           const data = await response.json().catch(() => ({}))
           if (!mounted.current) return
@@ -459,8 +462,8 @@ window.__ModuleLoader__.load({
           if (response.ok && data.ok) {
             setState('done')
             setMessage(data.message ?? '同步完成')
-            if (data.latest || data.published || data.cb) {
-              setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '' })
+            if (data.latest || data.published || data.cb || data.etf) {
+              setDates({ latest: data.latest ?? '', published: data.published ?? '', cb: data.cb ?? '', etf: data.etf ?? '' })
             } else {
               void loadStatus()
             }
@@ -503,17 +506,18 @@ window.__ModuleLoader__.load({
       const details = [
         dates.latest ? '行情最新交易日 ' + dates.latest : '',
         dates.cb ? '可转债榜单 ' + dates.cb : '',
+        dates.etf ? 'ETF 看板数据 ' + dates.etf : '',
         dates.published ? '站点最新日期 ' + dates.published : '',
         message ? '最近一次：' + message : '',
       ].filter(Boolean).join('\n')
 
       const buttonTitle = state === 'running'
-        ? '正在同步沪深300 行情、可转债榜单与选股，并推送到 gh-pages（通常 15~35 分钟）'
+        ? '正在同步沪深300 行情、可转债榜单、ETF 看板与选股，并推送到 gh-pages（通常 15~35 分钟）'
         : state === 'done'
           ? '已同步；再次点击可重新同步'
           : state === 'error'
             ? '上次同步失败；点击重试。完整原因见悬停提示与 logs/a-finder-sync.log'
-            : '同步沪深300 行情与可转债榜单、重算选股并推送到 gh-pages'
+            : '同步沪深300 行情与可转债榜单、刷新 ETF 看板快照、重算选股并推送到 gh-pages'
 
       return react.createElement(
         'div',

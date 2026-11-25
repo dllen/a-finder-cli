@@ -27,6 +27,7 @@ import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   readCbLatestDate,
+  readEtfLatestDate,
   readLatestTradeDate,
   readPublishedDate,
   resolveProjectDir,
@@ -131,14 +132,17 @@ export function apply(ctx, config = {}) {
         // A database created before the bond tables existed has no cb_picks;
         // that is a legitimate state, so an unreadable date degrades to ''.
         const cbLatest = await readCbLatestDate(join(projectDir, settings.db)).catch(() => '')
-        const message = summarize(result, latest, published, cbLatest)
+        // The ETF board lives outside SQLite (data/etf/meta.json); a missing
+        // snapshot degrades to '' exactly like a missing bond board.
+        const etfLatest = await readEtfLatestDate(join(projectDir, 'data', 'etf')).catch(() => '')
+        const message = summarize(result, latest, published, cbLatest, etfLatest)
         await log(projectDir, '[' + new Date().toISOString() + '] sync end ok=' + result.ok + ' code=' + result.code)
         // Keep the tail of a failed run next to the outcome: the button only
         // shows the summary, so without this the reason is lost.
         if (!result.ok) {
           await log(projectDir, result.output.split('\n').slice(-40).join('\n'))
         }
-        return { ok: result.ok, result, latest, published, cbLatest, message }
+        return { ok: result.ok, result, latest, published, cbLatest, etfLatest, message }
       } catch (error) {
         const message = '同步失败：' + (error instanceof Error ? error.message : String(error))
         if (projectDir !== '') await log(projectDir, '[' + new Date().toISOString() + '] ' + message)
@@ -148,6 +152,7 @@ export function apply(ctx, config = {}) {
           latest: '',
           published: '',
           cbLatest: '',
+          etfLatest: '',
           message,
         }
       }
@@ -245,7 +250,8 @@ export function apply(ctx, config = {}) {
               const latest = await readLatestTradeDate(join(projectDir, settings.db)).catch(() => '')
               const published = await readPublishedDate(join(projectDir, settings.out, 'data')).catch(() => '')
               const cb = await readCbLatestDate(join(projectDir, settings.db)).catch(() => '')
-              send(200, { ok: true, running: running !== null, latest, published, cb })
+              const etf = await readEtfLatestDate(join(projectDir, 'data', 'etf')).catch(() => '')
+              send(200, { ok: true, running: running !== null, latest, published, cb, etf })
               return
             }
 
@@ -262,6 +268,7 @@ export function apply(ctx, config = {}) {
                 latest: outcome.latest ?? '',
                 published: outcome.published ?? '',
                 cb: outcome.cbLatest ?? '',
+                etf: outcome.etfLatest ?? '',
               })
               return
             }

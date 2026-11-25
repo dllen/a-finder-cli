@@ -384,6 +384,8 @@ process.stdout.write(JSON.stringify({ status, syncLocal, args }))
         "latest": "2026-11-12",
         "published": "2026-11-12",
         "cb": "2026-11-12",
+        # 没有 data/etf/meta.json ⇒ ETF 日期降级为空串（与转债缺表同规则）
+        "etf": "",
     }, got
 
     assert got["syncLocal"]["status"] == 200, got
@@ -393,6 +395,145 @@ process.stdout.write(JSON.stringify({ status, syncLocal, args }))
     # body.cb=false 必须真的落到命令行上
     assert got["args"] == ["site", "hs300.db", "20", "site", "--no-cb"], got
 
+
+
+# ---------------------------------------------------------------------------
+# 6. ETF 看板：readEtfLatestDate / summarize / HTTP 路由 / 客户端状态行
+# ---------------------------------------------------------------------------
+
+
+def test_read_etf_latest_date(project):
+    """读 data/etf/meta.json 的 latest.etf_flow；缺文件/坏 JSON 降级为空串。"""
+    etf_dir = project / "data" / "etf"
+    etf_dir.mkdir(parents=True)
+    (etf_dir / "meta.json").write_text(
+        json.dumps({"latest": {"etf_flow": "2026-11-24", "daily": "2026-11-23"}}),
+        encoding="utf-8",
+    )
+    empty_dir = project / "empty-etf"
+    empty_dir.mkdir()
+    bad_dir = project / "bad-etf"
+    bad_dir.mkdir()
+    (bad_dir / "meta.json").write_text("{not json", encoding="utf-8")
+
+    source = """
+const sync = await import('__SYNC_JS__')
+const out = {
+  good: await sync.readEtfLatestDate(__GOOD__),
+  missing: await sync.readEtfLatestDate(__MISSING__),
+  bad: await sync.readEtfLatestDate(__BAD__),
+}
+process.stdout.write(JSON.stringify(out))
+""".replace("__SYNC_JS__", _sync_uri()).replace(
+        "__GOOD__", json.dumps(str(etf_dir))
+    ).replace("__MISSING__", json.dumps(str(empty_dir))).replace(
+        "__BAD__", json.dumps(str(bad_dir))
+    )
+
+    got = _run_node(source, project)
+    assert got["good"] == "2026-11-24", got
+    assert got["missing"] == "", got
+    assert got["bad"] == "", got
+
+
+def test_summarize_includes_etf_only_when_present(project):
+    """有 ETF 日期时带上一段；空/未传时不出现，老调用方行为不变。"""
+    source = """
+const sync = await import('__SYNC_JS__')
+const ok = { ok: true, code: 0, output: '', timedOut: false }
+const out = {
+  withEtf: sync.summarize(ok, '2026-11-24', '2026-11-24', '2026-11-24', '2026-11-24'),
+  emptyEtf: sync.summarize(ok, '2026-11-24', '2026-11-24', '2026-11-24', ''),
+  omittedEtf: sync.summarize(ok, '2026-11-24', '2026-11-24', '2026-11-24'),
+}
+process.stdout.write(JSON.stringify(out))
+""".replace("__SYNC_JS__", _sync_uri())
+
+    got = _run_node(source, project)
+    assert "ETF 看板 2026-11-24" in got["withEtf"], got
+    assert "ETF 看板" not in got["emptyEtf"], got
+    assert got["omittedEtf"] == got["emptyEtf"], got
+
+
+def test_http_routes_expose_etf(project):
+    """/status 与 /sync 都带 etf 字段；有快照时读出真实日期。"""
+    _make_db(project / "hs300.db", prices=["2026-11-24"], cb_picks=["2026-11-24"])
+    site_data = project / "site" / "data"
+    site_data.mkdir(parents=True)
+    (site_data / "dates.json").write_text(
+        json.dumps({"dates": ["2026-11-24"]}), encoding="utf-8"
+    )
+    etf_dir = project / "data" / "etf"
+    etf_dir.mkdir(parents=True)
+    (etf_dir / "meta.json").write_text(
+        json.dumps({"latest": {"etf_flow": "2026-11-24"}}), encoding="utf-8"
+    )
+
+    source = READ_ARGS_JS + """
+const mod = await import('__INDEX_JS__')
+let handler = null
+const webCtx = {
+  effect(fn) { fn() },
+  webServer: { register(options) { handler = options.handler } },
+}
+mod.apply(
+  { tools: { register() {} }, inject(deps, fn) { if (deps.includes('webServer')) fn(webCtx) } },
+  { projectDir: process.cwd(), autoSchedule: false },
+)
+const call = (method, path, body) => new Promise((resolve) => {
+  const listeners = {}
+  const req = { method, url: path, on(ev, cb) { (listeners[ev] ||= []).push(cb) } }
+  const res = {
+    writeHead(status) { res.status = status },
+    end(payload) { resolve({ status: res.status, json: JSON.parse(payload) }) },
+  }
+  handler(req, res)
+  queueMicrotask(() => {
+    if (body !== undefined) for (const cb of listeners.data || []) cb(Buffer.from(JSON.stringify(body)))
+    for (const cb of listeners.end || []) cb()
+  })
+})
+const status = await call('GET', '/api/a-finder/status')
+const syncLocal = await call('POST', '/api/a-finder/sync', { push: false, cb: false, etf: false })
+const args = await readArgs()
+process.stdout.write(JSON.stringify({ status, syncLocal, args }))
+""".replace("__INDEX_JS__", INDEX_JS.as_uri())
+
+    got = _run_node(source, project)
+    assert got["status"]["json"]["etf"] == "2026-11-24", got
+    assert got["syncLocal"]["json"]["etf"] == "2026-11-24", got
+    assert "ETF 看板 2026-11-24" in got["syncLocal"]["json"]["message"], got
+    assert "--no-etf" in got["args"], got
+
+
+def test_client_date_summary_shows_etf_lag():
+    """客户端状态行：ETF 与行情同天时省略，滞后时才占宽度。"""
+    client_js = PLUGIN_LIB / "client.js"
+    source = """
+import { readFile } from 'node:fs/promises'
+const src = await readFile('__CLIENT_JS__', 'utf8')
+const grab = (name) => {
+  const i = src.indexOf('function ' + name)
+  let depth = 0, started = false, end = -1
+  for (let k = i; k < src.length; k++) {
+    if (src[k] === '{') { depth++; started = true }
+    else if (src[k] === '}') { depth--; if (started && depth === 0) { end = k + 1; break } }
+  }
+  return src.slice(i, end)
+}
+const formatDate = eval('(' + grab('formatDate') + ')')
+const dateSummary = eval('(' + grab('dateSummary') + ')')
+const out = {
+  sameDay: dateSummary({ latest: '2026-11-24', published: '2026-11-24', cb: '2026-11-24', etf: '2026-11-24' }),
+  lagging: dateSummary({ latest: '2026-11-24', published: '2026-11-24', cb: '2026-11-24', etf: '2026-11-20' }),
+  noEtf: dateSummary({ latest: '2026-11-24', published: '2026-11-24', cb: '2026-11-24', etf: '' }),
+}
+process.stdout.write(JSON.stringify(out))
+""".replace("__CLIENT_JS__", str(client_js))
+    got = _run_node(source, client_js.parent)
+    assert "ETF" not in got["sameDay"], got
+    assert "ETF 11-20" in got["lagging"], got
+    assert "ETF" not in got["noEtf"], got
 
 def test_node_available():
     """node 必须可用（否则上面的测试是假绿）。"""

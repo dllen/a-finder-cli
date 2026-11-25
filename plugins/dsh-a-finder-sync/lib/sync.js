@@ -92,6 +92,31 @@ export async function readPublishedDate(siteDataDir) {
  * @param {number} options.timeoutMs - Hard limit for the whole run.
  * @returns {Promise<{ok: boolean, code: number, output: string, timedOut: boolean}>} Run result.
  */
+/**
+ * Read the newest ETF board date from the fetched snapshot's meta.json.
+ *
+ * The ETF board is not in SQLite: scripts/fetch_etf_dashboard.py writes
+ * data/etf/meta.json with a "latest" block whose etf_flow is the newest
+ * trading day the snapshot carries. A missing or unreadable file means the
+ * snapshot was never fetched — that degrades to '', same as the bond board.
+ *
+ * @param {string} etfDataDir - Directory holding meta.json (data/etf).
+ * @returns {Promise<string>} ISO date, or '' when unknown.
+ */
+export async function readEtfLatestDate(etfDataDir) {
+  try {
+    const raw = await readFile(join(etfDataDir, 'meta.json'), 'utf8')
+    const meta = JSON.parse(raw)
+    const latest = meta && typeof meta === 'object' ? meta.latest : null
+    if (!latest || typeof latest !== 'object') return ''
+    const flow = typeof latest.etf_flow === 'string' ? latest.etf_flow : ''
+    const daily = typeof latest.daily === 'string' ? latest.daily : ''
+    return flow || daily
+  } catch {
+    return ''
+  }
+}
+
 export function runSitePipeline(options) {
   const {
     projectDir,
@@ -178,9 +203,10 @@ export async function resolveProjectDir(configured) {
  * @param {string} latest - Newest date the database now carries.
  * @param {string} published - Newest date the site now carries.
  * @param {string} cbLatest - Newest date the bond board now carries, or ''.
+ * @param {string} etfLatest - Newest date the ETF board snapshot carries, or ''.
  * @returns {string} A short human-readable summary.
  */
-export function summarize(result, latest, published, cbLatest) {
+export function summarize(result, latest, published, cbLatest, etfLatest) {
   if (result.timedOut) {
     return '同步超时（超过时限仍未结束），已终止。'
   }
@@ -194,5 +220,8 @@ export function summarize(result, latest, published, cbLatest) {
   // Omitted when empty: a database without a bond board should not read as if
   // the board had synced to an empty date.
   if (cbLatest) parts.push(`可转债榜单 ${cbLatest}`)
+  // Same omission rule as the bond board: a never-fetched snapshot must not
+  // read as if the board had synced to an empty date.
+  if (etfLatest) parts.push(`ETF 看板 ${etfLatest}`)
   return parts.join('，') + '。'
 }
