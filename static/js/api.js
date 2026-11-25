@@ -143,14 +143,9 @@ export function fetchEtfThemeIndices() {
     : getJSON('/api/etf/theme-indices');
 }
 
-// 静态模式下隐藏写入控件、修正导航链接
-if (isStatic()) {
-  document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('.write-control').forEach(el => el.style.display = 'none');
-    const picksLink = document.querySelector('a[data-nav="picks"]');
-    if (picksLink) picksLink.href = 'index.html';
-    const cbLink = document.querySelector('a[data-nav="cb"]');
-    if (cbLink) cbLink.href = 'cb.html';
+// ---------------------------------------------------------------------------
+// 每日简报（2026-11-25 新增）
+// ---------------------------------------------------------------------------
 
 export function fetchBriefingInput() {
   return isStatic()
@@ -170,10 +165,20 @@ export function fetchBriefing(date) {
     : getJSON('/api/briefing/' + date);
 }
 
+// 静态模式下隐藏写入控件、修正导航链接
+if (isStatic()) {
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.write-control').forEach(el => el.style.display = 'none');
+    const picksLink = document.querySelector('a[data-nav="picks"]');
+    if (picksLink) picksLink.href = 'index.html';
+    const cbLink = document.querySelector('a[data-nav="cb"]');
+    if (cbLink) cbLink.href = 'cb.html';
+
     const etfLink = document.querySelector('a[data-nav="etf"]');
     if (etfLink) etfLink.href = 'etf.html';
     const briefingLink = document.querySelector('a[data-nav="briefing"]');
     if (briefingLink) briefingLink.href = 'briefing.html';
+
   });
 }
 
