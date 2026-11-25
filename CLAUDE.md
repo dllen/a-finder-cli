@@ -259,6 +259,35 @@ Flask 侧：`/api/etf/{islands,themes,cumdays,theme-cum,theme-minutes,meta}`；
 - **前端 JS 语法错误会静默让整页无图**（模块不执行，控制台才有报错）。
   改完必须真的在浏览器里跑一遍；`tests/test_etf_dashboard.py` 用 `node --check` 兜一道。
 
+
+# 每日简报（2026-11-25 新增）
+
+站点 `/briefing` 页面，以时间流方式呈现每日市场简报（选股信号 + ETF 资金流 + 可转债）。
+
+## 数据流
+
+```
+a-finder.sh site [5/5] → scripts/generate_briefing_input.py → data/briefing-input.json
+DSH 插件 performSync 完成 → deliverBriefingTask → agent 生成叙事 → site/data/briefing-YYYY-MM-DD.json
+前端 /briefing → 读 LLM 版（优先）或 input 兜底版
+```
+
+- **briefing-input.json**：Python 侧确定性提取（intraday peak/hourly、sectors top3、picks、cb alerts、recent events）
+- **LLM 叙事**：插件投递 one-shot prompt 到 DSH 会话，agent 生成 JSON 写回 site/data/
+- **兜底**：无 LLM 文件时前端用 input 数据 + 规则短句渲染（italic muted 风格）
+- **非交易日**：input 里 `is_trading_day: false`，插件不投递
+
+## 关键文件
+
+- `scripts/generate_briefing_input.py`：数据提取
+- `plugins/dsh-a-finder-sync/lib/briefing.js`：prompt 构造 + 校验 + Schedule 投递
+- `static/js/briefing.js` + `static/css/briefing.css`：前端时间轴渲染
+- `templates/briefing.html`：页面模板
+
+## 不做的事
+
+PDF/图片导出、推送通知、多语言、自定义模板、实时盘中更新。
+
 # CI 自动部署（deploy-site.yml）
 - `.github/workflows/deploy-site.yml`：A 股交易日 15:30 北京（07:30 UTC）自动
   同步→选股→计划→组合→转债→导出→部署 gh-pages。用 chinese_calendar 判交易日，

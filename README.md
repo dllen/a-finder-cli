@@ -325,6 +325,20 @@ bash a-finder.sh site hs300.db 20 site --push --no-etf   # 跳过（外部看板
   —— 那只是瞬时故障。实测除上证 `000001` 外**绝大多数 secid 都正常**，
   而 `000001` 的失败是**按 secid 稳定发生**的（不是接口整体不可用）。
 
+## 每日简报 / Daily Briefing
+
+同步完成后自动生成时间流简报（`/briefing`），覆盖选股信号、ETF 资金流、可转债三块。
+
+- 数据版永远可用（Python 提取结构化摘要）
+- LLM 叙事版由 DSH 插件在同步后自动投递给 agent 生成
+- 非交易日不生成
+
+```bash
+# 手动生成简报输入（通常由 site 流水线自动调用）
+python3 scripts/generate_briefing_input.py --db hs300.db
+```
+
+
 ## 持仓组合 / Portfolio Tiers
 
 按资金档位（5W-50W 共 10 档）独立跟踪 paper-trade 组合：

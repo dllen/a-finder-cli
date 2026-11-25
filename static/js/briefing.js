@@ -107,7 +107,18 @@ function renderCb(data) {
 
 async function loadBriefing(date) {
   try {
-    const data = await fetchBriefing(date);
+    let data;
+    try {
+      data = await fetchBriefing(date);
+    } catch (e) {
+      // LLM version not available — try input fallback
+      data = await fetchBriefingInput();
+      if (data && data.date === date) {
+        data._fallback = true;
+      } else {
+        throw e;
+      }
+    }
     const isFallback = data._fallback === true;
     const dateEl = $("briefingDate");
     const verEl = $("briefingVersion");
