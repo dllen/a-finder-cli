@@ -112,3 +112,32 @@ class TestBriefingInputExtraction:
         assert "sectors" in result
         assert "picks" in result
         assert "recent_events" in result
+
+
+class TestBriefingRoutes:
+    @pytest.fixture()
+    def client(self):
+        from app import create_app
+        app = create_app(str(ROOT / "hs300.db"), 10)
+        app.config.update(TESTING=True)
+        return app.test_client()
+
+    def test_briefing_page_renders(self, client):
+        r = client.get("/briefing")
+        assert r.status_code == 200
+        body = r.get_data(as_text=True)
+        assert "每日简报" in body
+        assert 'id="briefing-timeline"' in body
+
+    def test_briefing_api_input(self, client):
+        r = client.get("/api/briefing/input")
+        assert r.status_code in (200, 404)
+
+    def test_briefing_api_dates(self, client):
+        r = client.get("/api/briefing/dates")
+        assert r.status_code == 200
+        assert "dates" in r.get_json()
+
+    def test_nav_has_briefing_entry(self, client):
+        body = client.get("/briefing").get_data(as_text=True)
+        assert 'data-nav="briefing"' in body

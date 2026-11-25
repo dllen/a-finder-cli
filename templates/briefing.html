@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% set active_page = "briefing" %}
+{% block title %}每日简报{% endblock %}
+{% block description %}每日市场简报：盘中资金节奏、近期事件、选股亮点与转债预警，时间流呈现。{% endblock %}
+{% block body %}
+<main class="container briefing-page" id="main">
+<header class="briefing-head">
+<h1 class="briefing-head__title">每日简报</h1>
+<div class="briefing-head__meta">
+<span class="etf-tag" id="briefingDate">--</span>
+<span class="etf-tag" id="briefingVersion">--</span>
+</div>
+</header>
+<div id="briefing-timeline" class="briefing-timeline"></div>
+<div id="briefing-events" class="briefing-events"></div>
+<div id="briefing-picks" class="briefing-picks"></div>
+<div id="briefing-cb" class="briefing-cb"></div>
+<p class="etf-source">数据来源：Choice、东方财富、交易所两融披露。客观数据仅供参考，不构成投资建议。</p>
+</main>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/briefing.js') }}"></script>
+{% endblock %}

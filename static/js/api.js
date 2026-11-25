@@ -151,8 +151,29 @@ if (isStatic()) {
     if (picksLink) picksLink.href = 'index.html';
     const cbLink = document.querySelector('a[data-nav="cb"]');
     if (cbLink) cbLink.href = 'cb.html';
+
+export function fetchBriefingInput() {
+  return isStatic()
+    ? getJSON(dsPath('data/briefing-input.json'))
+    : getJSON('/api/briefing/input');
+}
+
+export function fetchBriefingDates() {
+  return isStatic()
+    ? getJSON(dsPath('data/briefing-dates.json'))
+    : getJSON('/api/briefing/dates');
+}
+
+export function fetchBriefing(date) {
+  return isStatic()
+    ? getJSON(dsPath('data/briefing-' + date + '.json'))
+    : getJSON('/api/briefing/' + date);
+}
+
     const etfLink = document.querySelector('a[data-nav="etf"]');
     if (etfLink) etfLink.href = 'etf.html';
+    const briefingLink = document.querySelector('a[data-nav="briefing"]');
+    if (briefingLink) briefingLink.href = 'briefing.html';
   });
 }
 

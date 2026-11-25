@@ -438,6 +438,60 @@ def create_app(db_path="hs300.db", top=10):
     def etf_meta():
         return _etf_payload("meta.json")
 
+    # ------------------------------------------------------------------
+    # 每日简报（2026-11-25 新增）
+    # ------------------------------------------------------------------
+
+    BRIEFING_DATA_DIR = Path(__file__).parent / "data"
+    BRIEFING_SITE_DIR = Path(__file__).parent / "site" / "data"
+
+    @app.get("/briefing")
+    def briefing_page():
+        from datetime import date as _date
+        return render_template("briefing.html",
+            today=_date.today().isoformat(),
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
+
+    @app.get("/api/briefing/input")
+    def briefing_input():
+        path = BRIEFING_DATA_DIR / "briefing-input.json"
+        if not path.exists():
+            return jsonify({"error": "简报数据未生成"}), 404
+        return jsonify(json.loads(path.read_text(encoding="utf-8")))
+
+    @app.get("/api/briefing/dates")
+    def briefing_dates():
+        dates = []
+        for f in sorted(BRIEFING_SITE_DIR.glob("briefing-*.json"), reverse=True):
+            d = f.stem[len("briefing-"):]
+            if len(d) == 10:
+                dates.append(d)
+        inp = BRIEFING_DATA_DIR / "briefing-input.json"
+        if inp.exists():
+            try:
+                data = json.loads(inp.read_text(encoding="utf-8"))
+                d = data.get("date", "")
+                if d and d not in dates:
+                    dates.insert(0, d)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return jsonify({"dates": dates})
+
+    @app.get("/api/briefing/<date>")
+    def briefing_for_date(date):
+        llm_path = BRIEFING_SITE_DIR / f"briefing-{date}.json"
+        if llm_path.exists():
+            return jsonify(json.loads(llm_path.read_text(encoding="utf-8")))
+        inp = BRIEFING_DATA_DIR / "briefing-input.json"
+        if inp.exists():
+            data = json.loads(inp.read_text(encoding="utf-8"))
+            if data.get("date") == date:
+                data["_fallback"] = True
+                return jsonify(data)
+        return jsonify({"error": "该日期无简报"}), 404
+
+
     return app
 
 
