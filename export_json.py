@@ -272,6 +272,40 @@ def _export_cb_data(conn, data_dir: Path) -> None:
     )
 
 
+
+#: 简报数据来源目录
+BRIEFING_SOURCE_DIR = Path(__file__).parent / "data"
+
+
+def _export_briefing_data(data_dir: Path) -> bool:
+    """拷贝 briefing-input.json + briefing-*.json 到静态站，生成 briefing-dates.json。"""
+    src_dir = BRIEFING_SOURCE_DIR
+    if not src_dir.is_dir():
+        return False
+    inp = src_dir / "briefing-input.json"
+    if not inp.exists():
+        return False
+    shutil.copy(inp, data_dir / "briefing-input.json")
+    # Copy any LLM-generated briefing files from site/data/
+    site_data = Path(__file__).parent / "site" / "data"
+    dates = []
+    if site_data.is_dir():
+        for f in sorted(site_data.glob("briefing-*.json"), reverse=True):
+            d = f.stem[len("briefing-"):]
+            if len(d) == 10:
+                shutil.copy(f, data_dir / f.name)
+                dates.append(d)
+    # Include input date
+    try:
+        input_data = json.loads(inp.read_text(encoding="utf-8"))
+        d = input_data.get("date", "")
+        if d and d not in dates:
+            dates.insert(0, d)
+    except (json.JSONDecodeError, OSError):
+        pass
+    json.dump({"dates": dates}, (data_dir / "briefing-dates.json").open("w"), ensure_ascii=False)
+    return True
+
 #: ETF 看板数据的来源目录（scripts/fetch_etf_dashboard.py 的输出）。
 #: 做成模块级常量，测试可以 monkeypatch 它。
 ETF_SOURCE_DIR = Path(__file__).parent / "data" / "etf"
@@ -368,6 +402,19 @@ def export(db_path: str, out_dir: str) -> int:
             year=_dt_class.now().year),
         encoding="utf-8",
     )
+
+    # 每日简报
+    if _export_briefing_data(data_dir):
+        (out / "briefing.html").write_text(
+            _render_static_page("briefing.html",
+                today=_dt_class.now().strftime("%Y-%m-%d"),
+                year=_dt_class.now().year),
+            encoding="utf-8",
+        )
+    else:
+        bp = out / "briefing.html"
+        if bp.exists():
+            bp.unlink()
 
     # ETF 资金看板（外部快照，与 SQLite 无关）
     if _export_etf_data(data_dir):

@@ -163,7 +163,7 @@ cmd_site() {
   echo "db=$db top=$top out=$out push=$push cb=$cb etf=$etf"
   echo ""
 
-  echo "[1/4] 增量同步 + 选股..."
+  echo "[1/5] 增量同步 + 选股..."
   cmd_sync_incremental "$db" "$top" pick-history
 
   # 计划日期对齐**库里真正的行情最新日**，而不是硬编码今天：
@@ -198,7 +198,7 @@ except Exception:
   #   ③ 转债不是主流程：数据源限流/不可用时只告警，导出与发布绝不因此中止
   #      （转债页沿用库里上一份榜单，总比整站停更强）。
   if [[ "$cb" == "1" ]]; then
-    echo "[2/4] 可转债榜单（--date ${plan_date}）..."
+    echo "[2/5] 可转债榜单（--date ${plan_date}）..."
     run_cmd cb-picks --top "$top" --db "$db" --concurrency 2 --rate 4 --date "$plan_date" \
       || echo "WARN: 可转债榜单同步失败，继续导出（转债页沿用库里上一份榜单）" >&2
   else
@@ -208,7 +208,7 @@ except Exception:
   # ETF 资金看板（2026-11-24 新增）：外部看板快照，与 SQLite 无关。
   # 失败只告警、不中止导出/发布 —— 看板页沿用上一份快照，比整站停更强。
   if [[ "$etf" == "1" ]]; then
-    echo "[3/4] 抓取 ETF 资金看板数据..."
+    echo "[3/5] 抓取 ETF 资金看板数据..."
     run_py "$ROOT_DIR/scripts/fetch_etf_dashboard.py" \
       || echo "WARN: ETF 看板数据抓取失败，继续导出（看板页沿用上一份快照）" >&2
   else
@@ -217,7 +217,11 @@ except Exception:
 
   # ⚠️ 2026-11-05：「交易计划」「持仓组合」已下线（用户要求），
   # 不再跑 plan build / build-all / --backfill（CLI 子命令也已删除）。
-  echo "[4/4] 导出静态数据到 $out..."
+  echo "[4/5] 导出静态数据到 $out..."
+  echo "[5/5] 生成简报输入数据..."
+  run_py "$ROOT_DIR/scripts/generate_briefing_input.py" --db "$db" \
+    || echo "WARN: 简报输入生成失败，继续（简报页沿用上一份）" >&2
+
   run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
 
   cp "$out/index.html" "$out/404.html"

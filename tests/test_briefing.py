@@ -141,3 +141,30 @@ class TestBriefingRoutes:
     def test_nav_has_briefing_entry(self, client):
         body = client.get("/briefing").get_data(as_text=True)
         assert 'data-nav="briefing"' in body
+
+
+class TestBriefingExport:
+    def test_export_copies_briefing_input(self, tmp_path, monkeypatch):
+        import export_json as ex
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "briefing-input.json").write_text('{"date":"2026-11-24"}', encoding="utf-8")
+        monkeypatch.setattr(ex, "BRIEFING_SOURCE_DIR", src)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        ok = ex._export_briefing_data(data_dir)
+        assert ok is True
+        assert (data_dir / "briefing-input.json").exists()
+
+    def test_export_no_data_skips(self, tmp_path, monkeypatch):
+        import export_json as ex
+        monkeypatch.setattr(ex, "BRIEFING_SOURCE_DIR", tmp_path / "nonexistent")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        assert ex._export_briefing_data(data_dir) is False
+
+    def test_briefing_html_renderable(self):
+        from export_json import _render_static_page
+        html = _render_static_page("briefing.html", today="2026-11-24", year=2026)
+        assert "每日简报" in html
+        assert 'id="briefing-timeline"' in html
