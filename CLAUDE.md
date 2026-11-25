@@ -192,6 +192,73 @@ bash a-finder.sh cron                                  # launchd 入口（工作
    `db_repository` 里的 plan 函数 / `shared_lib/plan_rows.py`）：
    它们不再被页面调用，但保留着可降低回滚成本。要彻底删需连带清理引用与测试。
 
+# ETF 资金看板（2026-11-24 新增）
+
+把外部「重点 ETF 资金看板」（`jinke.app.workbuddy.host`，需访问密码）复刻进本项目。
+页面 `/etf`，五个部分：盘中分钟观测 / 放量信号对比 / 日度资金全景 / ETF 两融资金 / 主题分时。
+
+## 数据不走 SQLite
+
+这些是 ETF 资金流数据，**本项目库里没有对应表**。数据由
+`scripts/fetch_etf_dashboard.py` 抓外部看板快照，落在 `data/etf/*.json`：
+
+    islands.json       主数据层（initData/cmpData/typData/dailyData/histData/
+                       postHol/broadData/fflowData/cumData/marginData）
+    themes.json        主题清单（第五部分）
+    cumdays.json       可对比的历史分钟累计曲线
+    theme-cum.json     主题分钟累计基准
+    theme-minutes.json 每个主题全部 ETF 的分钟线（约 4 MB）
+    leverage.json / xueqiu.json / privatefund.json   另三个看板的数据层
+    meta.json          抓取时间与各数据集 asof
+
+Flask 侧：`/api/etf/{islands,themes,cumdays,theme-cum,theme-minutes,meta}`；
+静态侧：`data/etf/*.json`（`export_json._export_etf_data` 拷过去，没有数据就不生成 `etf.html`）。
+
+## 抓取器的三个坑（改这块前先读）
+
+1. **网关要求每个请求都带 `?sharecode=`**（含 `POST /api/verify`）。
+   缺了返回 403，但页面写的是「链接不完整」——看不出是缺参数。
+2. **网关发两个 `Set-Cookie`**（`__wb_rsc` + `etf_auth`）。
+   `resp.headers.get("Set-Cookie")` 只返回第一个 ⇒ 必须 `get_all()`。
+3. **Cookie 头要写 `etf_auth=<值>`** —— 只给值不是合法 Cookie 头。
+
+另：主看板 `data.js` 的**键名不带引号**、末行多一个右括号闭外层对象 ⇒
+不能整体 `JSON.parse`，抓取器逐行按「键: {JSON}」切（`parse_islands`）。
+
+## 与原站的差异（有意为之）
+
+- 原站分钟线是**实时**的（轮询它自己的 `/api/hq` 代理）。本项目**不引入那套代理**，
+  用抓取时刻的静态快照，页面顶部标「数据截至」⇒ 不会给出「看着实时、其实昨天」的假象。
+- 主题分时的价格参照线是三级选择：**真实指数优先**（东财 `/api/idxminute` →
+  新浪 `/api/kline` → 等权合成兜底），选中了哪条会显示在页面的状态条上。
+  ⚠️ **2026-11-25 更正**：早先写的「东财指数分钟接口一律 upstream unavailable」是**错的**
+  —— 那次只是赶上瞬时故障。实测 idxminute 对**绝大多数 secid 都正常**，
+  只有上证 `000001`（1./0./2. 三种前缀都试过）**稳定失败**。
+  ⇒ 该失败是**按 secid 的**，不是接口整体不可用。
+- **idxminute 的两个实测事实**（2026-11-25）：
+  ① `datalen` 被**完全忽略** —— 传 4 / 100 / 242 返回的都是当日全部分时（09:30→当前）；
+  ② 时间戳**没有秒**（`"2026-11-25 09:30"`），而 `ktrends` 有秒（`"…09:30:00"`）⇒
+     两种格式都要能解析。
+- ECharts 已**本地托管**（`static/vendor/echarts.min.js`，6.0.0）。
+  ⚠️ 原站那份 1.07 MB 明文，必须进 `static/vendor/` 一起导出，
+  否则静态站图表全空白（`export_json` 拷整个 `static/vendor/`）。
+
+## 流水线
+
+`a-finder.sh site` 的第 3 步会跑抓取器（失败只告警、不中止导出）；
+`--no-etf` 跳过。DSH 插件 `dsh-a-finder-sync` 透传 `--no-etf`（`etf: false`），
+**不重写**这一步 —— 与转债 `--no-cb` 同一套模式。
+
+## 踩过的坑
+
+- **路由注册在 `return app` 之后 = 死代码**。ETF 路由块一度插在 `@app.get("/cb")`
+  之前且自带 `return app` ⇒ `/cb` 变成死代码、访问 404，而 `/etf` 正常，
+  极易误判成「CB 功能坏了」。`tests/test_etf_dashboard.py::TestRouteOrdering` 锁死。
+- **CSS 没被 `base.html` 引入 ⇒ 图表 canvas 高度 0**（页面看着有表格、图全空白）。
+  `etf-dashboard.css` 已在 `base.html` 里 link。
+- **前端 JS 语法错误会静默让整页无图**（模块不执行，控制台才有报错）。
+  改完必须真的在浏览器里跑一遍；`tests/test_etf_dashboard.py` 用 `node --check` 兜一道。
+
 # CI 自动部署（deploy-site.yml）
 - `.github/workflows/deploy-site.yml`：A 股交易日 15:30 北京（07:30 UTC）自动
   同步→选股→计划→组合→转债→导出→部署 gh-pages。用 chinese_calendar 判交易日，

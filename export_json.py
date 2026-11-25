@@ -272,6 +272,42 @@ def _export_cb_data(conn, data_dir: Path) -> None:
     )
 
 
+#: ETF 看板数据的来源目录（scripts/fetch_etf_dashboard.py 的输出）。
+#: 做成模块级常量，测试可以 monkeypatch 它。
+ETF_SOURCE_DIR = Path(__file__).parent / "data" / "etf"
+
+
+def _export_etf_data(data_dir: Path) -> bool:
+    """把 data/etf/*.json 拷到静态站，并生成 etf.html。
+
+    数据由 scripts/fetch_etf_dashboard.py 抓取（外部看板快照），
+    **不在 SQLite 里** ⇒ 导出时不依赖 DB，没有数据就跳过（不报错）。
+
+    返回是否生成了 etf.html。
+    """
+    src_dir = ETF_SOURCE_DIR
+    if not src_dir.is_dir():
+        return False
+    names = [
+        "islands.json", "themes.json", "cumdays.json",
+        "theme-cum.json", "theme-minutes.json", "theme-indices.json", "meta.json",
+    ]
+    dst = data_dir / "etf"
+    dst.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for name in names:
+        src = src_dir / name
+        if not src.exists():
+            continue
+        shutil.copy(src, dst / name)
+        copied += 1
+    if not copied:
+        # 没有任何数据 ⇒ 不生成页面，免得静态站出现一个空看板。
+        shutil.rmtree(dst, ignore_errors=True)
+        return False
+    return True
+
+
 def export(db_path: str, out_dir: str) -> int:
     out = Path(out_dir)
     data_dir = out / "data"
@@ -332,6 +368,19 @@ def export(db_path: str, out_dir: str) -> int:
             year=_dt_class.now().year),
         encoding="utf-8",
     )
+
+    # ETF 资金看板（外部快照，与 SQLite 无关）
+    if _export_etf_data(data_dir):
+        (out / "etf.html").write_text(
+            _render_static_page("etf.html",
+                today=_dt_class.now().strftime("%Y-%m-%d"),
+                year=_dt_class.now().year),
+            encoding="utf-8",
+        )
+    else:
+        etf_page = out / "etf.html"
+        if etf_page.exists():
+            etf_page.unlink()
 
     # 404 回退到首页（Pages SPA 惯例），避免陈旧副本
     shutil.copy(out / "index.html", out / "404.html")

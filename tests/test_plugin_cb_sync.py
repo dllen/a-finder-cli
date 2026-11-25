@@ -129,6 +129,42 @@ process.stdout.write(JSON.stringify(out))
 
 
 # ---------------------------------------------------------------------------
+# 1b. ETF 看板开关（2026-11-24）：同 --no-cb 的模式，只透传、不重写
+# ---------------------------------------------------------------------------
+
+
+def test_run_site_pipeline_etf_flag(project):
+    """默认带 ETF 看板（无 --no-etf）；etf:false 才追加 --no-etf。"""
+    source = READ_ARGS_JS + """
+const sync = await import('__SYNC_JS__')
+const out = []
+const calls = [
+  {},                          // 全默认：push + cb + etf 都开
+  { etf: true, push: true },   // 显式开 ETF 看板
+  { etf: false },              // 关 ETF 看板
+  { push: false, cb: false, etf: false },  // 全关，只更新本地
+]
+for (const options of calls) {
+  const result = await sync.runSitePipeline({
+    projectDir: process.cwd(),
+    timeoutMs: 20000,
+    ...options,
+  })
+  out.push({ args: await readArgs(), ok: result.ok })
+}
+process.stdout.write(JSON.stringify(out))
+""".replace("__SYNC_JS__", _sync_uri())
+
+    got = _run_node(source, project)
+    base = ["site", "hs300.db", "20", "site"]
+
+    assert got[0]["args"] == base + ["--push"], got
+    assert got[1]["args"] == base + ["--push"], got
+    assert got[2]["args"] == base + ["--push", "--no-etf"], got
+    assert got[3]["args"] == base + ["--no-cb", "--no-etf"], got
+
+
+# ---------------------------------------------------------------------------
 # 2. 日期读取：readLatestTradeDate / readCbLatestDate
 # ---------------------------------------------------------------------------
 

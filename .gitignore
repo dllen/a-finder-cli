@@ -23,6 +23,12 @@ site/
 .codesight/
 .agents/
 
+# ETF 资金看板的抓取快照（data/etf/*.json）。
+# 这是**外部看板的快照**，由 scripts/fetch_etf_dashboard.py 每日重新抓 ——
+# 不进 git（theme-minutes.json 单个就 ~4 MB，而且每天都变）。
+# 流水线里 `a-finder.sh site` 第 3 步会先抓再导出，所以站点上的数据总是新的。
+data/etf/
+
 # Cloudflare
 .dev.vars
 .wrangler/

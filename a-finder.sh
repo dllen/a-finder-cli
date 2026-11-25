@@ -144,23 +144,26 @@ push_site_to_ghpages() {
 }
 
 cmd_site() {
-  # 用法: a-finder.sh site [DB] [TOP] [OUT] [--push] [--no-cb]
-  # 全流程：sync-incremental → cb-picks（可 --no-cb 跳过）→ export_json [→ push]
+  # 用法: a-finder.sh site [DB] [TOP] [OUT] [--push] [--no-cb] [--no-etf]
+  # 全流程：sync-incremental → cb-picks（可 --no-cb 跳过）
+  #          → ETF 看板抓取（可 --no-etf 跳过）→ export_json [→ push]
   local db="${1:-$DEFAULT_DB}"
   local top="${2:-20}"
   local out="${3:-site}"
   local push=0
   local cb=1
+  local etf=1
   for a in "$@"; do
     if [[ "$a" == "--push" ]]; then push=1; fi
     if [[ "$a" == "--no-cb" ]]; then cb=0; fi
+    if [[ "$a" == "--no-etf" ]]; then etf=0; fi
   done
 
   echo "=== 本地数据生成 ==="
-  echo "db=$db top=$top out=$out push=$push cb=$cb"
+  echo "db=$db top=$top out=$out push=$push cb=$cb etf=$etf"
   echo ""
 
-  echo "[1/3] 增量同步 + 选股..."
+  echo "[1/4] 增量同步 + 选股..."
   cmd_sync_incremental "$db" "$top" pick-history
 
   # 计划日期对齐**库里真正的行情最新日**，而不是硬编码今天：
@@ -195,16 +198,26 @@ except Exception:
   #   ③ 转债不是主流程：数据源限流/不可用时只告警，导出与发布绝不因此中止
   #      （转债页沿用库里上一份榜单，总比整站停更强）。
   if [[ "$cb" == "1" ]]; then
-    echo "[2/3] 可转债榜单（--date ${plan_date}）..."
+    echo "[2/4] 可转债榜单（--date ${plan_date}）..."
     run_cmd cb-picks --top "$top" --db "$db" --concurrency 2 --rate 4 --date "$plan_date" \
       || echo "WARN: 可转债榜单同步失败，继续导出（转债页沿用库里上一份榜单）" >&2
   else
-    echo "[2/3] 跳过可转债榜单（--no-cb）"
+    echo "[2/4] 跳过可转债榜单（--no-cb）"
+  fi
+
+  # ETF 资金看板（2026-11-24 新增）：外部看板快照，与 SQLite 无关。
+  # 失败只告警、不中止导出/发布 —— 看板页沿用上一份快照，比整站停更强。
+  if [[ "$etf" == "1" ]]; then
+    echo "[3/4] 抓取 ETF 资金看板数据..."
+    run_py "$ROOT_DIR/scripts/fetch_etf_dashboard.py" \
+      || echo "WARN: ETF 看板数据抓取失败，继续导出（看板页沿用上一份快照）" >&2
+  else
+    echo "[3/4] 跳过 ETF 看板抓取（--no-etf）"
   fi
 
   # ⚠️ 2026-11-05：「交易计划」「持仓组合」已下线（用户要求），
   # 不再跑 plan build / build-all / --backfill（CLI 子命令也已删除）。
-  echo "[3/3] 导出静态数据到 $out..."
+  echo "[4/4] 导出静态数据到 $out..."
   run_py "$ROOT_DIR/export_json.py" --db "$db" --out "$out"
 
   cp "$out/index.html" "$out/404.html"
@@ -588,10 +601,11 @@ a-finder.sh — A-share 数据 / 选股 / 计划 / 网站 / 服务 统一入口
   # plan / plan-all / daily-plan / portfolio 四个子命令已删除。
 
 ──────── 网站 ────────
-  site [DB] [TOP] [OUT] [--push] [--no-cb]
-      全流程：sync-incremental → cb-picks → export_json。
+  site [DB] [TOP] [OUT] [--push] [--no-cb] [--no-etf]
+      全流程：sync-incremental → cb-picks → ETF 看板抓取 → export_json。
       --push 把 site/ orphan-push 到 gh-pages。
       --no-cb 跳过可转债榜单（转债数据源不可用时）。
+      --no-etf 跳过 ETF 资金看板抓取（外部看板不可达时）。
   refresh [MONTHS] [DB] [OUT] [--push]
       最近 MONTHS 个月（默认 3）一键重刷：行情补齐 → 网站导出。
       不重算历史选股（避免未来函数偏差）。

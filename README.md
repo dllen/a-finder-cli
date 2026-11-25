@@ -274,6 +274,57 @@ DB=hs300.db PORT=8080 TOP=20 bash a-finder.sh web start
 - 「同步行情并重算」：先增量同步沪深300行情再重算榜单（较慢，依赖网络）
 - 交易计划页 `/plan`：顶部标题带 `paper` 徽标；筛选支持「含 failed」「只显示可建仓」两个复选框（后者按当前资金档位筛掉「0 股 资金不足一手」行）+ 「档位筛选（交集）」多选下拉（勾哪几档就只保留那些档位都能建仓的票，label 显示如「5W+10W」或「不限」）；表格列包含 **代码 / 名称 / 方向 / 策略 / 计划价 / 仓位 / 股数 / 止损 / 止盈 / RR / 状态 / 理由**；理由列折叠面板里附「各档股数 5W-50W」子表，每只 buy 票一次性展示 10 档位的可建仓股数（hold/exit 不渲染），方便跨档位选股；摘要卡显示资金档位 + 已用/现金/利用率（>100% 高亮红）+ 买入合计仓位与股数；点 5W/10W/15W/20W/25W/30W/35W/40W/45W/50W 按钮即时按当前资金重算每行股数与汇总；下方「持仓跟踪」展示 open_positions 的浮动盈亏与止损/止盈预期
 
+## ETF 资金看板 / ETF Fund-Flow Board
+
+把外部「重点 ETF 资金看板」（<https://jinke.app.workbuddy.host/>）复刻进本项目：
+盘中分钟观测、放量信号对比、日度资金全景、ETF 两融资金、主题分时五个部分。
+
+- 页面：`http://127.0.0.1:8000/etf`（静态站为 `etf.html`）
+- 数据：**不走 SQLite**。这些是 ETF 资金流数据，本项目库里没有对应表；
+  由 `scripts/fetch_etf_dashboard.py` 抓外部看板的快照，落在 `data/etf/*.json`
+
+```bash
+# 单独抓一次（写入 data/etf/）
+python3 scripts/fetch_etf_dashboard.py
+python3 scripts/fetch_etf_dashboard.py --dry-run     # 只看会抓到什么，不落盘
+
+# 随站点流水线一起抓（a-finder.sh site 的第 3 步）
+bash a-finder.sh site hs300.db 20 site --push
+bash a-finder.sh site hs300.db 20 site --push --no-etf   # 跳过（外部看板不可达时）
+```
+
+五个部分分别对应：
+
+| 部分 | 内容 | 数据来源字段 |
+|---|---|---|
+| ① 盘中分钟观测 | 20 只重点 ETF 分钟成交额 + 上证综指分时；单只 ETF 当日表现表 | `initData` / `cumData` |
+| ② 放量信号对比 | 放量日 vs 常态日的分钟成交额基准 | `typData` |
+| ③ 日度资金全景 | 日度成交额 / 净流入；全市场宽基分项 + 累计 | `dailyData` / `broadData` |
+| ④ ETF 两融资金 | 融资余额、融资净买入（按跟踪指数分类） | `marginData` |
+| ⑤ 主题分时 | 主题 ETF 分钟成交额 + 主题指数分时 | `themes` / `theme-minutes` / `theme-indices` |
+
+### 抓取器的三个坑（改这块前先读）
+
+1. **网关要求每个请求都带 `?sharecode=`** —— 包括 `POST /api/verify`。
+   缺了就是 403，而错误信息是「链接不完整」，看不出是缺参数。
+2. **网关发两个 `Set-Cookie`**（`__wb_rsc` + `etf_auth`）。
+   `resp.headers.get("Set-Cookie")` 只返回第一个 ⇒ 必须用 `get_all()`。
+3. **Cookie 头要写 `etf_auth=<值>`** —— 只给值不是合法的 Cookie 头。
+
+另外主看板的 `data.js` **键名不带引号**、末行还多一个右括号闭外层对象，
+不能整体 `JSON.parse` ⇒ 抓取器逐行按「键: {JSON}」切。
+
+### 与原站的差异
+
+- 原站的分钟线是**实时**的（轮询它自己的 `/api/hq` 代理）。
+  本项目**不引入那套代理**，改用抓取时刻的静态快照，页面顶部标明「数据截至」。
+  ⇒ 页面不会给出「看起来是实时、其实是昨天」的假象。
+- 主题分时的**价格参照线**是三级选择：**真实指数优先**（东财 `/api/idxminute` →
+  新浪 `/api/kline` → 等权合成兜底），用了哪条会显示在页面状态条上。
+  ⚠️ 2026-11-25 更正：早先写的「东财指数分钟一律 `upstream unavailable`」是**错的**
+  —— 那只是瞬时故障。实测除上证 `000001` 外**绝大多数 secid 都正常**，
+  而 `000001` 的失败是**按 secid 稳定发生**的（不是接口整体不可用）。
+
 ## 持仓组合 / Portfolio Tiers
 
 按资金档位（5W-50W 共 10 档）独立跟踪 paper-trade 组合：

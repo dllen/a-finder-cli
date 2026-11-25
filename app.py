@@ -1,9 +1,11 @@
+import json
 import sqlite3
 import threading
 import traceback
 import urllib.parse
 import uuid
 from datetime import datetime as _dt_class
+from pathlib import Path
 
 from flask import Flask, jsonify, request, render_template
 from markupsafe import escape as _esc_html
@@ -379,6 +381,62 @@ def create_app(db_path="hs300.db", top=10):
             today=_date.today().isoformat(),
             app_mode="api", data_prefix="",
             year=_date.today().year)
+
+    # ------------------------------------------------------------------
+    # ETF 资金看板（2026-11-24 新增）
+    #
+    # 数据来自 scripts/fetch_etf_dashboard.py 抓取的「重点 ETF 资金看板」快照，
+    # 落在 data/etf/*.json。**不读 SQLite** —— 这些是 ETF 资金流数据，
+    # 与本项目的选股库无关；DB 里没有对应的表。
+    # ------------------------------------------------------------------
+
+    ETF_DATA_DIR = Path(__file__).parent / "data" / "etf"
+
+    def _etf_payload(name):
+        """读 data/etf/<name>.json；缺失时返回 404 而不是 500。"""
+        path = ETF_DATA_DIR / name
+        if not path.exists():
+            return jsonify({"error": "数据未生成，请先跑 scripts/fetch_etf_dashboard.py"}), 404
+        try:
+            return jsonify(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            return jsonify({"error": f"读取失败: {exc}"}), 500
+
+    @app.get("/etf")
+    def etf_page():
+        from datetime import date as _date
+        return render_template("etf.html",
+            today=_date.today().isoformat(),
+            app_mode="api", data_prefix="",
+            year=_date.today().year)
+
+    @app.get("/api/etf/islands")
+    def etf_islands():
+        return _etf_payload("islands.json")
+
+    @app.get("/api/etf/themes")
+    def etf_themes():
+        return _etf_payload("themes.json")
+
+    @app.get("/api/etf/cumdays")
+    def etf_cumdays():
+        return _etf_payload("cumdays.json")
+
+    @app.get("/api/etf/theme-cum")
+    def etf_theme_cum():
+        return _etf_payload("theme-cum.json")
+
+    @app.get("/api/etf/theme-minutes")
+    def etf_theme_minutes():
+        return _etf_payload("theme-minutes.json")
+
+    @app.get("/api/etf/theme-indices")
+    def etf_theme_indices():
+        return _etf_payload("theme-indices.json")
+
+    @app.get("/api/etf/meta")
+    def etf_meta():
+        return _etf_payload("meta.json")
 
     return app
 

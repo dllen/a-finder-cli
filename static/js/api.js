@@ -100,6 +100,49 @@ export function fetchCbAlerts() {
     : getJSON('/api/cb/alerts');
 }
 
+// ---------------------------------------------------------------------------
+// ETF 资金看板（2026-11-24 新增）
+//
+// 数据来自 scripts/fetch_etf_dashboard.py 抓取的「重点 ETF 资金看板」快照，
+// 落在 data/etf/*.json。静态站读 data/etf/，API 模式读 /api/etf/。
+// ---------------------------------------------------------------------------
+
+export function fetchEtfIslands() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/islands.json'))
+    : getJSON('/api/etf/islands');
+}
+
+export function fetchEtfThemes() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/themes.json'))
+    : getJSON('/api/etf/themes');
+}
+
+export function fetchEtfCumDays() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/cumdays.json'))
+    : getJSON('/api/etf/cumdays');
+}
+
+export function fetchEtfThemeCum() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/theme-cum.json'))
+    : getJSON('/api/etf/theme-cum');
+}
+
+export function fetchEtfThemeMinutes() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/theme-minutes.json'))
+    : getJSON('/api/etf/theme-minutes');
+}
+
+export function fetchEtfThemeIndices() {
+  return isStatic()
+    ? getJSON(dsPath('data/etf/theme-indices.json'))
+    : getJSON('/api/etf/theme-indices');
+}
+
 // 静态模式下隐藏写入控件、修正导航链接
 if (isStatic()) {
   document.addEventListener('DOMContentLoaded', () => {
@@ -108,6 +151,8 @@ if (isStatic()) {
     if (picksLink) picksLink.href = 'index.html';
     const cbLink = document.querySelector('a[data-nav="cb"]');
     if (cbLink) cbLink.href = 'cb.html';
+    const etfLink = document.querySelector('a[data-nav="etf"]');
+    if (etfLink) etfLink.href = 'etf.html';
   });
 }
 

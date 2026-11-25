@@ -88,6 +88,7 @@ export async function readPublishedDate(siteDataDir) {
  * @param {string} options.out - Export directory name inside the repository.
  * @param {boolean} options.push - Whether to publish to gh-pages.
  * @param {boolean} options.cb - Whether the pipeline should sync the bond board.
+ * @param {boolean} options.etf - Whether the pipeline should refresh the ETF board snapshot.
  * @param {number} options.timeoutMs - Hard limit for the whole run.
  * @returns {Promise<{ok: boolean, code: number, output: string, timedOut: boolean}>} Run result.
  */
@@ -99,6 +100,7 @@ export function runSitePipeline(options) {
     out = 'site',
     push = true,
     cb = true,
+    etf = true,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options
 
@@ -108,6 +110,9 @@ export function runSitePipeline(options) {
   const args = ['a-finder.sh', 'site', db, String(top), out]
   if (push) args.push('--push')
   if (cb === false) args.push('--no-cb')
+  // Same for the ETF board (2026-11-24): the pipeline owns that step too —
+  // we only pass the opt-out, never re-implement it here.
+  if (etf === false) args.push('--no-etf')
 
   return new Promise((resolvePromise) => {
     const child = spawn('/bin/bash', args, {

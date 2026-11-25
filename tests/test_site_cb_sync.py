@@ -112,12 +112,19 @@ def test_cb_failure_is_tolerated():
     )
 
 
-def test_site_reports_three_steps_not_two():
-    """步骤编号 [1/3] / [2/3] / [3/3]（旧的 [2/2] 要消失）。"""
+def test_site_reports_four_steps():
+    """步骤编号 [1/4] ~ [4/4]（2026-11-24 加了 ETF 看板抓取这一步）。"""
     body = _cmd_site_body()
-    for tag in ("[1/3]", "[2/3]", "[3/3]"):
+    for tag in ("[1/4]", "[2/4]", "[3/4]", "[4/4]"):
         assert tag in body, f"缺步骤编号 {tag}"
     assert "[2/2]" not in body, "仍是旧的两步编号"
+    assert "[1/3]" not in body and "[3/3]" not in body, "仍是旧的三步编号"
+
+
+def test_help_documents_no_etf():
+    text = _text()
+    help_pos = text.index("print_help() {")
+    assert "--no-etf" in text[help_pos:], "print_help 的 site 说明没写 --no-etf"
 
 
 def test_help_documents_no_cb():

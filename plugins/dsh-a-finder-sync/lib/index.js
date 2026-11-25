@@ -64,6 +64,9 @@ export function apply(ctx, config = {}) {
     // The pipeline syncs the bond board by default; `cb: false` only opts out
     // (the plugin passes --no-cb, it never runs the bond step itself).
     cb: config.cb !== false,
+    // Same pattern for the ETF board snapshot (2026-11-24): the pipeline
+    // refreshes it by default; `etf: false` only opts out.
+    etf: config.etf !== false,
     timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
     remindTime: config.remindTime ?? DEFAULT_REMIND_TIME,
     timeZone: config.timeZone ?? 'Asia/Shanghai',
@@ -100,9 +103,10 @@ export function apply(ctx, config = {}) {
    *
    * @param {boolean} push - Whether this run should publish.
    * @param {boolean} cb - Whether this run should sync the bond board.
+   * @param {boolean} etf - Whether this run should refresh the ETF board snapshot.
    * @returns {Promise<object>} A structured run result.
    */
-  const performSync = async (push, cb) => {
+  const performSync = async (push, cb, etf) => {
     if (running !== null) {
       return { ok: false, busy: true, message: '已有同步在进行中，请等待其完成。' }
     }
@@ -111,7 +115,7 @@ export function apply(ctx, config = {}) {
       try {
         projectDir = await resolveProjectDir(settings.projectDir)
         const startedAt = new Date().toISOString()
-        await log(projectDir, '[' + startedAt + '] sync start push=' + push + ' cb=' + cb)
+        await log(projectDir, '[' + startedAt + '] sync start push=' + push + ' cb=' + cb + ' etf=' + etf)
         const result = await runSitePipeline({
           projectDir,
           db: settings.db,
@@ -119,6 +123,7 @@ export function apply(ctx, config = {}) {
           out: settings.out,
           push,
           cb,
+          etf,
           timeoutMs: settings.timeoutMs,
         })
         const latest = await readLatestTradeDate(join(projectDir, settings.db)).catch(() => '')
@@ -158,7 +163,7 @@ export function apply(ctx, config = {}) {
   ctx.tools.register({
     name: 'a_finder_sync',
     description:
-      '同步 a-finder 沪深300 行情数据：抓取最新交易日行情、重算选股榜单、同步可转债榜单、导出静态站点并推送到 gh-pages。' +
+      '同步 a-finder 沪深300 行情数据：抓取最新交易日行情、重算选股榜单、同步可转债榜单、刷新 ETF 资金看板快照、导出静态站点并推送到 gh-pages。' +
       '在用户要求「补齐今天数据」「同步行情」「发布站点」时调用。返回本次同步的结果摘要与最新数据日期。',
     parameters: {
       type: 'object',
@@ -171,13 +176,18 @@ export function apply(ctx, config = {}) {
           type: 'boolean',
           description: '是否同步可转债榜单；默认 true。只想更新股票行情与选股时传 false。',
         },
+        etf: {
+          type: 'boolean',
+          description: '是否抓取 ETF 资金看板快照；默认 true。外部看板不可达时可传 false 跳过。',
+        },
       },
     },
     output: TOOL_OUTPUT,
     async execute(args) {
       const push = args?.push === undefined ? settings.push : Boolean(args.push)
       const cb = args?.cb === undefined ? settings.cb : Boolean(args.cb)
-      const outcome = await performSync(push, cb)
+      const etf = args?.etf === undefined ? settings.etf : Boolean(args.etf)
+      const outcome = await performSync(push, cb, etf)
       return outcome.message
     },
   })
@@ -243,7 +253,8 @@ export function apply(ctx, config = {}) {
               const body = await readJsonBody(req)
               const push = body.push === undefined ? settings.push : Boolean(body.push)
               const cb = body.cb === undefined ? settings.cb : Boolean(body.cb)
-              const outcome = await performSync(push, cb)
+              const etf = body.etf === undefined ? settings.etf : Boolean(body.etf)
+              const outcome = await performSync(push, cb, etf)
               send(outcome.ok ? 200 : 500, {
                 ok: outcome.ok,
                 busy: outcome.busy === true,
