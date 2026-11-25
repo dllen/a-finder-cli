@@ -293,7 +293,9 @@ def _export_briefing_data(data_dir: Path) -> bool:
         for f in sorted(site_data.glob("briefing-*.json"), reverse=True):
             d = f.stem[len("briefing-"):]
             if len(d) == 10:
-                shutil.copy(f, data_dir / f.name)
+                dst = data_dir / f.name
+                if f.resolve() != dst.resolve():
+                    shutil.copy(f, dst)
                 dates.append(d)
     # Include input date
     try:
