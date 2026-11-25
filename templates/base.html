@@ -2,6 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<script>
+(function(){var m=localStorage.getItem('af-mode');if(m==='dark'||m==='light')document.documentElement.dataset.mode=m;})();
+</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}每日机会{% endblock %}</title>
 <meta name="description" content="{% block description %}沪深300 每日选股榜单与可转债榜单，按交易日查看，数据仅供参考。{% endblock %}">
@@ -36,5 +39,21 @@
 <script>window.APP_MODE={{ app_mode|tojson }};window.DATA_PREFIX={{ data_prefix|tojson }};</script>
 <script type="module" src="{{ url_for('static', filename='js/date-filter.js') }}"></script>
 {% block scripts %}{% endblock %}
+<script>
+(function(){
+  var btn=document.getElementById('themeToggle');
+  if(!btn)return;
+  function current(){return document.documentElement.dataset.mode||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');}
+  function update(){btn.setAttribute('aria-pressed',current()==='dark'?'true':'false');}
+  btn.addEventListener('click',function(){
+    var next=current()==='dark'?'light':'dark';
+    document.documentElement.dataset.mode=next;
+    localStorage.setItem('af-mode',next);
+    update();
+    window.dispatchEvent(new Event('af-mode-change'));
+  });
+  update();
+})();
+</script>
 </body>
 </html>

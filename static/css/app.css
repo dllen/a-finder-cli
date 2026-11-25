@@ -303,3 +303,12 @@ th[data-dir="desc"] .sort-mark{transform:translateY(-2px) rotate(180deg)}
   .table-wrap{display:block}
   .ledger-list{display:none}
 }
+
+/* ---- Theme toggle ---- */
+.theme-toggle{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--color-rule);border-radius:var(--radius-pill);background:transparent;color:var(--color-muted);cursor:pointer;transition:border-color var(--dur-micro) var(--ease-out),color var(--dur-micro) var(--ease-out);}
+.theme-toggle:hover{border-color:var(--color-accent);color:var(--color-ink);}
+.theme-toggle:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px;}
+.theme-toggle__icon{width:16px;height:16px;}
+[data-mode="dark"] .theme-toggle__icon circle{fill:currentColor;stroke:none;}
+[data-mode="dark"] .theme-toggle__icon path{display:none;}
+@media(prefers-color-scheme:dark){:root:not([data-mode]) .theme-toggle__icon circle{fill:currentColor;stroke:none;}:root:not([data-mode]) .theme-toggle__icon path{display:none;}}

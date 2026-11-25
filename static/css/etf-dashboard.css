@@ -10,11 +10,11 @@
  * 涨红跌绿沿用 A 股惯例，与项目 token --color-up / --color-down 一致。
  * 主强调色用 --color-accent（琥珀），与项目其它页面同源。 */
 .etf-page {
-  --etf-up: #e5484d;          /* 净申购 / 上涨 */
-  --etf-down: #30a46c;        /* 净赎回 / 下跌 */
-  --etf-accent: #f5a524;      /* 主线（分钟成交额 / 今日线） */
-  --etf-cool: #5b8def;        /* 次线（常态日 / 指数） */
-  --etf-violet: #a78bfa;      /* 对比日期线 */
+  --etf-up: var(--chart-up);
+  --etf-down: var(--chart-down);
+  --etf-accent: var(--chart-accent);
+  --etf-cool: var(--chart-cool);
+  --etf-violet: var(--chart-violet);
   --etf-grid: color-mix(in oklab, var(--color-ink) 12%, transparent);
   --etf-axis: var(--color-muted);
   --etf-panel: var(--color-paper-2);

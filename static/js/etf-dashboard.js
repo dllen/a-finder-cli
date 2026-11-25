@@ -27,16 +27,18 @@ import {
 const CHARTS = [];
 let ECHARTS = null;
 
-const COLORS = {
-  up: "#e5484d",
-  down: "#30a46c",
-  accent: "#f5a524",
-  cool: "#5b8def",
-  violet: "#a78bfa",
-  ink: "#c9d3e0",
-  grid: "rgba(201,211,224,0.10)",
-  axis: "#8b95a5",
-};
+function readChartColors() {
+  const s = getComputedStyle(document.documentElement);
+  const g = (v) => s.getPropertyValue(v).trim();
+  return {
+    up: g("--chart-up"), down: g("--chart-down"), accent: g("--chart-accent"),
+    cool: g("--chart-cool"), violet: g("--chart-violet"),
+    ink: g("--chart-ink"), axis: g("--chart-axis"), grid: g("--chart-grid"),
+    tooltipBg: g("--chart-tooltip-bg"), tooltipBorder: g("--chart-tooltip-border"),
+    tooltipText: g("--chart-tooltip-text"),
+  };
+}
+let COLORS = readChartColors();
 
 /* ---------------------------------------------------------------- 工具 */
 
@@ -83,7 +85,7 @@ function chart(id) {
 function darkAxis(extra) {
   return Object.assign(
     {
-      axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+      axisLine: { lineStyle: { color: COLORS.grid } },
       axisTick: { show: false },
       axisLabel: { color: COLORS.axis, fontSize: 11 },
       splitLine: { lineStyle: { color: COLORS.grid } },
@@ -95,10 +97,10 @@ function darkAxis(extra) {
 function darkTooltip(extra) {
   return Object.assign(
     {
-      backgroundColor: "rgba(22,25,31,0.96)",
-      borderColor: "rgba(201,211,224,0.20)",
+      backgroundColor: COLORS.tooltipBg,
+      borderColor: COLORS.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: "#e6e9ef", fontSize: 12 },
+      textStyle: { color: COLORS.tooltipText, fontSize: 12 },
       confine: true,
     },
     extra || {}
@@ -287,7 +289,7 @@ function drawMinuteChart() {
       title: {
         text: "20只ETF分钟成交额与上证综指分时",
         left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         data: ["20只ETF分钟成交额合计", "上证综指"],
@@ -321,7 +323,7 @@ function drawMinuteChart() {
         type: "category",
         data: FULL_T,
         axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: [
         {
@@ -344,7 +346,7 @@ function drawMinuteChart() {
       series: [
         {
           name: "20只ETF分钟成交额合计", type: "bar", data: bars,
-          itemStyle: { color: "rgba(245,165,36,0.55)" },
+          itemStyle: { color: "color-mix(in oklab, " + COLORS.accent + " 55%, transparent)" },
         },
         {
           name: "上证综指", type: "line", yAxisIndex: 1, data: closes, connectNulls: false,
@@ -398,7 +400,7 @@ function drawCumChart(extra) {
       title: {
         text: "20只ETF当日分钟累计成交额（亿元）",
         left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         data: visible, left: 8, top: 26, type: "scroll", height: 22,
@@ -418,7 +420,7 @@ function drawCumChart(extra) {
       xAxis: {
         type: "category", data: FULL_T,
         axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: {
         type: "value", name: "累计成交额（亿元）", min: 0,
@@ -447,7 +449,7 @@ function drawTypChart(id, cfg) {
       backgroundColor: "transparent",
       title: {
         text: cfg.title, left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         data: [cfg.barName, cfg.lineName], left: 8, top: 26, type: "scroll", height: 22,
@@ -468,7 +470,7 @@ function drawTypChart(id, cfg) {
       xAxis: {
         type: "category", data: typ.slots || [],
         axisLabel: { interval: 14, hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: {
         type: "value", name: "亿元/分钟", min: 0,
@@ -515,7 +517,7 @@ function drawDailyChart(id, cfg) {
       backgroundColor: "transparent",
       title: {
         text: cfg.title, left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         data: [cfg.barName, "上证综指"], left: 8, top: 26, type: "scroll", height: 22,
@@ -545,7 +547,7 @@ function drawDailyChart(id, cfg) {
       xAxis: {
         type: "category", data: dates,
         axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: [
         {
@@ -599,7 +601,7 @@ function drawBroadChart() {
       title: {
         text: "全市场宽基ETF日度净流入与累计净流入",
         left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         top: 26, left: 8, type: "scroll", height: 22, itemWidth: 12, itemHeight: 9,
@@ -633,7 +635,7 @@ function drawBroadChart() {
       xAxis: {
         type: "category", data: BR.dates,
         axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: [
         {
@@ -746,7 +748,7 @@ function drawMarginCharts() {
         title: {
           text: cat + " · ETF融资余额（亿元）与指数收盘",
           left: 8, top: 4, padding: 0,
-          textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+          textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
         },
         legend: {
           data: ["融资余额", "指数收盘"], left: 8, top: 26, type: "scroll", height: 22,
@@ -766,7 +768,7 @@ function drawMarginCharts() {
         xAxis: {
           type: "category", data: M.dates,
           axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-          axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+          axisLine: { lineStyle: { color: COLORS.grid } },
         },
         yAxis: [
           {
@@ -789,7 +791,7 @@ function drawMarginCharts() {
         series: [
           {
             name: "融资余额", type: "bar", data: rz,
-            itemStyle: { color: "rgba(91,141,239,0.6)" },
+            itemStyle: { color: "color-mix(in oklab, " + COLORS.cool + " 60%, transparent)" },
           },
           {
             name: "指数收盘", type: "line", yAxisIndex: 1, data: px, connectNulls: true,
@@ -807,7 +809,7 @@ function drawMarginCharts() {
         title: {
           text: cat + " · 融资净买入 vs 全市场ETF申赎净买入（亿元）",
           left: 8, top: 4, padding: 0,
-          textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+          textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
         },
         legend: {
           data: ["融资净买入", "ETF申赎净买入"], left: 8, top: 26, type: "scroll", height: 22,
@@ -827,7 +829,7 @@ function drawMarginCharts() {
         xAxis: {
           type: "category", data: M.dates,
           axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-          axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+          axisLine: { lineStyle: { color: COLORS.grid } },
         },
         yAxis: {
           type: "value", name: "亿元", scale: true,
@@ -842,7 +844,7 @@ function drawMarginCharts() {
         series: [
           {
             name: "融资净买入", type: "bar", data: jm,
-            itemStyle: { color: "rgba(245,165,36,0.6)" },
+            itemStyle: { color: "color-mix(in oklab, " + COLORS.accent + " 60%, transparent)" },
           },
           {
             name: "ETF申赎净买入", type: "line", data: nf, connectNulls: true,
@@ -1059,7 +1061,7 @@ function drawThemeCharts(themeKey, themesData, minutesData, indicesData, cumData
         title: {
           text: theme.key + " · 主题ETF分钟成交额与" + indexLine.label,
           left: 8, top: 4, padding: 0,
-          textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+          textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
         },
         legend: {
           data: ["主题ETF分钟成交额", indexLine.label],
@@ -1084,7 +1086,7 @@ function drawThemeCharts(themeKey, themesData, minutesData, indicesData, cumData
         xAxis: {
           type: "category", data: FULL_T,
           axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-          axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+          axisLine: { lineStyle: { color: COLORS.grid } },
         },
         yAxis: [
           {
@@ -1111,7 +1113,7 @@ function drawThemeCharts(themeKey, themesData, minutesData, indicesData, cumData
         series: [
           {
             name: "主题ETF分钟成交额", type: "bar", data: amtArr,
-            itemStyle: { color: "rgba(245,165,36,0.55)" },
+            itemStyle: { color: "color-mix(in oklab, " + COLORS.accent + " 55%, transparent)" },
           },
           {
             name: indexLine.label, type: "line", yAxisIndex: 1, data: pxArr,
@@ -1158,7 +1160,7 @@ function drawThemeCharts(themeKey, themesData, minutesData, indicesData, cumData
       title: {
         text: theme.key + " · 主题ETF分钟累计成交额（亿元）",
         left: 8, top: 4, padding: 0,
-        textStyle: { fontSize: 13, color: "#e6e9ef", fontWeight: "normal" },
+        textStyle: { fontSize: 13, color: COLORS.tooltipText, fontWeight: "normal" },
       },
       legend: {
         data: series.map((s) => s.name), left: 8, top: 26, type: "scroll", height: 22,
@@ -1178,7 +1180,7 @@ function drawThemeCharts(themeKey, themesData, minutesData, indicesData, cumData
       xAxis: {
         type: "category", data: FULL_T,
         axisLabel: { hideOverlap: true, color: COLORS.axis, fontSize: 10 },
-        axisLine: { lineStyle: { color: "rgba(201,211,224,0.18)" } },
+        axisLine: { lineStyle: { color: COLORS.grid } },
       },
       yAxis: {
         type: "value", name: "累计成交额（亿元）", min: 0,
@@ -1225,13 +1227,13 @@ async function init() {
       title: "放量案例日 · 重点ETF分钟成交额",
       amt: typ.supAmt || [], other: typ.norAmt || [],
       barName: "放量日均值", lineName: "常态日均值",
-      lineColor: COLORS.cool, color: "rgba(229,72,77,0.62)",
+      lineColor: COLORS.cool, color: "color-mix(in oklab, " + COLORS.up + " 62%, transparent)",
     });
     drawTypChart("chartTypNorm", {
       title: "常态交易日 · 重点ETF分钟成交额",
       amt: typ.norAmt || [], other: typ.supAmt || [],
       barName: "常态日均值", lineName: "放量日均值",
-      lineColor: COLORS.up, color: "rgba(91,141,239,0.62)",
+      lineColor: COLORS.up, color: "color-mix(in oklab, " + COLORS.cool + " 62%, transparent)",
     });
 
     drawDailyChart("chartDAmt", {
@@ -1279,6 +1281,24 @@ async function init() {
     }
   }
 }
+
+window.addEventListener("af-mode-change", () => {
+  COLORS = readChartColors();
+  // Re-render all charts with new palette
+  if (DATA) {
+    renderEtfTable();
+    drawMinuteChart();
+    drawCumChart({ today: alignToFull(MINUTE.times, MINUTE.cum) });
+    const typ = DATA.typData || {};
+    drawTypChart("chartTypCase", { title: "放量案例日 · 重点ETF分钟成交额", amt: typ.supAmt || [], other: typ.norAmt || [], barName: "放量日均值", lineName: "常态日均值", lineColor: COLORS.cool, color: "color-mix(in oklab, " + COLORS.up + " 62%, transparent)" });
+    drawTypChart("chartTypNorm", { title: "常态交易日 · 重点ETF分钟成交额", amt: typ.norAmt || [], other: typ.supAmt || [], barName: "常态日均值", lineName: "放量日均值", lineColor: COLORS.up, color: "color-mix(in oklab, " + COLORS.cool + " 62%, transparent)" });
+    drawDailyChart("chartDAmt", { title: "20只ETF日度成交额与上证综指", barName: "20只ETF日度成交额合计", metric: "amount" });
+    drawDailyChart("chartDNf", { title: "20只ETF日度净流入（申赎口径）与上证综指", barName: "20只ETF日度净流入", metric: "netflow" });
+    drawBroadChart();
+    renderBroadTable();
+    drawMarginCharts();
+  }
+});
 
 window.addEventListener("resize", () => {
   CHARTS.forEach((c) => {
