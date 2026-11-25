@@ -35,6 +35,7 @@ import {
   summarize,
 } from './sync.js'
 import { DEFAULT_REMIND_TIME, TASK_TITLE, ensureDailyReminder } from './schedule.js'
+import { deliverBriefingTask } from './briefing.js'
 
 /** The HTTP prefix the client button talks to. */
 const API_PREFIX = '/api/a-finder'
@@ -73,6 +74,8 @@ export function apply(ctx, config = {}) {
     timeZone: config.timeZone ?? 'Asia/Shanghai',
     autoSchedule: config.autoSchedule !== false,
   }
+
+  let scheduleService = null
 
   // One sync at a time. Two overlapping pipelines would race on the database
   // and on the gh-pages branch, and the second one would publish the older
@@ -141,6 +144,16 @@ export function apply(ctx, config = {}) {
         // shows the summary, so without this the reason is lost.
         if (!result.ok) {
           await log(projectDir, result.output.split('\n').slice(-40).join('\n'))
+        }
+        // Trigger briefing generation if conditions met (non-blocking)
+        if (result.ok && scheduleService) {
+          void deliverBriefingTask({
+            service: scheduleService,
+            projectDir,
+            dbLatest: latest,
+          }).then((outcome) => {
+            ('[a-finder-sync] briefing: ' + (outcome.detail ?? outcome.action))
+          }).catch(() => {})
         }
         return { ok: result.ok, result, latest, published, cbLatest, etfLatest, message }
       } catch (error) {
@@ -288,6 +301,7 @@ export function apply(ctx, config = {}) {
 
   const registerSchedule = (schedCtx) => {
     const service = schedCtx.schedule
+    scheduleService = service
     if (!settings.autoSchedule) return
 
     void ensureDailyReminder({

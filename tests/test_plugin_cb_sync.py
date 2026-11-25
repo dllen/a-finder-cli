@@ -535,6 +535,61 @@ process.stdout.write(JSON.stringify(out))
     assert "ETF 11-20" in got["lagging"], got
     assert "ETF" not in got["noEtf"], got
 
+
+# ---------------------------------------------------------------------------
+# 7. 简报模块：prompt 构造 / 条件判断 / 输出校验
+# ---------------------------------------------------------------------------
+
+BRIEFING_JS = PLUGIN_LIB / "briefing.js"
+
+
+def test_briefing_prompt_contains_data(project):
+    source = """
+const mod = await import('__BRIEFING_JS__')
+const input = { date: '2026-11-24', is_trading_day: true, intraday: { peak_minute: { time: '14:57', amount_yi: 24.84 } } }
+const prompt = mod.buildBriefingPrompt(input, '/path/to/project')
+process.stdout.write(JSON.stringify({
+  hasDate: prompt.includes('2026-11-24'),
+  hasPeak: prompt.includes('14:57'),
+  hasInstruction: prompt.includes('节点'),
+  hasJsonSchema: prompt.includes('JSON'),
+}))
+""".replace("__BRIEFING_JS__", BRIEFING_JS.as_uri())
+    got = _run_node(source, project)
+    assert got["hasDate"] is True
+    assert got["hasPeak"] is True
+    assert got["hasInstruction"] is True
+    assert got["hasJsonSchema"] is True
+
+
+def test_briefing_skips_non_trading_day(project):
+    source = """
+const mod = await import('__BRIEFING_JS__')
+const input = { date: '2026-11-24', is_trading_day: false }
+const should = mod.shouldGenerateBriefing(input, '2026-11-24')
+process.stdout.write(JSON.stringify({ should }))
+""".replace("__BRIEFING_JS__", BRIEFING_JS.as_uri())
+    got = _run_node(source, project)
+    assert got["should"] is False
+
+
+def test_briefing_validates_output_schema(project):
+    source = """
+const mod = await import('__BRIEFING_JS__')
+const good = { date: '2026-11-24', intraday_nodes: [{time:'09:30',text:'开盘'}], events: [], picks_highlight: [] }
+const bad = { date: '2026-11-24' }
+const wrongDate = { date: '2026-11-20', intraday_nodes: [], events: [], picks_highlight: [] }
+process.stdout.write(JSON.stringify({
+  good: mod.validateBriefingOutput(good, '2026-11-24'),
+  bad: mod.validateBriefingOutput(bad, '2026-11-24'),
+  wrongDate: mod.validateBriefingOutput(wrongDate, '2026-11-24'),
+}))
+""".replace("__BRIEFING_JS__", BRIEFING_JS.as_uri())
+    got = _run_node(source, project)
+    assert got["good"] is True
+    assert got["bad"] is False
+    assert got["wrongDate"] is False
+
 def test_node_available():
     """node 必须可用（否则上面的测试是假绿）。"""
     _require_node()
