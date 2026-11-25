@@ -42,3 +42,5 @@ deploy/com.afinder.fallback.plist
 # 这两行只是防止误 `git add -A` 泄露；文件本身可以随时删掉。
 /zfb.jpeg
 /wx.jpeg
+.superpowers/
+data/briefing-input.json
