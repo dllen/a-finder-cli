@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<script>
+(function(){var m=localStorage.getItem('af-mode');if(m==='dark'||m==='light')document.documentElement.dataset.mode=m;})();
+</script>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETF 资金看板</title>
+<meta name="description" content="重点 ETF 资金看板：盘中分钟观测、放量信号对比、日度资金全景、ETF 两融资金与主题分时。">
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg?v=0510674">
+<link rel="stylesheet" href="static/vendor/bootstrap.min.css?v=0510674">
+<link rel="stylesheet" href="static/css/tokens.css?v=0510674">
+<link rel="stylesheet" href="static/css/base.css?v=0510674">
+<link rel="stylesheet" href="static/css/app.css?v=0510674">
+<link rel="stylesheet" href="static/css/date-filter.css?v=0510674">
+<link rel="stylesheet" href="static/css/etf-dashboard.css?v=0510674">
+<link rel="stylesheet" href="static/css/briefing.css?v=0510674">
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<nav class="app-nav" aria-label="主导航">
+<div class="container app-nav__inner">
+<a class="wordmark" href="/">
+<svg class="wordmark__mark" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+<path class="spine" d="M3 3v14"/>
+<path class="axis" d="M6.5 5.5h9M6.5 10h7M6.5 14.5h4.5"/>
+</svg>
+<span>每日机会</span>
+</a>
+<div class="app-nav__links">
+<a class="nav-link" data-nav="picks" href="/" >每日机会</a>
+<a class="nav-link" data-nav="cb" href="/cb" >可转债</a>
+<a class="nav-link" data-nav="etf" href="/etf" aria-current="page">ETF资金看板</a>
+<a class="nav-link" data-nav="briefing" href="/briefing" >每日简报</a>
+<button type="button" class="theme-toggle" id="themeToggle" aria-label="切换亮色/暗色主题" title="切换主题">
+<svg class="theme-toggle__icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+<circle cx="10" cy="10" r="4" stroke="currentColor" stroke-width="1.4"/>
+<path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.93 4.93l1.41 1.41M13.66 13.66l1.41 1.41M4.93 15.07l1.41-1.41M13.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>
+</button>
+<button type="button" class="tip-button" data-bs-toggle="modal" data-bs-target="#tipModal" aria-label="赞赏支持" title="赞赏支持">
+<svg class="tip-button__icon" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
+<path d="M4 5h8.4v4.3a3.8 3.8 0 0 1-3.8 3.8H7.8a3.8 3.8 0 0 1-3.8-3.8V5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+<path d="M12.4 6.2h1.4a2.2 2.2 0 0 1 0 4.4h-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+<path d="M5.4 15h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>
+</button>
+</div>
+</div>
+</nav>
+
+<div class="risk-band" role="note">
+<div class="container risk-band__inner">
+<p class="risk-band__label">风险提示</p>
+<p class="risk-band__text">数据仅供参考，不构成投资建议</p>
+</div>
+</div>
+
+<main class="container etf-page" id="main">
+
+<header class="etf-head">
+<h1 class="etf-head__title">重点 ETF 资金看板</h1>
+<div class="etf-head__meta">
+<span class="etf-tag" id="etfDate">数据截至 --</span>
+<span class="etf-tag" id="etfStats">--</span>
+<span class="etf-tag" id="etfUpdate">未加载</span>
+</div>
+<nav class="etf-nav" aria-label="看板分区">
+<a href="#etf-part1">① 盘中分钟观测</a>
+<a href="#etf-part2">② 放量信号对比</a>
+<a href="#etf-part3">③ 日度资金全景</a>
+<a href="#etf-part4">④ ETF 两融资金</a>
+<a href="#etf-part5">⑤ 主题分时</a>
+</nav>
+</header>
+
+<div class="etf-loading" id="etfStatus"><span class="etf-tag">加载中…</span></div>
+
+<!-- ① 盘中分钟观测 -->
+<section class="etf-section" id="etf-part1" aria-labelledby="etf-h1">
+<div class="etf-section__head">
+<h2 class="etf-section__title" id="etf-h1">盘中分钟观测</h2>
+<p class="etf-section__note">20 只重点宽基 ETF 的分钟成交额合计与上证综指分时叠加。</p>
+</div>
+
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chart"></div></div>
+
+<div class="etf-panel">
+<div class="etf-chart etf-chart--tall" id="chartCum"></div>
+</div>
+
+<div class="etf-table-wrap">
+<h3 class="etf-table-title">单只 ETF 当日表现（按成交额降序）</h3>
+<table class="etf-table">
+<thead><tr>
+<th>代码</th><th>名称</th><th class="num">成交额(亿)</th><th>日内走势</th><th class="num">占比</th><th class="num">涨跌幅</th>
+</tr></thead>
+<tbody id="etfTable"></tbody>
+</table>
+</div>
+
+<div class="etf-table-wrap">
+<h3 class="etf-table-title">最近一个月 · 各类宽基 ETF 日度净流入（亿元，红=净申购 / 绿=净赎回，颜色深浅按当列相对大小）</h3>
+<table class="etf-table etf-heat-table" id="broadTable"></table>
+</div>
+</section>
+
+<!-- ② 放量信号对比 -->
+<section class="etf-section" id="etf-part2" aria-labelledby="etf-h2">
+<div class="etf-section__head">
+<h2 class="etf-section__title" id="etf-h2">放量信号对比</h2>
+<p class="etf-section__note">放量日 = 单日净流入 &gt; 100 亿（申赎口径）。上图为放量日均值叠加常态日分时，下图为常态日均值叠加放量日分时。</p>
+</div>
+<div class="etf-chart-grid">
+<div class="etf-panel"><div class="etf-chart etf-chart--mid" id="chartTypCase"></div></div>
+<div class="etf-panel"><div class="etf-chart etf-chart--mid" id="chartTypNorm"></div></div>
+</div>
+</section>
+
+<!-- ③ 日度资金全景 -->
+<section class="etf-section" id="etf-part3" aria-labelledby="etf-h3">
+<div class="etf-section__head">
+<h2 class="etf-section__title" id="etf-h3">日度资金全景</h2>
+<p class="etf-section__note">20 只重点 ETF 的日度成交额与净流入，以及全市场宽基 ETF 的分项净流入与累计净流入。</p>
+</div>
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chartDAmt"></div></div>
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chartDNf"></div></div>
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chartBroad"></div></div>
+</section>
+
+<!-- ④ ETF 两融资金 -->
+<section class="etf-section" id="etf-part4" aria-labelledby="etf-h4">
+<div class="etf-section__head">
+<h2 class="etf-section__title" id="etf-h4">ETF 两融资金</h2>
+<p class="etf-section__note">按跟踪指数把全部 ETF 加总；融资余额与融资净买入来自交易所两融披露（T+1）。</p>
+</div>
+<div class="etf-status">
+<label class="etf-field">指数
+<select class="etf-select" id="marginCat"></select>
+</label>
+<span class="etf-tag" id="tagMargin">--</span>
+</div>
+<div class="etf-chart-grid">
+<div class="etf-panel"><div class="etf-chart etf-chart--mid" id="chartMarginBal"></div></div>
+<div class="etf-panel"><div class="etf-chart etf-chart--mid" id="chartMarginFlow"></div></div>
+</div>
+</section>
+
+<!-- ⑤ 主题分时 -->
+<section class="etf-section" id="etf-part5" aria-labelledby="etf-h5">
+<div class="etf-section__head">
+<h2 class="etf-section__title" id="etf-h5">主题分时</h2>
+<p class="etf-section__note">选一个主题，把该主题全部 ETF（含同名 LOF）的分钟成交额加总，与主题指数分时叠加对比。</p>
+</div>
+<div class="etf-status">
+<label class="etf-field">主题
+<select class="etf-select" id="themeCat"><option value="">加载中…</option></select>
+</label>
+<span class="etf-tag" id="tagThemeMin">--</span>
+</div>
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chartThemeMin"></div></div>
+<div class="etf-panel"><div class="etf-chart etf-chart--tall" id="chartThemeCum"></div></div>
+</section>
+
+<p class="etf-source">
+数据来源：Choice、东方财富、交易所两融披露。客观数据仅供参考，不构成投资建议。<br>
+本看板为「重点 ETF 资金看板」的本地复刻版，数据由 <code>scripts/fetch_etf_dashboard.py</code> 抓取快照，非实时。
+</p>
+
+</main>
+
+<footer class="app-footer">
+<div class="container app-footer__inner">
+<p class="app-footer__brand">&copy; 2026 每日机会</p>
+<p class="app-footer__note">沪深300 选股与可转债分析</p>
+</div>
+</footer>
+
+<div class="modal fade" id="tipModal" tabindex="-1" aria-labelledby="tipModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="tipModalLabel">赞赏支持</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <p class="tip-lede">如果这个站点对你有帮助，可以扫码赞赏一杯咖啡。纯属自愿，不影响任何功能。</p>
+        <div class="tip-switch">
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-alipay" checked>
+          <label class="tip-switch__label" for="tip-alipay">支付宝</label>
+          <input class="tip-switch__input" type="radio" name="tip-channel" id="tip-wechat">
+          <label class="tip-switch__label" for="tip-wechat">微信支付</label>
+          <div class="row g-3 text-center tip-panes">
+            <div class="col-12 col-sm-6 tip-pane tip-pane--alipay">
+              <a class="tip-qr-link" href="static/images/alipay-qr.jpeg?v=0510674" target="_blank" rel="noopener" aria-label="打开支付宝收款码原图">
+                <img src="static/images/alipay-qr.jpeg?v=0510674" class="tip-qr" alt="支付宝收款码"
+                     width="1156" height="1156" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">支付宝</p>
+              <p class="tip-caption">支付宝扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="static/images/alipay-qr.jpeg?v=0510674" download="alipay-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="static/images/alipay-qr.jpeg?v=0510674" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
+            <div class="col-12 col-sm-6 tip-pane tip-pane--wechat">
+              <a class="tip-qr-link" href="static/images/wechat-qr.jpeg?v=0510674" target="_blank" rel="noopener" aria-label="打开微信收款码原图">
+                <img src="static/images/wechat-qr.jpeg?v=0510674" class="tip-qr" alt="微信支付收款码"
+                     width="387" height="387" loading="lazy" decoding="async">
+              </a>
+              <p class="tip-label">微信支付</p>
+              <p class="tip-caption">微信扫一扫</p>
+              <p class="tip-actions">
+                <a class="btn btn--sm" href="static/images/wechat-qr.jpeg?v=0510674" download="wechat-qr.jpeg">保存图片</a>
+                <a class="btn btn--sm btn--quiet" href="static/images/wechat-qr.jpeg?v=0510674" target="_blank" rel="noopener">看原图</a>
+              </p>
+            </div>
+          </div>
+        </div>
+        <p class="tip-caption tip-hint">电脑可直接扫码；手机点「保存图片」存到相册，或长按图片保存，再到支付宝或微信的扫一扫里从相册选择。</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="static/vendor/bootstrap.bundle.min.js?v=0510674"></script>
+<script>window.APP_MODE="static";window.DATA_PREFIX="";</script>
+<script type="module" src="static/js/date-filter.js?v=0510674"></script>
+
+<script src="static/vendor/echarts.min.js?v=0510674"></script>
+<script type="module" src="static/js/etf-dashboard.js?v=0510674"></script>
+
+<script>
+(function(){
+  var btn=document.getElementById('themeToggle');
+  if(!btn)return;
+  function current(){return document.documentElement.dataset.mode||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');}
+  function update(){btn.setAttribute('aria-pressed',current()==='dark'?'true':'false');}
+  btn.addEventListener('click',function(){
+    var next=current()==='dark'?'light':'dark';
+    document.documentElement.dataset.mode=next;
+    localStorage.setItem('af-mode',next);
+    update();
+    window.dispatchEvent(new Event('af-mode-change'));
+  });
+  update();
+})();
+</script>
+</body>
+</html>
